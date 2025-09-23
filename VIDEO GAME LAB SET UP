@@ -1,0 +1,488 @@
+# GameDev Master Setup Script (Windows / PowerShell)
+# All-in-One, Fully Integrated with Unreal Auto-Detection
+# ===============================================================
+
+$Root = "C:\GameDev"
+$Engines = Join-Path $Root "Engines"
+$Tools = Join-Path $Root "Tools"
+$Projects = Join-Path $Root "Projects"
+$Assets = Join-Path $Root "Assets"
+$Scripts = Join-Path $Root "Scripts"
+$Installers = Join-Path $Root "Installers"
+$Samples = Join-Path $Projects "Samples"
+$Launchers = Join-Path $Root "Launchers"
+
+$EpicUrl = "https://launcher-public-service-prod06.ol.epicgames.com/launcher/api/installer/download/EpicGamesLauncherInstaller.msi"
+$UnityHubUrl = "https://public-cdn.cloud.unity3d.com/hub/prod/UnityHubSetup.exe"
+
+$GodotVersions = @("4.3","4.2.2","4.1.4","3.5.3")
+$BlenderVersions = @("4.2.2","4.1.1","4.0.2","3.6.9")
+$GodotRepo = "https://github.com/godotengine/godot-demo-projects.git"
+$UnityRepo = "https://github.com/UnityTechnologies/UnityCsReference.git"
+
+# ---------- Helper Functions ----------
+function SafeCreateDir($path) {
+    if (-not (Test-Path $path)) {
+        New-Item -ItemType Directory -Path $path -Force | Out-Null
+    }
+}
+
+function TryDownload($url, $outfile) {
+    if (Test-Path $outfile) {
+        Write-Host "Exists: $outfile"
+        return $true
+    }
+    try {
+        Write-Host "Downloading: $url"
+        Invoke-WebRequest -Uri $url -OutFile $outfile -UseBasicParsing -TimeoutSec 300
+        Write-Host "Downloaded: $outfile"
+        return $true
+    } catch {
+        Write-Warning "Failed: $url"
+        return $false
+    }
+}
+
+function CreateMeta($dir) {
+    $meta = Join-Path $dir "meta.json"
+    if (-not (Test-Path $meta)) {
+        @{
+            name = "PLACEHOLDER"
+            source = "TODO"
+            source_url = "TODO"
+            license = "TODO"
+            tags = @()
+            import_notes = "For Unreal/Unity/Godot"
+        } | ConvertTo-Json -Depth 3 | Out-File $meta -Encoding utf8
+    }
+}
+
+function GitCloneIfNotExists($repoUrl, $dest) {
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        Write-Warning "Git not found. Skip $repoUrl"
+        return
+    }
+    if (-not (Test-Path $dest)) {
+        git clone $repoUrl $dest
+    } else {
+        Write-Host "Repo exists: $dest"
+    }
+}
+
+# ---------- Folder Structure ----------
+$folders = @(
+    $Root, $Engines,
+    (Join-Path $Engines "Unreal"),
+    (Join-Path $Engines "Unity"),
+    (Join-Path $Engines "Godot"),
+    (Join-Path $Engines "Other"),
+    $Tools,
+    (Join-Path $Tools "Blender"),
+    (Join-Path $Tools "Quixel"),
+    (Join-Path $Tools "Substance"),
+    $Projects,
+    $Samples,
+    (Join-Path $Projects "TestScene"),
+    (Join-Path $Projects "UnrealProjects"),
+    (Join-Path $Projects "UnityProjects"),
+    $Assets,
+    (Join-Path $Assets "Characters"),
+    (Join-Path $Assets "Vehicles"),
+    (Join-Path $Assets "Weapons"),
+    (Join-Path $Assets "Environments"),
+    (Join-Path $Assets "Environments\Weather"),
+    (Join-Path $Assets "Textures"),
+    $Scripts,
+    $Installers,
+    $Launchers
+)
+
+foreach ($f in $folders) {
+    SafeCreateDir $f
+}
+
+# ---------- Meta.json in assets ----------
+Get-ChildItem -Directory -Path $Assets -Recurse | ForEach-Object { CreateMeta $_.FullName }
+
+# ---------- Download Installers ----------
+$epicInstaller = Join-Path $Installers "EpicGamesLauncherInstaller.msi"
+$unityHubInstaller = Join-Path $Installers "UnityHubSetup.exe"
+$epicOk = TryDownload $EpicUrl $epicInstaller
+$unityOk = TryDownload $UnityHubUrl $unityHubInstaller
+
+if (-not $epicOk) {
+    "Download Epic manually: https://store.epicgames.com/en-US/download" | Out-File (Join-Path $Installers "EpicLauncher-README.txt") -Encoding utf8
+}
+if (-not $unityOk) {
+    "Download Unity Hub manually: https://unity.com/download" | Out-File (Join-Path $Installers "UnityHub-README.txt") -Encoding utf8
+}
+
+# ---------- Godot Downloads ----------
+$GodotDir = Join-Path $Engines "Godot\Versions"
+SafeCreateDir $GodotDir
+foreach ($v in $GodotVersions) {
+    $file = "Godot_v${v}-stable_win64.exe"
+    $url1 = "https://downloads.tuxfamily.org/godotengine/${v}/$file"
+    $out = Join-Path $GodotDir $file
+    if (-not (TryDownload $url1 $out)) {
+        # Try alternative URL format
+        $url2 = "https://github.com/godotengine/godot/releases/download/${v}-stable/$file"
+        TryDownload $url2 $out | Out-Null
+    }
+}
+
+# ---------- Blender Downloads ----------
+$BlenderDir = Join-Path $Tools "Blender\Versions"
+SafeCreateDir $BlenderDir
+foreach ($bv in $BlenderVersions) {
+    $majorMinor = ($bv -split "\.")[0] + "." + ($bv -split "\.")[1]
+    $fileName = "blender-$bv-windows-x64.zip"
+    $url = "https://download.blender.org/release/Blender$majorMinor/$fileName"
+    $out = Join-Path $BlenderDir $fileName
+    TryDownload $url $out | Out-Null
+}
+
+# ---------- Clone Sample Repos ----------
+GitCloneIfNotExists $GodotRepo (Join-Path $Samples "godot-demos")
+GitCloneIfNotExists $UnityRepo (Join-Path $Samples "unity-demos")
+
+# ---------- TestScene Project ----------
+$Test = Join-Path $Projects "TestScene"
+SafeCreateDir $Test
+SafeCreateDir (Join-Path $Test "Assets")
+SafeCreateDir (Join-Path $Test "Packages")
+$pvFile = Join-Path $Test "ProjectSettings\ProjectVersion.txt"
+SafeCreateDir (Split-Path $pvFile -Parent)
+
+"m_EditorVersion: 2022.3.0f1" | Out-File $pvFile -Encoding utf8
+@{dependencies = @{com.unity.collab-proxy = "1.15.7"}} | ConvertTo-Json -Depth 5 | Out-File (Join-Path $Test "Packages/manifest.json") -Encoding utf8
+
+# Adding test assets
+$testAssets = @("test_character.fbx", "test_vehicle.fbx", "test_gun.fbx", "test_weather.hdr")
+foreach ($asset in $testAssets) {
+    New-Item -Path (Join-Path $Test "Assets/$asset") -ItemType File -Force | Out-Null
+}
+
+# ---------- Godot TestScene ----------
+$godotProj = Join-Path $Test "Godot"
+SafeCreateDir $godotProj
+$gProjFile = Join-Path $godotProj "project.godot"
+"[gd_project]
+config_version=4
+[application]
+config/name=""TestScene""
+run/main_scene=""res://scene.tscn""" | Out-File $gProjFile -Encoding utf8
+$sceneFile = Join-Path $godotProj "scene.tscn"
+"[gd_scene load_steps=1 format=3]" | Out-File $sceneFile -Encoding utf8
+
+# Copying assets to Godot project
+foreach ($asset in $testAssets) {
+    Copy-Item (Join-Path $Test "Assets/$asset") $godotProj -Force
+}
+
+# ---------- Unreal Auto-Detection and TestScene Deployment ----------
+$UnrealRootPaths = @(
+    "$Env:ProgramFiles\Epic Games",
+    "$Env:ProgramFiles(x86)\Epic Games"
+)
+$FoundEngines = @()
+foreach ($path in $UnrealRootPaths) {
+    if (Test-Path $path) {
+        Get-ChildItem -Directory $path | Where-Object { $_.Name -match "UE_" } | ForEach-Object { $FoundEngines += $_.FullName }
+    }
+}
+
+if ($FoundEngines.Count -gt 0) {
+    foreach ($eng in $FoundEngines) {
+        $dest = Join-Path $eng "TestSceneAssets"
+        SafeCreateDir $dest
+        Copy-Item (Join-Path $Test "Assets\*") $dest -Recurse -Force
+        Write-Host "Copied TestScene assets to Unreal Engine at $dest"
+    }
+} else {
+    Write-Warning "No installed Unreal Engine versions found. Install Epic Games Launcher and Unreal Engine, then re-run the script."
+}
+
+# ---------- Startup Scripts for All Tools ----------
+# Blender Startup Script
+$blenderStartup = Join-Path $Scripts "Start-Blender.ps1"
+@"
+`$blenderDir = '$BlenderDir'
+`$versions = Get-ChildItem -Path `$blenderDir -Filter 'blender-*.zip' | Sort-Object Name -Descending
+if (`$versions.Count -gt 0) {
+    `$latest = `$versions[0].FullName
+    `$extractPath = Join-Path (Split-Path `$latest) (([System.IO.Path]::GetFileNameWithoutExtension(`$latest)))
+    
+    if (-not (Test-Path `$extractPath)) {
+        Write-Host "Extracting `$latest to `$extractPath"
+        Expand-Archive -Path `$latest -DestinationPath `$extractPath -Force
+    }
+    
+    `$blenderExe = Get-ChildItem -Path `$extractPath -Filter 'blender.exe' -Recurse | Select-Object -First 1
+    if (`$blenderExe) {
+        Start-Process -FilePath `$blenderExe.FullName
+    } else {
+        Write-Warning "Blender.exe not found in `$extractPath"
+    }
+} else {
+    Write-Warning "No Blender versions found. Download them first."
+}
+"@ | Out-File $blenderStartup -Encoding utf8
+
+# Godot Startup Script
+$godotStartup = Join-Path $Scripts "Start-Godot.ps1"
+@"
+`$godotDir = '$GodotDir'
+`$versions = Get-ChildItem -Path `$godotDir -Filter 'Godot_*.exe' | Sort-Object Name -Descending
+if (`$versions.Count -gt 0) {
+    `$latest = `$versions[0].FullName
+    Start-Process -FilePath `$latest
+} else {
+    Write-Warning "No Godot versions found. Download them first."
+}
+"@ | Out-File $godotStartup -Encoding utf8
+
+# Unity Hub Startup Script
+$unityStartup = Join-Path $Scripts "Start-UnityHub.ps1"
+@"
+`$hubPath = '$Launchers\Unity Hub\Unity Hub.exe'
+if (Test-Path `$hubPath) {
+    Start-Process -FilePath `$hubPath
+} else {
+    Write-Host "Unity Hub not found. Running installer..."
+    `$installer = '$unityHubInstaller'
+    if (Test-Path `$installer) {
+        Start-Process -FilePath `$installer -Wait
+        if (Test-Path `$hubPath) {
+            Start-Process -FilePath `$hubPath
+        }
+    } else {
+        Write-Warning "Unity Hub installer not found. Download it first."
+    }
+}
+"@ | Out-File $unityStartup -Encoding utf8
+
+# Epic Games Launcher Startup Script
+$epicStartup = Join-Path $Scripts "Start-EpicGames.ps1"
+@"
+`$epicPath = '$Launchers\Epic Games Launcher\Portal\Binaries\Win32\EpicGamesLauncher.exe'
+if (Test-Path `$epicPath) {
+    Start-Process -FilePath `$epicPath
+} else {
+    Write-Host "Epic Games Launcher not found. Running installer..."
+    `$installer = '$epicInstaller'
+    if (Test-Path `$installer) {
+        Start-Process -FilePath `$installer -Wait
+        if (Test-Path `$epicPath) {
+            Start-Process -FilePath `$epicPath
+        }
+    } else {
+        Write-Warning "Epic Games Launcher installer not found. Download it first."
+    }
+}
+"@ | Out-File $epicStartup -Encoding utf8
+
+# Project Open Script
+$openProjectScript = Join-Path $Scripts "Open-Project.ps1"
+@"
+param(
+    [Parameter(Mandatory=`$true)]
+    [string]`$ProjectPath,
+    
+    [Parameter(Mandatory=`$false)]
+    [ValidateSet('Unity', 'Unreal', 'Godot')]
+    [string]`$EngineType = 'Unity'
+)
+
+if (-not (Test-Path `$ProjectPath)) {
+    Write-Error "Project path does not exist: `$ProjectPath"
+    exit 1
+}
+
+switch (`$EngineType) {
+    'Unity' {
+        `$hubPath = '$Launchers\Unity Hub\Unity Hub.exe'
+        if (Test-Path `$hubPath) {
+            Start-Process -FilePath `$hubPath -ArgumentList "--project-path `"`$ProjectPath`""
+        } else {
+            Write-Error "Unity Hub not found"
+        }
+    }
+    'Unreal' {
+        `$projectFiles = Get-ChildItem -Path `$ProjectPath -Filter "*.uproject"
+        if (`$projectFiles.Count -eq 0) {
+            Write-Error "No .uproject file found in `$ProjectPath"
+            exit 1
+        }
+        
+        `$uproject = `$projectFiles[0].FullName
+        `$unrealEditors = @(
+            "$Env:ProgramFiles\Epic Games\UE_5.3\Engine\Binaries\Win64\UnrealEditor.exe",
+            "$Env:ProgramFiles\Epic Games\UE_5.2\Engine\Binaries\Win64\UnrealEditor.exe",
+            "$Env:ProgramFiles\Epic Games\UE_5.1\Engine\Binaries\Win64\UnrealEditor.exe",
+            "$Env:ProgramFiles\Epic Games\UE_5.0\Engine\Binaries\Win64\UnrealEditor.exe",
+            "$Env:ProgramFiles\Epic Games\UE_4.27\Engine\Binaries\Win64\UnrealEditor.exe"
+        )
+        
+        foreach (`$editor in `$unrealEditors) {
+            if (Test-Path `$editor) {
+                Start-Process -FilePath `$editor -ArgumentList "`"`$uproject`""
+                exit 0
+            }
+        }
+        
+        Write-Error "No Unreal Editor found. Install Unreal Engine first."
+    }
+    'Godot' {
+        `$godotDir = '$GodotDir'
+        `$versions = Get-ChildItem -Path `$godotDir -Filter 'Godot_*.exe' | Sort-Object Name -Descending
+        if (`$versions.Count -gt 0) {
+            `$latest = `$versions[0].FullName
+            Start-Process -FilePath `$latest -ArgumentList "--path `"`$ProjectPath`""
+        } else {
+            Write-Error "No Godot versions found. Download them first."
+        }
+    }
+}
+"@ | Out-File $openProjectScript -Encoding utf8
+
+# ---------- Run Installers Script ----------
+@"
+`$instDir='$Installers'
+Get-ChildItem -Path `$instDir -Include *.msi,*.exe -Recurse | ForEach-Object {
+    Write-Host 'Running:' `$_.FullName
+    Start-Process -FilePath `$_.FullName -Verb RunAs -Wait
+}
+
+# Create shortcuts in Launchers folder after installation
+`$programFiles = `${Env:ProgramFiles}
+if (Test-Path "$programFiles\Unity Hub\Unity Hub.exe") {
+    Copy-Item "$programFiles\Unity Hub\Unity Hub.exe" '$Launchers\Unity Hub\' -Force
+}
+if (Test-Path "$programFiles\Epic Games\Launcher\Portal\Binaries\Win32\EpicGamesLauncher.exe") {
+    Copy-Item "$programFiles\Epic Games\Launcher\Portal\Binaries\Win32\EpicGamesLauncher.exe" '$Launchers\Epic Games Launcher\Portal\Binaries\Win32\' -Force
+}
+"@ | Out-File (Join-Path $Scripts "Run-Installers.ps1") -Encoding utf8
+
+# ---------- Update Repos Script ----------
+@"
+`$samples='$Samples'
+if (Test-Path (Join-Path `$samples 'godot-demos')) {
+    cd (Join-Path `$samples 'godot-demos'); git pull
+}
+if (Test-Path (Join-Path `$samples 'unity-demos')) {
+    cd (Join-Path `$samples 'unity-demos'); git pull
+}
+Write-Host 'Done updating sample repos.'
+"@ | Out-File (Join-Path $Scripts "Update-Repos.ps1") -Encoding utf8
+
+# ---------- Add Asset Script ----------
+@"
+param([string]`$Asset,[string]`$Category)
+`$dest=Join-Path '$Assets' `$Category
+if (-not(Test-Path `$dest)) {
+    New-Item -ItemType Directory -Path `$dest | Out-Null
+}
+Copy-Item `$Asset `$dest -Force
+Write-Host 'Added:' `$Asset 'to' `$dest
+"@ | Out-File (Join-Path $Scripts "Add-Asset.ps1") -Encoding utf8
+
+# ---------- Asset Creation Scripts ----------
+# Character Creation
+@"
+param([string]`$CharacterName)
+`$charDir = Join-Path '$Assets\Characters' `$CharacterName
+New-Item -Path `$charDir -ItemType Directory -Force
+# Add character files and metadata
+if (Test-Path '$Assets\Characters\test_character.fbx') {
+    Copy-Item '$Assets\Characters\test_character.fbx' `$charDir -Force
+}
+CreateMeta `$charDir
+Write-Host 'Created character:' `$CharacterName
+"@ | Out-File (Join-Path $Scripts "Create-Character.ps1") -Encoding utf8
+
+# Vehicle Creation
+@"
+param([string]`$VehicleName)
+`$vehicleDir = Join-Path '$Assets\Vehicles' `$VehicleName
+New-Item -Path `$vehicleDir -ItemType Directory -Force
+# Add vehicle files and metadata
+if (Test-Path '$Assets\Vehicles\test_vehicle.fbx') {
+    Copy-Item '$Assets\Vehicles\test_vehicle.fbx' `$vehicleDir -Force
+}
+CreateMeta `$vehicleDir
+Write-Host 'Created vehicle:' `$VehicleName
+"@ | Out-File (Join-Path $Scripts "Create-Vehicle.ps1") -Encoding utf8
+
+# Weather Setup
+@"
+param([string]`$WeatherType)
+`$weatherDir = Join-Path '$Assets\Environments\Weather' `$WeatherType
+New-Item -Path `$weatherDir -ItemType Directory -Force
+# Add weather files and metadata
+if (Test-Path '$Assets\Environments\Weather\test_weather.hdr') {
+    Copy-Item '$Assets\Environments\Weather\test_weather.hdr' `$weatherDir -Force
+}
+CreateMeta `$weatherDir
+Write-Host 'Setup weather:' `$WeatherType
+"@ | Out-File (Join-Path $Scripts "Setup-Weather.ps1") -Encoding utf8
+
+# ---------- Create Desktop Shortcuts ----------
+$shortcutScript = Join-Path $Scripts "Create-Shortcuts.ps1"
+@"
+`$WshShell = New-Object -ComObject WScript.Shell
+
+# Blender Shortcut
+`$blenderShortcut = `$WshShell.CreateShortcut("`$Home\Desktop\Blender.lnk")
+`$blenderShortcut.TargetPath = "powershell.exe"
+`$blenderShortcut.Arguments = "-ExecutionPolicy Bypass -File `"$Scripts\Start-Blender.ps1`""
+`$blenderShortcut.Save()
+
+# Godot Shortcut
+`$godotShortcut = `$WshShell.CreateShortcut("`$Home\Desktop\Godot.lnk")
+`$godotShortcut.TargetPath = "powershell.exe"
+`$godotShortcut.Arguments = "-ExecutionPolicy Bypass -File `"$Scripts\Start-Godot.ps1`""
+`$godotShortcut.Save()
+
+# Unity Hub Shortcut
+`$unityShortcut = `$WshShell.CreateShortcut("`$Home\Desktop\Unity Hub.lnk")
+`$unityShortcut.TargetPath = "powershell.exe"
+`$unityShortcut.Arguments = "-ExecutionPolicy Bypass -File `"$Scripts\Start-UnityHub.ps1`""
+`$unityShortcut.Save()
+
+# Epic Games Shortcut
+`$epicShortcut = `$WshShell.CreateShortcut("`$Home\Desktop\Epic Games.lnk")
+`$epicShortcut.TargetPath = "powershell.exe"
+`$epicShortcut.Arguments = "-ExecutionPolicy Bypass -File `"$Scripts\Start-EpicGames.ps1`""
+`$epicShortcut.Save()
+
+Write-Host "Desktop shortcuts created successfully"
+"@ | Out-File $shortcutScript -Encoding utf8
+
+# ---------- README ----------
+@"
+INSTALLERS:
+- Epic Games Launcher: $epicInstaller
+- Unity Hub: $unityHubInstaller
+* Both require manual sign-in to install engines.
+
+STARTUP SCRIPTS:
+- Start-Blender.ps1: Launch the latest Blender version
+- Start-Godot.ps1: Launch the latest Godot version
+- Start-UnityHub.ps1: Launch Unity Hub
+- Start-EpicGames.ps1: Launch Epic Games Launcher
+- Open-Project.ps1: Open a project with specified engine
+
+ASSET CREATION SCRIPTS:
+- Create-Character.ps1: Create a new character.
+- Create-Vehicle.ps1: Create a new vehicle.
+- Setup-Weather.ps1: Setup weather effects.
+
+Run Create-Shortcuts.ps1 to create desktop shortcuts for all tools.
+"@ | Out-File (Join-Path $Root "README.txt") -Encoding utf8
+
+Write-Host "`nSetup complete! Root folder: $Root"
+Write-Host "Run $Scripts\Run-Installers.ps1 to launch Epic/Unity installers."
+Write-Host "Run $Scripts\Create-Shortcuts.ps1 to create desktop shortcuts."
+Write-Host "Open TestScene in Unity Hub, Godot, or Unreal (after engine install) to start testing."
+Write-Host "Use asset creation scripts to add characters, vehicles, and weather effects."
