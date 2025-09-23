@@ -1,0 +1,824 @@
+#!/bin/bash
+
+# Complete Crypto Payments, Swaps, Off-ramps & Web3 SDK Installation Script
+# Enhanced with EVM decompiler/compiler, additional wallet SDKs, and project structure optimization
+
+set -e
+
+echo "🚀 Starting Complete Crypto Web3 SDK Installation with EVM Tools..."
+
+# Check for existing installations to avoid conflicts
+echo "🔍 Checking for existing installations..."
+check_installed() {
+    if [ -x "$(command -v $1)" ]; then
+        echo "✅ $1 already installed: $(which $1)"
+        return 0
+    else
+        echo "❌ $1 not found"
+        return 1
+    fi
+}
+
+# Check for compilers and tools
+check_installed solc || echo "Will install solc"
+check_installed vyper || echo "Will install vyper"
+check_installed evm || echo "Will install evm decompiler"
+
+# Create comprehensive project structure with EVM tools directory
+echo "📁 Creating enhanced crypto project structure with EVM tools..."
+mkdir -p {
+    evm-tools/{
+        decompiler/{contracts,output,analytics},
+        compiler/{sources,artifacts,bytecode},
+        testing/{scripts,cases,validation},
+        eos-integration/{contracts,interfaces},
+        xrp-integration/{scripts,config}
+    },
+    src/{
+        config/{chains,protocols,wallets},
+        services/{
+            web3/{ethereum,polygon,bsc,arbitrum,optimism,avalanche,solana,cosmos,base,litecoin,bitcoin},
+            wallets/{metamask,walletconnect,coinbase,phantom,keplr,ledger,trezor,anchor,trust,myetherwallet},
+            dex/{uniswap,sushiswap,pancakeswap,1inch,0x,paraswap,jupiter,raydium},
+            lending/{aave,compound,euler,radiant},
+            flashbots/{bundles,relay,protect,searcher},
+            bridges/{hop,synapse,across,stargate,wormhole,layerzero},
+            offramps/{moonpay,ramp,transak,banxa,mercuryo,coinbase},
+            oracles/{chainlink,pyth,band,uma,api3},
+            mev/{flashbots,eden,blocker,cowswap},
+            defi/{yearn,convex,curve,balancer,gmx,frax},
+            nft/{opensea,looksrare,blur,x2y2,foundation},
+            analytics/{dune,covalent,moralis,alchemy,quicknode},
+            evm/{decompiler,compiler,analysis,validation},
+            swaps/{on-ramp,off-ramp,cross-chain,aggregator}
+        },
+        utils/{
+            crypto/{encryption,signatures,recovery},
+            parsers/{abi,events,logs,transactions},
+            validators/{addresses,amounts,slippage,gas},
+            formatters/{tokens,prices,percentages},
+            calculators/{gas,fees,slippage,impermanent-loss},
+            security/{reentrancy,flashloan,sandwich}
+        },
+        middleware/{
+            auth/{signature,nonce,session},
+            protection/{mev,slippage,frontrun},
+            rate-limit/{chain-specific,method-based},
+            validation/{transaction,swap,bridge}
+        },
+        controllers/{
+            wallets/{connect,disconnect,switch-chain,sign},
+            payments/{send,receive,batch,schedule},
+            swaps/{quote,execute,track,revert},
+            offramps/{kyc,limits,quotes,execute},
+            flashbots/{bundle,simulate,send,track},
+            defi/{stake,unstake,claim,compound},
+            bridges/{quote,execute,track,claim},
+            nft/{buy,sell,transfer,batch},
+            evm/{decompile,compile,analyze}
+        },
+        models/{
+            transactions/{pending,confirmed,failed,cancelled},
+            wallets/{connected,balances,allowances,nfts},
+            swaps/{quotes,routes,executed,failed},
+            positions/{defi,lending,staking,farming},
+            bundles/{flashbots,pending,executed,failed},
+            evm/{contracts,bytecode,opcodes}
+        },
+        routes/{
+            api/v1/{
+                wallets/{connect,balances,transactions,nfts},
+                payments/{send,receive,batch,recurring},
+                swaps/{quote,execute,history,analytics},
+                offramps/{providers,quotes,execute,status},
+                flashbots/{bundles,simulate,execute,track},
+                defi/{protocols,positions,rewards,analytics},
+                bridges/{supported,quotes,execute,track},
+                analytics/{portfolio,pnl,yield,fees},
+                evm/{decompile,compile,analyze}
+            }
+        },
+        types/{
+            chains,tokens,wallets,transactions,swaps,defi,nft,flashbots,evm
+        },
+        constants/{
+            chains/{mainnet,testnet},
+            tokens/{popular,stablecoins,governance},
+            contracts/{verified,audited},
+            addresses/{multicall,router,factory},
+            evm/{opcodes,precompiles,standards}
+        },
+        tests/{
+            unit/{wallets,swaps,payments,flashbots,evm},
+            integration/{dex,bridges,offramps,defi,evm},
+            e2e/{full-swap,cross-chain,mev-protection,evm-tools}
+        }
+    },
+    config/{
+        environments/{development,staging,production,testnet},
+        chains/{ethereum,polygon,bsc,arbitrum,optimism,avalanche,solana,base,litecoin,bitcoin},
+        protocols/{dex,lending,bridges,offramps,flashbots},
+        wallets/{browser,mobile,hardware},
+        security/{mev,slippage,gas},
+        evm/{compilers,decompilers,networks}
+    },
+    docs/{
+        api/{wallets,payments,swaps,defi,flashbots,evm},
+        guides/{setup,security,best-practices,troubleshooting,evm-tools},
+        examples/{wallet-connect,swap-tokens,flashbot-bundle,evm-decompilation}
+    },
+    scripts/{
+        deployment/{mainnet,testnet,production},
+        maintenance/{cleanup,monitoring,alerts},
+        security/{audit,verification,emergency},
+        evm/{install,test,validate}
+    },
+    logs/{
+        transactions/{successful,failed,pending},
+        swaps/{executed,failed,reverted},
+        flashbots/{bundles,relays,searching},
+        security/{mev-detected,sandwich-attacks,failed-auth},
+        performance/{gas-usage,execution-time,slippage},
+        evm/{decompilation,compilation,analysis}
+    },
+    storage/{
+        cache/{prices,gas,routes,quotes},
+        temp/{bundles,transactions,signatures},
+        backups/{wallets,transactions,positions},
+        evm/{sources,bytecode,metadata}
+    }
+}
+
+# Initialize package.json if it doesn't exist
+if [ ! -f "package.json" ]; then
+    echo "📦 Initializing package.json..."
+    npm init -y
+fi
+
+# Install EVM decompiler and compiler tools
+echo "🛠️ Installing EVM decompiler and compiler tools..."
+npm install evm@0.1.1  # EVM bytecode decompiler [citation:1]
+
+# Install Solidity compiler using solc-select for version management [citation:2]
+if ! command -v solc-select &> /dev/null; then
+    echo "📥 Installing solc-select..."
+    pip install solc-select
+    solc-select install 0.8.0
+    solc-select use 0.8.0
+else
+    echo "✅ solc-select already installed"
+fi
+
+# Install Vyper compiler [citation:2]
+if ! command -v vyper &> /dev/null; then
+    echo "📥 Installing Vyper compiler..."
+    pip install vyper
+else
+    echo "✅ Vyper compiler already installed"
+fi
+
+# Core Web3 and blockchain SDKs
+echo "⛓️ Installing Core Web3 SDKs..."
+npm install ethers @ethersproject/providers @ethersproject/contracts
+npm install web3 @types/web3
+npm install viem wagmi
+npm install @solana/web3.js @solana/spl-token
+npm install @cosmjs/stargate @cosmjs/crypto @cosmjs/encoding
+npm install bitcoinjs-lib
+npm install @avalabs/avalanchejs
+npm install @polkadot/api @polkadot/keyring
+npm install near-api-js
+npm install algosdk
+npm install tronweb
+
+# Wallet Connection SDKs - Adding requested wallets
+echo "👛 Installing Wallet Connection SDKs..."
+npm install @walletconnect/client @walletconnect/web3-provider
+npm install @walletconnect/ethereum-provider @walletconnect/modal
+npm install @coinbase/wallet-sdk
+npm install @metamask/sdk @metamask/detect-provider
+npm install @solana/wallet-adapter-base @solana/wallet-adapter-react
+npm install @solana/wallet-adapter-phantom @solana/wallet-adapter-solflare
+npm install @keplr-wallet/cosmos @keplr-wallet/ethereum
+npm install @ledgerhq/hw-transport-webusb @ledgerhq/hw-app-eth @ledgerhq/hw-app-btc
+npm install @trezor/connect-web @trezor/connect
+
+# Install Anchor Wallet SDK for Solana
+echo "⚓ Installing Anchor Wallet SDK..."
+npm install @project-serum/anchor @project-serum/anchor-cli
+
+# Install Trust Wallet SDK if available
+echo "🤝 Installing Trust Wallet Web3 Provider..."
+npm install @trustwallet/web3-provider
+
+# Install MEW (MyEtherWallet) SDK
+echo "🔷 Installing MEW SDK..."
+npm install myetherwallet/mew-sdk
+
+# Base Chain SDK
+echo "🏢 Installing Base Chain SDK..."
+npm install @base-labs/sdk
+
+# Litecoin and Bitcoin Core utilities
+echo "₿ Installing Litecoin and Bitcoin utilities..."
+npm install litecore-lib bitcore-lib
+npm install bitcoinjs-lib @bitcoinerlab/descriptors
+
+# DEX and Swap SDKs
+echo "🔄 Installing DEX and Swap SDKs..."
+# Uniswap
+npm install @uniswap/v3-sdk @uniswap/v2-sdk @uniswap/sdk-core @uniswap/smart-order-router
+npm install @uniswap/router-sdk @uniswap/universal-router-sdk
+# 1inch
+npm install @1inch/limit-order-protocol @1inch/fusion-sdk
+# 0x Protocol
+npm install @0x/contract-wrappers @0x/web3-wrapper @0x/asset-swapper
+# ParaSwap
+npm install paraswap paraswap-sdk
+# Jupiter (Solana)
+npm install @jup-ag/api @jup-ag/core
+# Raydium
+npm install @raydium-io/raydium-sdk
+# SushiSwap
+npm install @sushiswap/sdk @sushiswap/core-sdk
+# PancakeSwap
+npm install @pancakeswap/sdk @pancakeswap/v3-sdk
+
+# Additional swap protocols
+echo "🔀 Installing additional swap protocols..."
+npm install @openocean-finance/sdk
+npm install @kybernetwork/kyberswap-sdk
+npm install @balancer-labs/sdk
+
+# Flashbots and MEV Protection
+echo "⚡ Installing Flashbots and MEV SDKs..."
+npm install @flashbots/ethers-provider-bundle
+npm install @eden-network/sdk
+npm install @cowprotocol/cow-sdk
+npm install @reservoir0x/sdk
+npm install mev-share-client
+
+# DeFi Protocol SDKs
+echo "🏦 Installing DeFi Protocol SDKs..."
+# Aave
+npm install @aave/contract-helpers @aave/math-utils @aave/protocol-js
+# Compound
+npm install @compound-finance/compound-js
+# Yearn
+npm install @yearn-finance/sdk
+# Convex
+npm install @convex-finance/sdk
+# Curve
+npm install @curvefi/api @curvefi/sdk
+# Balancer
+npm install @balancer-labs/sdk @balancer-labs/sor
+# Lido
+npm install @lidofinance/lido-ethereum-sdk
+
+# Bridge SDKs
+echo "🌉 Installing Cross-chain Bridge SDKs..."
+npm install @hop-protocol/sdk
+npm install @synapseprotocol/sdk
+npm install @across-protocol/sdk
+npm install @stargate-finance/sdk
+npm install @wormhole-foundation/sdk
+npm install @layerzerolabs/sdk
+
+# Additional bridge SDKs
+npm install @axelar-network/axelarjs-sdk
+npm install @chainport/sdk
+
+# Off-ramp and Fiat SDKs
+echo "💸 Installing Off-ramp SDKs..."
+npm install @moonpay/sdk
+npm install @ramp-network/ramp-instant-sdk
+npm install transak-sdk
+npm install banxa-sdk
+npm install mercuryo-widget
+
+# Additional on/off ramp services
+npm install @onramp-money/sdk
+npm install @kado-money/sdk
+
+# Oracle and Price Feed SDKs
+echo "📊 Installing Oracle SDKs..."
+npm install @chainlink/contracts @chainlink/functions-toolkit
+npm install @pythnetwork/client @pythnetwork/pyth-ethereum-js
+npm install @bandprotocol/bandchain.js
+
+# Analytics and Data SDKs
+echo "📈 Installing Analytics SDKs..."
+npm install @dune-analytics/client
+npm install @covalenthq/client-sdk
+npm install moralis @moralisweb3/evm-api
+npm install alchemy-sdk
+npm install @quicknode/sdk
+npm install @bitquery/graphql
+
+# NFT and Marketplace SDKs
+echo "🖼️ Installing NFT SDKs..."
+npm install opensea-js
+npm install @looksrare/sdk
+npm install @reservoir0x/reservoir-sdk
+npm install @x2y2-io/sdk
+
+# Crypto utilities and security
+echo "🔐 Installing Crypto Utilities..."
+npm install crypto-js bip39 hdkey elliptic secp256k1
+npm install @noble/secp256k1 @noble/ed25519 @noble/hashes
+npm install ethereum-cryptography
+npm install @metamask/eth-sig-util
+npm install ethereumjs-util ethereumjs-tx ethereumjs-common
+npm install decimal.js big.js bignumber.js
+
+# Gas optimization and estimation
+echo "⛽ Installing Gas Optimization SDKs..."
+npm install @eth-optimism/sdk
+npm install @arbitrum/sdk
+npm install @polygon-technology/matic.js
+
+# Real-time data and WebSocket
+echo "📡 Installing Real-time Data SDKs..."
+npm install socket.io-client ws
+npm install @pusher/pusher-js
+npm install sockjs-client
+
+# Development and testing tools
+echo "🧪 Installing Development Tools..."
+npm install --save-dev @nomiclabs/hardhat-ethers hardhat-deploy
+npm install --save-dev @openzeppelin/test-helpers @openzeppelin/contracts
+npm install --save-dev ganache-cli truffle
+npm install --save-dev @types/node @types/ws @types/crypto-js
+
+# Additional utility libraries
+echo "🛠️ Installing Additional Utilities..."
+npm install axios node-fetch lodash moment luxon
+npm install joi zod yup ajv
+npm install uuid winston pino
+npm install express cors helmet morgan compression
+npm install dotenv rate-limiter-flexible
+npm install redis ioredis
+npm install @types/express @types/cors @types/lodash --save-dev
+
+# Create EVM tools configuration
+echo "🛠️ Creating EVM tools configuration..."
+cat > evm-tools/config.json << 'EOF'
+{
+  "compilers": {
+    "solc": {
+      "version": "0.8.0",
+      "optimizer": {
+        "enabled": true,
+        "runs": 200
+      }
+    },
+    "vyper": {
+      "version": "0.3.7"
+    }
+  },
+  "decompiler": {
+    "evm": {
+      "version": "0.1.1",
+      "features": ["opcodes", "functions", "events", "jumpdests", "swarmhash"]
+    }
+  },
+  "networks": {
+    "ethereum": {
+      "chainId": 1,
+      "rpcUrl": "https://mainnet.infura.io/v3/YOUR_PROJECT_ID"
+    },
+    "polygon": {
+      "chainId": 137,
+      "rpcUrl": "https://polygon-mainnet.infura.io/v3/YOUR_PROJECT_ID"
+    },
+    "bsc": {
+      "chainId": 56,
+      "rpcUrl": "https://bsc-dataseed.binance.org/"
+    }
+  },
+  "testing": {
+    "gasLimit": 6000000,
+    "gasPrice": "auto"
+  }
+}
+EOF
+
+# Create EVM utility scripts
+cat > evm-tools/scripts/decompile-contract.js << 'EOF'
+const { EVM } = require('evm');
+const fs = require('fs');
+const path = require('path');
+
+async function decompileContract(bytecodeFilePath, outputDir) {
+  try {
+    // Read bytecode from file
+    const bytecode = fs.readFileSync(bytecodeFilePath, 'utf8').trim();
+    
+    // Initialize EVM
+    const evm = new EVM(bytecode);
+    
+    // Get opcodes
+    const opcodes = evm.getOpcodes();
+    
+    // Get functions
+    const functions = evm.getFunctions();
+    
+    // Get events
+    const events = evm.getEvents();
+    
+    // Decompile to pseudocode
+    const pseudocode = evm.decompile();
+    
+    // Prepare output
+    const output = {
+      bytecode: bytecode,
+      opcodes: opcodes,
+      functions: functions,
+      events: events,
+      pseudocode: pseudocode,
+      timestamp: new Date().toISOString()
+    };
+    
+    // Create output filename
+    const inputFilename = path.basename(bytecodeFilePath, '.bin');
+    const outputFilename = `decompiled_${inputFilename}_${Date.now()}.json`;
+    const outputPath = path.join(outputDir, outputFilename);
+    
+    // Write output
+    fs.writeFileSync(outputPath, JSON.stringify(output, null, 2));
+    
+    console.log(`✅ Decompilation complete: ${outputFilename}`);
+    console.log(`📊 Functions found: ${functions.length}`);
+    console.log(`📊 Events found: ${events.length}`);
+    
+    return outputPath;
+  } catch (error) {
+    console.error('❌ Decompilation failed:', error.message);
+    throw error;
+  }
+}
+
+// CLI execution
+if (require.main === module) {
+  const args = process.argv.slice(2);
+  if (args.length < 1) {
+    console.log('Usage: node decompile-contract.js <bytecode-file> [output-dir]');
+    process.exit(1);
+  }
+  
+  const bytecodeFile = args[0];
+  const outputDir = args[1] || path.join(__dirname, '../output');
+  
+  if (!fs.existsSync(outputDir)) {
+    fs.mkdirSync(outputDir, { recursive: true });
+  }
+  
+  decompileContract(bytecodeFile, outputDir)
+    .then(outputPath => {
+      console.log(`📁 Output saved to: ${outputPath}`);
+    })
+    .catch(error => {
+      console.error('Decompilation failed:', error);
+      process.exit(1);
+    });
+}
+
+module.exports = { decompileContract };
+EOF
+
+cat > evm-tools/scripts/compile-contract.js << 'EOF'
+const { execSync } = require('child_process');
+const fs = require('fs');
+const path = require('path');
+
+function compileContract(solcVersion, contractFile, optimize = true, optimizeRuns = 200) {
+  try {
+    // Set solc version
+    execSync(`solc-select use ${solcVersion}`);
+    
+    // Prepare output directory
+    const buildDir = path.join(path.dirname(contractFile), 'artifacts');
+    if (!fs.existsSync(buildDir)) {
+      fs.mkdirSync(buildDir, { recursive: true });
+    }
+    
+    // Build solc command
+    let command = `solc --abi --bin --overwrite`;
+    
+    if (optimize) {
+      command += ` --optimize --optimize-runs ${optimizeRuns}`;
+    }
+    
+    command += ` -o ${buildDir} ${contractFile}`;
+    
+    // Execute compilation
+    console.log(`🔨 Compiling with solc ${solcVersion}: ${contractFile}`);
+    execSync(command, { stdio: 'inherit' });
+    
+    console.log('✅ Compilation successful');
+    console.log(`📁 Artifacts saved to: ${buildDir}`);
+    
+    return buildDir;
+  } catch (error) {
+    console.error('❌ Compilation failed:', error.message);
+    throw error;
+  }
+}
+
+// CLI execution
+if (require.main === module) {
+  const args = process.argv.slice(2);
+  if (args.length < 2) {
+    console.log('Usage: node compile-contract.js <solc-version> <contract-file> [--optimize] [optimize-runs]');
+    process.exit(1);
+  }
+  
+  const solcVersion = args[0];
+  const contractFile = args[1];
+  const optimize = args.includes('--optimize');
+  const optimizeRuns = args[3] || 200;
+  
+  compileContract(solcVersion, contractFile, optimize, optimizeRuns)
+    .then(buildDir => {
+      console.log('Compilation completed successfully');
+    })
+    .catch(error => {
+      console.error('Compilation failed:', error);
+      process.exit(1);
+    });
+}
+
+module.exports = { compileContract };
+EOF
+
+# Make scripts executable
+chmod +x evm-tools/scripts/decompile-contract.js
+chmod +x evm-tools/scripts/compile-contract.js
+
+# Create package.json scripts for EVM tools
+echo "📦 Adding EVM tools scripts to package.json..."
+npm pkg set scripts.decompile="node evm-tools/scripts/decompile-contract.js"
+npm pkg set scripts.compile="node evm-tools/scripts/compile-contract.js"
+npm pkg set scripts.evm:test="node evm-tools/scripts/test-evm.js"
+
+# Create TypeScript configuration optimized for Web3
+echo "📝 Creating Web3 TypeScript configuration..."
+cat > tsconfig.json << 'EOF'
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "commonjs",
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "strict": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "removeComments": true,
+    "noImplicitAny": true,
+    "strictNullChecks": true,
+    "strictFunctionTypes": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "moduleResolution": "node",
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+    "baseUrl": "./",
+    "paths": {
+      "@/*": ["src/*"],
+      "@/config/*": ["src/config/*"],
+      "@/services/*": ["src/services/*"],
+      "@/utils/*": ["src/utils/*"],
+      "@/types/*": ["src/types/*"],
+      "@/constants/*": ["src/constants/*"],
+      "@/evm-tools/*": ["evm-tools/*"]
+    }
+  },
+  "include": ["src/**/*", "evm-tools/**/*", "*.d.ts"],
+  "exclude": ["node_modules", "dist", "**/*.test.ts"]
+}
+EOF
+
+# Create comprehensive environment configuration
+echo "🔧 Creating crypto environment configuration..."
+cat > .env.example << 'EOF'
+# Server Configuration
+NODE_ENV=development
+PORT=3000
+API_VERSION=v1
+
+# Database Configuration
+REDIS_URL="redis://localhost:6379"
+MONGODB_URI="mongodb://localhost:27017/crypto_pos"
+
+# Ethereum Configuration
+ETHEREUM_RPC_URL="https://mainnet.infura.io/v3/YOUR_INFURA_KEY"
+ETHEREUM_WS_URL="wss://mainnet.infura.io/ws/v3/YOUR_INFURA_KEY"
+POLYGON_RPC_URL="https://polygon-mainnet.infura.io/v3/YOUR_INFURA_KEY"
+BSC_RPC_URL="https://bsc-dataseed.binance.org/"
+ARBITRUM_RPC_URL="https://arbitrum-mainnet.infura.io/v3/YOUR_INFURA_KEY"
+OPTIMISM_RPC_URL="https://optimism-mainnet.infura.io/v3/YOUR_INFURA_KEY"
+AVALANCHE_RPC_URL="https://api.avax.network/ext/bc/C/rpc"
+BASE_RPC_URL="https://mainnet.base.org"
+
+# Solana Configuration
+SOLANA_RPC_URL="https://api.mainnet-beta.solana.com"
+SOLANA_WS_URL="wss://api.mainnet-beta.solana.com"
+
+# Cosmos Configuration
+COSMOS_RPC_URL="https://rpc-cosmoshub.keplr.app"
+OSMOSIS_RPC_URL="https://rpc-osmosis.keplr.app"
+
+# Bitcoin/Litecoin Configuration
+BITCOIN_RPC_URL="http://localhost:8332"
+BITCOIN_RPC_USER="your_btc_rpc_user"
+BITCOIN_RPC_PASS="your_btc_rpc_pass"
+LITECOIN_RPC_URL="http://localhost:9332"
+LITECOIN_RPC_USER="your_ltc_rpc_user"
+LITECOIN_RPC_PASS="your_ltc_rpc_pass"
+
+# Private Keys (FOR DEVELOPMENT ONLY - USE SECURE KEY MANAGEMENT IN PRODUCTION)
+PRIVATE_KEY="0x..."
+SOLANA_PRIVATE_KEY="..."
+BITCOIN_PRIVATE_KEY="..."
+LITECOIN_PRIVATE_KEY="..."
+MNEMONIC="your twelve word mnemonic phrase here for development only"
+
+# Flashbots Configuration
+FLASHBOTS_RELAY_URL="https://relay.flashbots.net"
+FLASHBOTS_SIGNATURE_KEY="0x..."
+EDEN_RPC_URL="https://api.edennetwork.io/v1/"
+
+# DEX API Keys
+UNISWAP_SUBGRAPH="https://api.thegraph.com/subgraphs/name/uniswap/uniswap-v3"
+SUSHISWAP_API="https://api.sushi.com"
+ONEINCH_API_KEY="your_1inch_api_key"
+PARASWAP_API="https://apiv5.paraswap.io"
+
+# Off-ramp Provider Keys
+MOONPAY_API_KEY="your_moonpay_api_key"
+MOONPAY_SECRET_KEY="your_moonpay_secret"
+RAMP_HOST_API_KEY="your_ramp_api_key"
+TRANSAK_API_KEY="your_transak_api_key"
+BANXA_API_KEY="your_banxa_api_key"
+MERCURYO_WIDGET_ID="your_mercuryo_widget_id"
+
+# Analytics API Keys
+MORALIS_API_KEY="your_moralis_api_key"
+ALCHEMY_API_KEY="your_alchemy_api_key"
+COVALENT_API_KEY="your_covalent_api_key"
+DUNE_API_KEY="your_dune_api_key"
+
+# Oracle API Keys
+CHAINLINK_API_KEY="your_chainlink_api_key"
+PYTH_API_KEY="your_pyth_api_key"
+
+# Wallet Connect Configuration
+WALLETCONNECT_PROJECT_ID="your_walletconnect_project_id"
+COINBASE_API_KEY="your_coinbase_api_key"
+
+# Security Configuration
+JWT_SECRET="your_jwt_secret_key"
+ENCRYPTION_KEY="your_encryption_key_for_sensitive_data"
+SESSION_SECRET="your_session_secret"
+
+# Gas Configuration
+GAS_PRICE_MULTIPLIER=1.1
+MAX_GAS_LIMIT=500000
+GAS_ESTIMATION_BUFFER=1.2
+
+# Slippage and MEV Protection
+DEFAULT_SLIPPAGE=0.5
+MAX_SLIPPAGE=5.0
+MEV_PROTECTION_ENABLED=true
+FLASHBOTS_ENABLED=true
+
+# Rate Limiting
+API_RATE_LIMIT=1000
+RPC_RATE_LIMIT=100
+SWAP_RATE_LIMIT=50
+
+# EVM Tools Configuration
+EVM_DECOMPILER_PATH="./evm-tools/decompiler"
+EVM_COMPILER_PATH="./evm-tools/compiler"
+SOLC_VERSION="0.8.0"
+VYPER_VERSION="0.3.7"
+
+# Monitoring
+SENTRY_DSN="your_sentry_dsn"
+DATADOG_API_KEY="your_datadog_key"
+EOF
+
+# Create installation verification script
+echo "🔍 Creating installation verification script..."
+cat > scripts/verify-installation.js << 'EOF'
+const { execSync } = require('child_process');
+const fs = require('fs');
+const path = require('path');
+
+console.log('🔍 Verifying installation...');
+
+const checks = [
+  {
+    name: 'Node.js',
+    command: 'node --version',
+    validate: (output) => output.includes('v18') || output.includes('v20')
+  },
+  {
+    name: 'npm',
+    command: 'npm --version',
+    validate: (output) => parseFloat(output) >= 8
+  },
+  {
+    name: 'solc-select',
+    command: 'solc-select --version',
+    validate: (output) => output.includes('solc-select')
+  },
+  {
+    name: 'vyper',
+    command: 'vyper --version',
+    validate: (output) => output.includes('Vyper')
+  },
+  {
+    name: 'EVM package',
+    command: 'npm list evm',
+    validate: (output) => output.includes('evm@0.1.1')
+  }
+];
+
+let allPassed = true;
+
+checks.forEach(check => {
+  try {
+    const output = execSync(check.command, { encoding: 'utf8' });
+    const isValid = check.validate(output);
+    
+    if (isValid) {
+      console.log(`✅ ${check.name}: OK`);
+    } else {
+      console.log(`❌ ${check.name}: Unexpected output - ${output.trim()}`);
+      allPassed = false;
+    }
+  } catch (error) {
+    console.log(`❌ ${check.name}: Not installed or error - ${error.message}`);
+    allPassed = false;
+  }
+});
+
+// Check if required directories exist
+const requiredDirs = [
+  'src',
+  'config',
+  'evm-tools',
+  'src/services/evm',
+  'src/controllers/evm'
+];
+
+requiredDirs.forEach(dir => {
+  if (fs.existsSync(dir)) {
+    console.log(`✅ Directory ${dir}: OK`);
+  } else {
+    console.log(`❌ Directory ${dir}: Missing`);
+    allPassed = false;
+  }
+});
+
+if (allPassed) {
+  console.log('\n🎉 All checks passed! Installation is complete and valid.');
+  process.exit(0);
+} else {
+  console.log('\n⚠️  Some checks failed. Please review the installation.');
+  process.exit(1);
+}
+EOF
+
+# Create README with setup instructions
+echo "📖 Creating comprehensive README..."
+cat > README.md << 'EOF'
+# Complete Crypto Web3 SDK with EVM Tools
+
+This project provides a comprehensive setup for crypto payments, swaps, off-ramps, and Web3 SDK integration with EVM decompiler and compiler tools.
+
+## Features
+
+- **Multi-chain Support**: Ethereum, Polygon, BSC, Arbitrum, Optimism, Avalanche, Solana, Cosmos, Base, Bitcoin, Litecoin
+- **Wallet Integration**: MetaMask, WalletConnect, Coinbase, Phantom, Keplr, Ledger, Trezor, Anchor, Trust Wallet, MEW
+- **DEX Integration**: Uniswap, Sushiswap, Pancakeswap, 1inch, 0x, ParaSwap, Jupiter, Raydium
+- **Cross-chain Bridges**: Hop, Synapse, Across, Stargate, Wormhole, LayerZero
+- **Fiat On/Off Ramps**: MoonPay, Ramp, Transak, Banxa, Mercuryo
+- **Flashbots & MEV Protection**: Flashbots, Eden Network, CowSwap
+- **EVM Tools**: Solidity/Vyper compilers, EVM bytecode decompiler
+- **DeFi Integration**: Aave, Compound, Yearn, Convex, Curve, Balancer
+
+## Installation
+
+1. **Clone the repository**
+   ```bash
+   git clone <repository-url>
+   cd crypto-web3-sdk
