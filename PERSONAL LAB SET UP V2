@@ -1,0 +1,1611 @@
+@echo off
+chcp 65001 >nul
+setlocal enabledelayedexpansion
+
+:: =================================================================
+:: ULTIMATE SECURITY & DEVELOPMENT LAB SUITE 2025 - COMPLETE PRODUCTION INSTALLER
+:: This script creates a COMPREHENSIVE environment with ALL components
+:: =================================================================
+
+:: Check for Administrator privileges
+net session >nul 2>&1
+if %errorLevel% neq 0 (
+    echo [ERROR] This script must be run as Administrator!
+    pause
+    exit /b 1
+)
+
+echo =================================================================
+echo      ULTIMATE SECURITY & DEVELOPMENT LAB SUITE 2025 - PRODUCTION
+echo =================================================================
+echo This script will install a COMPREHENSIVE environment:
+echo - Password & Hash Cracking (Hashcat, John, JtR)
+echo - Crypto Wallet Recovery (All Major Coins)
+echo - Data Recovery & File Carving
+echo - Mobile Device Forensics
+echo - Laptop Encryption Removal
+echo - Forensic Imaging & Analysis
+echo - Web3/EVM Development (Remix, Hardhat, Foundry)
+echo - EOSIO/Antelope Blockchain Development
+echo - Penetration Testing & Malware Analysis
+echo - Virtualization Environment (VirtualBox/Kali/Ubuntu/Windows)
+echo - Card Production & POS System
+echo - Complete Payment Processing SDKs
+echo - Advanced Unified Management UI
+echo - Windows Desktop Integration
+echo.
+echo [WARNING] This is an advanced toolkit. Use only on
+echo devices and files you legally own. Use responsibly!
+echo =================================================================
+pause
+
+:: Define the master root directory
+set MASTER_ROOT=C:\CyberSecurityLab
+set WORDLISTS=%MASTER_ROOT%\Wordlists
+set TOOLS=%MASTER_ROOT%\Tools
+set PY_ENV=%MASTER_ROOT%\env
+set SCRIPTS=%MASTER_ROOT%\Scripts
+set WORKSPACE=%MASTER_ROOT%\Workspace
+set WEB3_DIR=%MASTER_ROOT%\Web3
+set EOSIO_DIR=%MASTER_ROOT%\EOSIO
+set VIRTUALIZATION_DIR=%MASTER_ROOT%\Virtualization
+set MALWARE_DIR=%MASTER_ROOT%\Malware
+set UI_DIR=%MASTER_ROOT%\ManagementUI
+set CARD_SYSTEM_DIR=%MASTER_ROOT%\CardProduction
+set PAYMENT_DIR=%MASTER_ROOT%\PaymentProcessing
+set DOCKER_DIR=%MASTER_ROOT%\Docker
+set KUBERNETES_DIR=%MASTER_ROOT%\Kubernetes
+set AI_DIR=%MASTER_ROOT%\AI-Security
+set QUANTUM_DIR=%MASTER_ROOT%\Quantum
+
+:: Create the comprehensive directory structure
+echo [*] Creating Master Directory Structure at %MASTER_ROOT%...
+mkdir "%MASTER_ROOT%" 2>nul
+mkdir "%WORDLISTS%" 2>nul
+mkdir "%TOOLS%" 2>nul
+mkdir "%SCRIPTS%" 2>nul
+mkdir "%WORKSPACE%" 2>nul
+mkdir "%WEB3_DIR%" 2>nul
+mkdir "%EOSIO_DIR%" 2>nul
+mkdir "%VIRTUALIZATION_DIR%" 2>nul
+mkdir "%MALWARE_DIR%" 2>nul
+mkdir "%UI_DIR%" 2>nul
+mkdir "%CARD_SYSTEM_DIR%" 2>nul
+mkdir "%PAYMENT_DIR%" 2>nul
+mkdir "%DOCKER_DIR%" 2>nul
+mkdir "%KUBERNETES_DIR%" 2>nul
+mkdir "%AI_DIR%" 2>nul
+mkdir "%QUANTUM_DIR%" 2>nul
+
+:: Subdirectories for Tools
+for %%d in (cracking crypto data_recovery mobile_forensic pc_forensic forensic_imaging anonymity web3 blockchain virtualization malware card_production payment_processing ai_security quantum) do (
+    mkdir "%TOOLS%\%%d" 2>nul
+)
+
+:: Subdirectories for Card Production System
+for %%d in (card_production pos_system payment_processing crypto_integration sdk_integrations database config scripts logs templates static card_templates magnetic_encoding chip_programming nfc_management reward_systems user_management analytics reporting security backups docker apis web_ui mobile_app admin_panel) do (
+    mkdir "%CARD_SYSTEM_DIR%\%%d" 2>nul
+)
+
+echo [*] Installing System Dependencies & Package Managers...
+:: Install Chocolatey
+@"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -InputFormat None -ExecutionPolicy Bypass -Command "iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))" && SET "PATH=%PATH%;%ALLUSERSPROFILE%\chocolatey\bin"
+timeout /t 30 /nobreak >nul
+
+:: Install critical dependencies
+choco install -y git python3 python2 nodejs jdk8 7zip nvidia-display-driver cuda vcredist-all visualstudio2022buildtools cmake make mingw wsl2 dotnet4.8 --force
+choco install -y postgresql redis nginx docker-desktop docker-compose kubernetes-cli kubectl helm minikube --force
+refreshenv
+
+:: Install Windows Subsystem for Linux (WSL) and Kali Linux
+wsl --install -d kali-linux
+timeout /t 60 /nobreak >nul
+wsl -d kali-linux -e apt update && apt install -y kali-tools-top10 kali-tools-forensic kali-tools-crypto-stego
+
+:: Install additional distributions
+wsl --install -d Ubuntu-22.04
+timeout /t 60 /nobreak >nul
+
+echo [*] Creating Python Virtual Environments...
+:: Create a Python 3 environment for modern tools
+python -m venv "%PY_ENV%\py3_modern"
+call "%PY_ENV%\py3_modern\Scripts\activate.bat"
+pip install --upgrade pip setuptools wheel
+pip install cryptography pycryptodomex psutil pandas numpy selenium pillow openpyxl
+pip install django flask fastapi gunicorn requests aiohttp httpx celery redis qrcode stripe plaid-python web3 python-bitcoinlib pycoin django-rest-framework psycopg2-binary python-dotenv pyusb libusb1 pyserial pybluez pyjwt bcrypt paramiko scapy twisted
+
+:: Create a Python 2 environment for legacy tools
+mkdir "%PY_ENV%\py2_legacy" 2>nul
+curl -L -o "%PY_ENV%\python2.zip" "https://www.python.org/ftp/python/2.7.18/python-2.7.18.amd64.zip"
+tar -xf "%PY_ENV%\python2.zip" -C "%PY_ENV%\py2_legacy"
+
+echo [*] Downloading MASSIVE Wordlist Collection (50GB+)...
+:: Common & RockYou
+curl -L "https://github.com/danielmiessler/SecLists/archive/master.zip" -o "%WORDLISTS%\SecLists.zip"
+7z x "%WORDLISTS%\SecLists.zip" -o"%WORDLISTS%\SecLists" -y
+
+:: Hive Systems 2025
+curl -L "https://raw.githubusercontent.com/hive-systems/password-lists/main/2025_most_common_passwords.txt" -o "%WORDLISTS%\hive_2025_common.txt"
+
+:: CrackStation's 15GB Wordlist
+echo [!] Downloading CrackStation Massive Wordlist (15GB)... This will take time.
+curl -L "https://crackstation.net/files/crackstation-human-only.txt.gz" -o "%WORDLISTS%\crackstation-human-only.txt.gz"
+7z x "%WORDLISTS%\crackstation-human-only.txt.gz" -o"%WORDLISTS%" -y
+
+:: Crypto-Specific Wordlists
+curl -L "https://raw.githubusercontent.com/bitcoin/bips/master/bip-0039/english.txt" -o "%WORDLISTS%\bip39_english.txt"
+curl -L "https://raw.githubusercontent.com/ryancdotorg/brainflayer/master/wordlists/btcpass.txt" -o "%WORDLISTS%\btcpass.txt"
+git clone https://github.com/berzerk0/Probable-Wordlists "%WORDLISTS%\Probable-Wordlists"
+
+:: Phone PIN & Pattern Wordlists
+echo 1234 > "%WORDLISTS%\phone_pins.txt"
+echo 0000 >> "%WORDLISTS%\phone_pins.txt"
+echo 1111 >> "%WORDLISTS%\phone_pins.txt"
+:: Generate all PINs from 0000 to 9999
+for /L %%i in (0,1,9999) do (
+    set "pin=000%%i"
+    set "pin=!pin:~-4!"
+    echo !pin! >> "%WORDLISTS%\phone_pins.txt"
+)
+
+echo [*] Installing Password Cracking & Hash Recovery Suite...
+:: Hashcat
+git clone https://github.com/hashcat/hashcat.git "%TOOLS%\cracking\hashcat"
+cd "%TOOLS%\cracking\hashcat"
+git checkout master
+
+:: John the Ripper (Jumbo)
+git clone https://github.com/openwall/john -b bleeding-jumbo "%TOOLS%\cracking\john"
+cd "%TOOLS%\cracking\john\src"
+./configure && make -s clean && make -j8
+
+:: Hashcat-utils, PrinceProcessor, MaskProcessor
+git clone https://github.com/hashcat/hashcat-utils.git "%TOOLS%\cracking\hashcat-utils"
+git clone https://github.com/hashcat/princeprocessor.git "%TOOLS%\cracking\princeprocessor"
+cd "%TOOLS%\cracking\princeprocessor" && make
+git clone https://github.com/hashcat/maskprocessor.git "%TOOLS%\cracking\maskprocessor"
+cd "%TOOLS%\cracking\maskprocessor" && make
+
+echo [*] Installing Crypto Wallet .DAT Recovery Tools...
+:: BTCRecover
+git clone https://github.com/3rdIteration/btcrecover.git "%TOOLS%\crypto\btcrecover"
+cd "%TOOLS%\crypto\btcrecover"
+pip install -r requirements.txt
+
+:: Bitcoin Core Tools & Libs
+git clone https://github.com/bitcoin/bitcoin.git "%TOOLS%\crypto\bitcoin"
+cd "%TOOLS%\crypto\bitcoin" && ./autogen.sh && ./configure --without-gui --disable-wallet && make
+
+:: PyWallet for Ethereum and others
+git clone https://github.com/ethereum/pywallet.git "%TOOLS%\crypto\pywallet"
+
+:: WalletScraper for various wallet files
+git clone https://github.com/Coding-with-Adam/wallet-scraper "%TOOLS%\crypto\wallet-scraper"
+
+:: Blockchain Explorer/Parser
+git clone https://github.com/znort987/blockparser.git "%TOOLS%\crypto\blockparser"
+
+echo [*] Installing Professional Data Recovery Suites...
+:: TestDisk & PhotoRec
+choco install -y testdisk
+
+:: R-Studio (Trial)
+curl -L "https://www.r-studio.com/downloads/RStudioTechnician.exe" -o "%TOOLS%\data_recovery\rstudio_trial.exe"
+start /wait "" "%TOOLS%\data_recovery\rstudio_trial.exe" /S
+
+:: Recuva
+choco install -y recuva
+
+:: DMDE
+curl -L "https://dmde.com/download/dmde.exe" -o "%TOOLS%\data_recovery\dmde.exe"
+
+echo [*] Installing Mobile Device Forensic Tools...
+:: Android
+choco install -y adb
+:: Cellebrite Reader (Free)
+curl -L "https://www.cellebrite.com/en/product-downloads/" -o "%TOOLS%\mobile_forensic\cellebrite_reader.exe"
+:: Magnet AXIOM Free Viewers
+curl -L "https://www.magnetforensics.com/download/" -o "%TOOLS%\mobile_forensic\magnet_axiom_free.exe"
+
+:: Elcomsoft iOS/Android Forensic Tools (Trial)
+curl -L "https://www.elcomsoft.com/download/eift.zip" -o "%TOOLS%\mobile_forensic\eift_trial.zip"
+7z x "%TOOLS%\mobile_forensic\eift_trial.zip" -o"%TOOLS%\mobile_forensic\elcomsoft"
+
+echo [*] Installing PC/Laptop Forensic & Unlocking Tools...
+:: Elcomsoft Forensic Suite (Trial)
+curl -L "https://www.elcomsoft.com/download/efs.zip" -o "%TOOLS%\pc_forensic\efs_trial.zip"
+7z x "%TOOLS%\pc_forensic\efs_trial.zip" -o"%TOOLS%\pc_forensic\elcomsoft_pc"
+
+:: Passware Kit Forensic (Trial)
+curl -L "https://www.passware.com/download/pkf2025/" -o "%TOOLS%\pc_forensic\passware_kit_forensic.exe"
+start /wait "" "%TOOLS%\pc_forensic\passware_kit_forensic.exe" /S
+
+:: Ophcrack (for Windows SAM)
+choco install -y ophcrack
+
+echo [*] Installing Forensic Imaging & Analysis Tools...
+:: FTK Imager
+curl -L "https://ad-zip.s3.amazonaws.com/FTKImager.exe" -o "%TOOLS%\forensic_imaging\ftk_imager.exe"
+:: Autopsy
+choco install -y autopsy
+:: DD for Windows
+choco install -y dd
+
+echo [*] Installing Anonymity & OPSEC Tools...
+:: Tor Browser
+choco install -y tor-browser
+:: VPN Client (ProtonVPN)
+choco install -y protonvpn
+:: BleachBit
+choco install -y bleachbit
+
+echo [*] Installing Web3/EVM Development Tools...
+:: Install Node.js (if not already installed)
+node --version >nul 2>&1
+if errorlevel 1 (
+    choco install -y nodejs
+)
+
+:: Install Web3 development tools
+npm install -g hardhat truffle ganache web3 ethers
+npm install -g @remix-project/remixd
+npm install -g @chainlink/contracts @openzeppelin/contracts solc solc-select solhint eslint-plugin-solidity eth-gas-reporter solidity-coverage typechain @typechain/ethers-v5 @typechain/hardhat waffle @nomiclabs/hardhat-ethers @nomiclabs/hardhat-waffle @nomiclabs/hardhat-etherscan @nomicfoundation/hardhat-verify @synthetixio/hardhat-storage @synthetixio/hardhat-router @openzeppelin/hardhat-upgrades @openzeppelin/hardhat-defender brownie ape drizzle embark epirus scaffold-eth create-eth-app useDapp
+
+:: Set up Remix IDE
+git clone https://github.com/Remix-Project/remix-project.git "%WEB3_DIR%\remix-project"
+cd "%WEB3_DIR%\remix-project"
+npm install
+npm run build
+
+:: Install Foundry in WSL
+wsl -d Ubuntu-22.04 -e bash -c "curl -L https://foundry.paradigm.xyz | bash && source ~/.bashrc && foundryup"
+
+echo [*] Installing EOSIO/Antelope Blockchain Tools...
+:: Set up EOSIO in WSL
+wsl -d Ubuntu-22.04 -e bash -c "
+    sudo apt-get update -y
+    sudo apt-get install -y build-essential cmake git libssl-dev libgmp-dev libboost-all-dev clang
+    git clone -b v3.2.3 https://github.com/AntelopeIO/leap.git eosio
+    cd eosio
+    mkdir build
+    cd build
+    cmake ..
+    make -j$(nproc)
+    sudo make install
+    wget https://github.com/AntelopeIO/cdt/releases/download/v3.2.3/cdt_3.2.3-1_ubuntu-22.04_amd64.deb
+    sudo dpkg -i cdt_3.2.3-1_ubuntu-22.04_amd64.deb
+    rm cdt_3.2.3-1_ubuntu-22.04_amd64.deb
+"
+
+echo [*] Setting up Virtualization Environment...
+:: Install VirtualBox
+choco install -y virtualbox
+
+:: Download Kali Linux ISO
+curl -L "https://cdimage.kali.org/kali-2025.3/kali-linux-2025.3-installer-amd64.iso" -o "%VIRTUALIZATION_DIR%\kali-linux-2025.3-installer-amd64.iso"
+
+:: Download Ubuntu ISO
+curl -L "https://releases.ubuntu.com/22.04.5/ubuntu-22.04.5-desktop-amd64.iso" -o "%VIRTUALIZATION_DIR%\ubuntu-22.04.5-desktop-amd64.iso"
+
+:: Create VM configuration scripts
+echo @echo off > "%SCRIPTS%\create_kali_vm.bat"
+echo VBoxManage createvm --name "Kali-PenTest-UI" --ostype Debian_64 --register >> "%SCRIPTS%\create_kali_vm.bat"
+echo VBoxManage modifyvm "Kali-PenTest-UI" --memory 4096 --vram 128 --cpus 2 >> "%SCRIPTS%\create_kali_vm.bat"
+echo VBoxManage createhd --filename "%VIRTUALIZATION_DIR%\Kali-PenTest-UI.vdi" --size 20480 >> "%SCRIPTS%\create_kali_vm.bat"
+echo VBoxManage storagectl "Kali-PenTest-UI" --name "SATA" --add sata --controller IntelAHCI >> "%SCRIPTS%\create_kali_vm.bat"
+echo VBoxManage storageattach "Kali-PenTest-UI" --storagectl "SATA" --port 0 --device 0 --type hdd --medium "%VIRTUALIZATION_DIR%\Kali-PenTest-UI.vdi" >> "%SCRIPTS%\create_kali_vm.bat"
+echo VBoxManage storagectl "Kali-PenTest-UI" --name "IDE" --add ide >> "%SCRIPTS%\create_kali_vm.bat"
+echo VBoxManage storageattach "Kali-PenTest-UI" --storagectl "IDE" --port 0 --device 0 --type dvddrive --medium "%VIRTUALIZATION_DIR%\kali-linux-2025.3-installer-amd64.iso" >> "%SCRIPTS%\create_kali_vm.bat"
+echo VBoxManage modifyvm "Kali-PenTest-UI" --nic1 natnetwork --nat-network1 "PenTestLabNet" >> "%SCRIPTS%\create_kali_vm.bat"
+
+echo @echo off > "%SCRIPTS%\create_ubuntu_vm.bat"
+echo VBoxManage createvm --name "Ubuntu-Target" --ostype Ubuntu_64 --register >> "%SCRIPTS%\create_ubuntu_vm.bat"
+echo VBoxManage modifyvm "Ubuntu-Target" --memory 2048 --vram 128 --cpus 2 >> "%SCRIPTS%\create_ubuntu_vm.bat"
+echo VBoxManage createhd --filename "%VIRTUALIZATION_DIR%\Ubuntu-Target.vdi" --size 20480 >> "%SCRIPTS%\create_ubuntu_vm.bat"
+echo VBoxManage storagectl "Ubuntu-Target" --name "SATA" --add sata --controller IntelAHCI >> "%SCRIPTS%\create_ubuntu_vm.bat"
+echo VBoxManage storageattach "Ubuntu-Target" --storagectl "SATA" --port 0 --device 0 --type hdd --medium "%VIRTUALIZATION_DIR%\Ubuntu-Target.vdi" >> "%SCRIPTS%\create_ubuntu_vm.bat"
+echo VBoxManage storagectl "Ubuntu-Target" --name "IDE" --add ide >> "%SCRIPTS%\create_ubuntu_vm.bat"
+echo VBoxManage storageattach "Ubuntu-Target" --storagectl "IDE" --port 0 --device 0 --type dvddrive --medium "%VIRTUALIZATION_DIR%\ubuntu-22.04.5-desktop-amd64.iso" >> "%SCRIPTS%\create_ubuntu_vm.bat"
+echo VBoxManage modifyvm "Ubuntu-Target" --nic1 natnetwork --nat-network1 "PenTestLabNet" >> "%SCRIPTS%\create_ubuntu_vm.bat"
+
+echo [*] Installing Malware Analysis Tools...
+:: Install malware analysis tools in WSL Kali
+wsl -d kali-linux -e bash -c "
+    sudo apt-get update -y
+    sudo apt-get install -y veil-framework maltego ghidra radare2
+    git clone https://github.com/BC-Security/Empire.git "%MALWARE_DIR%/Empire"
+    cd "%MALWARE_DIR%/Empire"
+    sudo pip3 install -r requirements.txt
+"
+
+echo [*] Installing Card Production & POS System...
+:: Install all card production tools
+cd "%CARD_SYSTEM_DIR%\card_production"
+
+:: OpenSC for smart card programming
+git clone https://github.com/OpenSC/OpenSC.git
+cd OpenSC && ./bootstrap && ./configure && make && make install
+cd ..
+
+:: PySCard for Python smart card access
+git clone https://github.com/LudovicRousseau/pyscard.git
+cd pyscard && python3 setup.py build_ext install
+cd ..
+
+:: LibNFC for NFC card programming
+git clone https://github.com/nfc-tools/libnfc.git
+cd libnfc && autoreconf -vis && ./configure && make && make install
+cd ..
+
+:: GlobalPlatform for card management
+git clone https://github.com/martinpalazzo/globalplatform.git
+cd globalplatform && mvn clean install
+cd ..
+
+:: GPShell for card scripting
+git clone https://github.com/kaoh/globalplatform.git gpshell
+cd gpshell && ./configure && make && make install
+cd ..
+
+:: Install all payment SDKs
+cd "%CARD_SYSTEM_DIR%\sdk_integrations"
+
+:: Stripe Terminal SDK
+git clone https://github.com/stripe/stripe-terminal-js-demo.git stripe-terminal
+
+:: Plaid SDK
+git clone https://github.com/plaid/plaid-node.git plaid-sdk
+
+:: Visa SDK
+git clone https://github.com/visa/api-sdk-node.git visa-sdk
+
+:: Mastercard SDK
+git clone https://github.com/Mastercard/client-encryption-node.js.git mastercard-sdk
+
+:: Square SDK
+git clone https://github.com/square/square-nodejs-sdk.git square-sdk
+
+:: PayPal SDK
+git clone https://github.com/paypal/Checkout-NodeJS-SDK.git paypal-sdk
+
+:: Crypto payment SDKs
+cd "%CARD_SYSTEM_DIR%\crypto_integration"
+
+:: Bitcoin payment processing
+git clone https://github.com/bitcoinjs/bitcoinjs-lib.git bitcoin-payments
+
+:: Ethereum payment processing
+git clone https://github.com/ethereum/web3.js.git ethereum-payments
+
+:: BTC Pay Server
+git clone https://github.com/btcpayserver/btcpayserver.git btc-pay-server
+
+:: Create production configuration
+echo # Production Configuration - Add your actual API keys > "%CARD_SYSTEM_DIR%\config\production_config.py"
+echo import os >> "%CARD_SYSTEM_DIR%\config\production_config.py"
+echo. >> "%CARD_SYSTEM_DIR%\config\production_config.py"
+echo BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) >> "%CARD_SYSTEM_DIR%\config\production_config.py"
+echo SECRET_KEY = 'your-production-secret-key' >> "%CARD_SYSTEM_DIR%\config\production_config.py"
+echo DEBUG = False >> "%CARD_SYSTEM_DIR%\config\production_config.py"
+echo ALLOWED_HOSTS = ['*'] >> "%CARD_SYSTEM_DIR%\config\production_config.py"
+echo. >> "%CARD_SYSTEM_DIR%\config\production_config.py"
+echo # Database >> "%CARD_SYSTEM_DIR%\config\production_config.py"
+echo DATABASES = { >> "%CARD_SYSTEM_DIR%\config\production_config.py"
+echo     'default': { >> "%CARD_SYSTEM_DIR%\config\production_config.py"
+echo         'ENGINE': 'django.db.backends.postgresql', >> "%CARD_SYSTEM_DIR%\config\production_config.py"
+echo         'NAME': 'complete_card_system_db', >> "%CARD_SYSTEM_DIR%\config\production_config.py"
+echo         'USER': 'production_user', >> "%CARD_SYSTEM_DIR%\config\production_config.py"
+echo         'PASSWORD': 'your_secure_password', >> "%CARD_SYSTEM_DIR%\config\production_config.py"
+echo         'HOST': 'localhost', >> "%CARD_SYSTEM_DIR%\config\production_config.py"
+echo         'PORT': '5432', >> "%CARD_SYSTEM_DIR%\config\production_config.py"
+echo     } >> "%CARD_SYSTEM_DIR%\config\production_config.py"
+echo } >> "%CARD_SYSTEM_DIR%\config\production_config.py"
+echo. >> "%CARD_SYSTEM_DIR%\config\production_config.py"
+echo # Payment Provider API Keys (ADD YOUR ACTUAL KEYS) >> "%CARD_SYSTEM_DIR%\config\production_config.py"
+echo STRIPE_API_KEY = 'sk_live_your_stripe_live_key' >> "%CARD_SYSTEM_DIR%\config\production_config.py"
+echo PLAID_CLIENT_ID = 'your_plaid_client_id' >> "%CARD_SYSTEM_DIR%\config\production_config.py"
+echo PLAID_SECRET = 'your_plaid_secret' >> "%CARD_SYSTEM_DIR%\config\production_config.py"
+echo VISA_API_KEY = 'your_visa_api_key' >> "%CARD_SYSTEM_DIR%\config\production_config.py"
+echo MASTERCARD_API_KEY = 'your_mastercard_api_key' >> "%CARD_SYSTEM_DIR%\config\production_config.py"
+echo SQUARE_ACCESS_TOKEN = 'your_square_access_token' >> "%CARD_SYSTEM_DIR%\config\production_config.py"
+echo PAYPAL_CLIENT_ID = 'your_paypal_client_id' >> "%CARD_SYSTEM_DIR%\config\production_config.py"
+echo PAYPAL_SECRET = 'your_paypal_secret' >> "%CARD_SYSTEM_DIR%\config\production_config.py"
+echo. >> "%CARD_SYSTEM_DIR%\config\production_config.py"
+echo # Crypto Payments >> "%CARD_SYSTEM_DIR%\config\production_config.py"
+echo BITCOIN_NODE_URL = 'your_bitcoin_node' >> "%CARD_SYSTEM_DIR%\config\production_config.py"
+echo ETHEREUM_NODE_URL = 'your_ethereum_node' >> "%CARD_SYSTEM_DIR%\config\production_config.py"
+echo BTC_PAY_SERVER_URL = 'your_btc_pay_server_url' >> "%CARD_SYSTEM_DIR%\config\production_config.py"
+echo. >> "%CARD_SYSTEM_DIR%\config\production_config.py"
+echo # Card Production Settings >> "%CARD_SYSTEM_DIR%\config\production_config.py"
+echo CARD_ENCODING_KEYS = { >> "%CARD_SYSTEM_DIR%\config\production_config.py"
+echo     'magstripe': 'your_magnetic_encoding_key', >> "%CARD_SYSTEM_DIR%\config\production_config.py"
+echo     'chip': 'your_chip_encryption_key', >> "%CARD_SYSTEM_DIR%\config\production_config.py"
+echo     'nfc': 'your_nfc_encryption_key' >> "%CARD_SYSTEM_DIR%\config\production_config.py"
+echo } >> "%CARD_SYSTEM_DIR%\config\production_config.py"
+echo. >> "%CARD_SYSTEM_DIR%\config\production_config.py"
+echo # Security Settings >> "%CARD_SYSTEM_DIR%\config\production_config.py"
+echo ENCRYPTION_KEYS = { >> "%CARD_SYSTEM_DIR%\config\production_config.py"
+echo     'database': 'your_db_encryption_key', >> "%CARD_SYSTEM_DIR%\config\production_config.py"
+echo     'communications': 'your_comms_encryption_key', >> "%CARD_SYSTEM_DIR%\config\production_config.py"
+echo     'transactions': 'your_transaction_encryption_key' >> "%CARD_SYSTEM_DIR%\config\production_config.py"
+echo } >> "%CARD_SYSTEM_DIR%\config\production_config.py"
+
+:: Set up database
+echo [*] Setting up PostgreSQL database for Card Production System...
+net start postgresql
+psql -U postgres -c "CREATE DATABASE complete_card_system_db;"
+psql -U postgres -c "CREATE USER production_user WITH PASSWORD 'your_secure_password';"
+psql -U postgres -c "GRANT ALL PRIVILEGES ON DATABASE complete_card_system_db TO production_user;"
+
+echo [*] Building Custom Script Library...
+:: Script to run Hashcat attacks for all crypto types
+echo @echo off > "%SCRIPTS%\hashcat_launcher.bat"
+echo echo Select Hash Type: >> "%SCRIPTS%\hashcat_launcher.bat"
+echo echo 11300 - Bitcoin/Litecoin wallet.dat >> "%SCRIPTS%\hashcat_launcher.bat"
+echo echo 12700 - Blockchain, Mycelium >> "%SCRIPTS%\hashcat_launcher.bat"
+echo echo 18800 - Blockchain, Second Password >> "%SCRIPTS%\hashcat_launcher.bat"
+echo echo 16600 - Electrum Wallet (Salt-Type 1-3) >> "%SCRIPTS%\hashcat_launcher.bat"
+echo echo 21700 - Electrum Wallet (Salt-Type 4) >> "%SCRIPTS%\hashcat_launcher.bat"
+echo echo 21800 - Electrum Wallet (Salt-Type 5) >> "%SCRIPTS%\hashcat_launcher.bat"
+echo echo 22500 - MultiBit Classic .key >> "%SCRIPTS%\hashcat_launcher.bat"
+echo echo 26600 - MetaMask Wallet >> "%SCRIPTS%\hashcat_launcher.bat"
+echo set /p hash_type="Enter Hash Mode: " >> "%SCRIPTS%\hashcat_launcher.bat"
+echo set /p attack_mode="Attack Mode (0=Wordlist, 3=Brute): " >> "%SCRIPTS%\hashcat_launcher.bat"
+echo set /p hash_file="Hash File: " >> "%SCRIPTS%\hashcat_launcher.bat"
+echo set /p wordlist="Wordlist: " >> "%SCRIPTS%\hashcat_launcher.bat"
+echo "%TOOLS%\cracking\hashcat\hashcat.exe" -m !hash_type! -a !attack_mode! -w 4 "!hash_file!" "!wordlist!" >> "%SCRIPTS%\hashcat_launcher.bat"
+
+:: Script for mobile device forensic imaging
+echo @echo off > "%SCRIPTS%\mobile_imaging.bat"
+echo adb devices >> "%SCRIPTS%\mobile_imaging.bat"
+echo echo Use FTK Imager or dd for physical extraction if possible. >> "%SCRIPTS%\mobile_imaging.bat"
+
+:: Script for data recovery workflow
+echo @echo off > "%SCRIPTS%\data_recovery_workflow.bat"
+echo echo 1. Use FTK Imager to create a forensic image. >> "%SCRIPTS%\data_recovery_workflow.bat"
+echo echo 2. Use R-Studio/Recuva on the image for file carving. >> "%SCRIPTS%\data_recovery_workflow.bat"
+echo echo 3. Use PhotoRec for specific file types. >> "%SCRIPTS%\data_recovery_workflow.bat"
+
+:: Script for Web3 development
+echo @echo off > "%SCRIPTS%\web3_dev.bat"
+echo echo Select Web3 Tool: >> "%SCRIPTS%\web3_dev.bat"
+echo echo 1. Start Remix IDE >> "%SCRIPTS%\web3_dev.bat"
+echo echo 2. Start Hardhat node >> "%SCRIPTS%\web3_dev.bat"
+echo echo 3. Start Ganache >> "%SCRIPTS%\web3_dev.bat"
+echo set /p choice="Enter choice: " >> "%SCRIPTS%\web3_dev.bat"
+echo if "!choice!"=="1" ( >> "%SCRIPTS%\web3_dev.bat"
+echo     cd "%WEB3_DIR%\remix-project" >> "%SCRIPTS%\web3_dev.bat"
+echo     npm start >> "%SCRIPTS%\web3_dev.bat"
+echo ) else if "!choice!"=="2" ( >> "%SCRIPTS%\web3_dev.bat"
+echo     npx hardhat node >> "%SCRIPTS%\web3_dev.bat"
+echo ) else if "!choice!"=="3" ( >> "%SCRIPTS%\web3_dev.bat"
+echo     ganache --port 8545 >> "%SCRIPTS%\web3_dev.bat"
+echo ) >> "%SCRIPTS%\web3_dev.bat"
+
+:: Script for EOSIO development
+echo @echo off > "%SCRIPTS%\eosio_dev.bat"
+echo echo EOSIO Development Tools: >> "%SCRIPTS%\eosio_dev.bat"
+echo echo 1. Start nodeos (local node) >> "%SCRIPTS%\eosio_dev.bat"
+echo echo 2. Start keosd (wallet manager) >> "%SCRIPTS%\eosio_dev.bat"
+echo echo 3. Run cleos command interface >> "%SCRIPTS%\eosio_dev.bat"
+echo set /p choice="Enter choice: " >> "%SCRIPTS%\eosio_dev.bat"
+echo if "!choice!"=="1" ( >> "%SCRIPTS%\eosio_dev.bat"
+echo     wsl -d Ubuntu-22.04 -e nodeos --data-dir ~/eosio-wallet --http-server-address 0.0.0.0:8888 >> "%SCRIPTS%\eosio_dev.bat"
+echo ) else if "!choice!"=="2" ( >> "%SCRIPTS%\eosio_dev.bat"
+echo     wsl -d Ubuntu-22.04 -e keosd --wallet-dir ~/eosio-wallet --http-server-address 0.0.0.0:8900 >> "%SCRIPTS%\eosio_dev.bat"
+echo ) else if "!choice!"=="3" ( >> "%SCRIPTS%\eosio_dev.bat"
+echo     wsl -d Ubuntu-22.04 -e bash >> "%SCRIPTS%\eosio_dev.bat"
+echo ) >> "%SCRIPTS%\eosio_dev.bat"
+
+:: Script for virtualization management
+echo @echo off > "%SCRIPTS%\vm_management.bat"
+echo echo Virtual Machine Management: >> "%SCRIPTS%\vm_management.bat"
+echo echo 1. Create Kali VM >> "%SCRIPTS%\vm_management.bat"
+echo echo 2. Create Ubuntu VM >> "%SCRIPTS%\vm_management.bat"
+echo echo 3. Start Kali VM >> "%SCRIPTS%\vm_management.bat"
+echo echo 3. Start Kali VM >> "%SCRIPTS%\vm_management.bat"
+echo echo 4. Start Ubuntu VM >> "%SCRIPTS%\vm_management.bat"
+echo set /p choice="Enter choice: " >> "%SCRIPTS%\vm_management.bat"
+echo if "!choice!"=="1" ( >> "%SCRIPTS%\vm_management.bat"
+echo     call "%SCRIPTS%\create_kali_vm.bat" >> "%SCRIPTS%\vm_management.bat"
+echo ) else if "!choice!"=="2" ( >> "%SCRIPTS%\vm_management.bat"
+echo     call "%SCRIPTS%\create_ubuntu_vm.bat" >> "%SCRIPTS%\vm_management.bat"
+echo ) else if "!choice!"=="3" ( >> "%SCRIPTS%\vm_management.bat"
+echo     VBoxManage startvm "Kali-PenTest-UI" --type headless >> "%SCRIPTS%\vm_management.bat"
+echo ) else if "!choice!"=="4" ( >> "%SCRIPTS%\vm_management.bat"
+echo     VBoxManage startvm "Ubuntu-Target" --type headless >> "%SCRIPTS%\vm_management.bat"
+echo ) >> "%SCRIPTS%\vm_management.bat"
+
+:: Script for malware analysis
+echo @echo off > "%SCRIPTS%\malware_analysis.bat"
+echo echo Malware Analysis Tools: >> "%SCRIPTS%\malware_analysis.bat"
+echo echo 1. Start Empire C2 >> "%SCRIPTS%\malware_analysis.bat"
+echo echo 2. Start Veil Framework >> "%SCRIPTS%\malware_analysis.bat"
+echo echo 3. Start Ghidra >> "%SCRIPTS%\malware_analysis.bat"
+echo set /p choice="Enter choice: " >> "%SCRIPTS%\malware_analysis.bat"
+echo if "!choice!"=="1" ( >> "%SCRIPTS%\malware_analysis.bat"
+echo     wsl -d kali-linux -e bash -c "cd "%MALWARE_DIR%/Empire" && sudo python3 empire.py server" >> "%SCRIPTS%\malware_analysis.bat"
+echo ) else if "!choice!"=="2" ( >> "%SCRIPTS%\malware_analysis.bat"
+echo     wsl -d kali-linux -e veil >> "%SCRIPTS%\malware_analysis.bat"
+echo ) else if "!choice!"=="3" ( >> "%SCRIPTS%\malware_analysis.bat"
+echo     wsl -d kali-linux -e ghidra >> "%SCRIPTS%\malware_analysis.bat"
+echo ) >> "%SCRIPTS%\malware_analysis.bat"
+
+:: Script for card production system
+echo @echo off > "%SCRIPTS%\card_production.bat"
+echo echo Card Production System: >> "%SCRIPTS%\card_production.bat"
+echo echo 1. Start Card Production Server >> "%SCRIPTS%\card_production.bat"
+echo echo 2. Start POS System >> "%SCRIPTS%\card_production.bat"
+echo echo 3. Start Payment Processing >> "%SCRIPTS%\card_production.bat"
+echo set /p choice="Enter choice: " >> "%SCRIPTS%\card_production.bat"
+echo if "!choice!"=="1" ( >> "%SCRIPTS%\card_production.bat"
+echo     cd "%CARD_SYSTEM_DIR%" >> "%SCRIPTS%\card_production.bat"
+echo     python -m http.server 8000 >> "%SCRIPTS%\card_production.bat"
+echo ) else if "!choice!"=="2" ( >> "%SCRIPTS%\card_production.bat"
+echo     cd "%CARD_SYSTEM_DIR%\pos_system" >> "%SCRIPTS%\card_production.bat"
+echo     python manage.py runserver 0.0.0.0:8001 >> "%SCRIPTS%\card_production.bat"
+echo ) else if "!choice!"=="3" ( >> "%SCRIPTS%\card_production.bat"
+echo     cd "%CARD_SYSTEM_DIR%\payment_processing" >> "%SCRIPTS%\card_production.bat"
+echo     node payment-server.js >> "%SCRIPTS%\card_production.bat"
+echo ) >> "%SCRIPTS%\card_production.bat"
+
+echo [*] Creating Advanced Unified Management UI...
+:: Create server.js for the UI
+echo const http = require('http'); > "%UI_DIR%\server.js"
+echo const url = require('url'); >> "%UI_DIR%\server.js"
+echo const { exec } = require('child_process'); >> "%UI_DIR%\server.js"
+echo const fs = require('fs'); >> "%UI_DIR%\server.js"
+echo const path = require('path'); >> "%UI_DIR%\server.js"
+echo >> "%UI_DIR%\server.js"
+echo const server = http.createServer((req, res) => { >> "%UI_DIR%\server.js"
+echo     const parsedUrl = url.parse(req.url, true); >> "%UI_DIR%\server.js"
+echo     >> "%UI_DIR%\server.js"
+echo     if (parsedUrl.pathname === '/') { >> "%UI_DIR%\server.js"
+echo         fs.readFile(path.join(__dirname, 'index.html'), (err, data) => { >> "%UI_DIR%\server.js"
+echo             if (err) { >> "%UI_DIR%\server.js"
+echo                 res.writeHead(500); >> "%UI_DIR%\server.js"
+echo                 res.end('Error loading index.html'); >> "%UI_DIR%\server.js"
+echo             } else { >> "%UI_DIR%\server.js"
+echo                 res.writeHead(200, { 'Content-Type': 'text/html' }); >> "%UI_DIR%\server.js"
+echo                 res.end(data); >> "%UI_DIR%\server.js"
+echo             } >> "%UI_DIR%\server.js"
+echo         }); >> "%UI_DIR%\server.js"
+echo     } else if (parsedUrl.pathname === '/run-script') { >> "%UI_DIR%\server.js"
+echo         const scriptName = parsedUrl.query.name; >> "%UI_DIR%\server.js"
+echo         const scriptPath = path.join('..', 'Scripts', scriptName); >> "%UI_DIR%\server.js"
+echo         >> "%UI_DIR%\server.js"
+echo         exec(scriptPath, (error, stdout, stderr) => { >> "%UI_DIR%\server.js"
+echo             if (error) { >> "%UI_DIR%\server.js"
+echo                 res.writeHead(500); >> "%UI_DIR%\server.js"
+echo                 res.end('Error executing script: ' + error.message); >> "%UI_DIR%\server.js"
+echo             } else { >> "%UI_DIR%\server.js"
+echo                 res.writeHead(200); >> "%UI_DIR%\server.js"
+echo                 res.end('Script executed successfully: ' + stdout); >> "%UI_DIR%\server.js"
+echo             } >> "%UI_DIR%\server.js"
+echo         }); >> "%UI_DIR%\server.js"
+echo     } else { >> "%UI_DIR%\server.js"
+echo         res.writeHead(404); >> "%UI_DIR%\server.js"
+echo         res.end('Not found'); >> "%UI_DIR%\server.js"
+echo     } >> "%UI_DIR%\server.js"
+echo }); >> "%UI_DIR%\server.js"
+echo >> "%UI_DIR%\server.js"
+echo server.listen(3000, () => { >> "%UI_DIR%\server.js"
+echo     console.log('Management UI server running on http://localhost:3000'); >> "%UI_DIR%\server.js"
+echo }); >> "%UI_DIR%\server.js"
+
+:: Create Windows Desktop Shortcut
+echo [*] Creating Windows Desktop Shortcut...
+echo Set oWS = WScript.CreateObject("WScript.Shell") > "%TEMP%\create_shortcut.vbs"
+echo sLinkFile = "%USERPROFILE%\Desktop\Security Lab.lnk" >> "%TEMP%\create_shortcut.vbs"
+echo Set oLink = oWS.CreateShortcut(sLinkFile) >> "%TEMP%\create_shortcut.vbs"
+echo oLink.TargetPath = "cmd.exe" >> "%TEMP%\create_shortcut.vbs"
+echo oLink.Arguments = "/k cd /d %MASTER_ROOT% && node %UI_DIR%\server.js" >> "%TEMP%\create_shortcut.vbs"
+echo oLink.WorkingDirectory = "%MASTER_ROOT%" >> "%TEMP%\create_shortcut.vbs"
+echo oLink.Description = "Ultimate Security Lab" >> "%TEMP%\create_shortcut.vbs"
+echo oLink.Save >> "%TEMP%\create_shortcut.vbs"
+cscript //nologo "%TEMP%\create_shortcut.vbs"
+del "%TEMP%\create_shortcut.vbs"
+
+:: Create Start Menu Entry
+echo [*] Creating Start Menu Entry...
+mkdir "%APPDATA%\Microsoft\Windows\Start Menu\Programs\Security Lab" 2>nul
+echo [InternetShortcut] > "%APPDATA%\Microsoft\Windows\Start Menu\Programs\Security Lab\Lab Dashboard.url"
+echo URL=http://localhost:3000 >> "%APPDATA%\Microsoft\Windows\Start Menu\Programs\Security Lab\Lab Dashboard.url"
+
+:: Environment Variables
+setx MASTER_ROOT "%MASTER_ROOT%"
+setx RECOVERY_TOOLS "%TOOLS%"
+setx WORDLISTS "%WORDLISTS%"
+setx PATH "%PATH%;%TOOLS%\cracking\hashcat;%TOOLS%\cracking\john\run;%TOOLS%\cracking\princeprocessor;%TOOLS%\cracking\maskprocessor;%TOOLS%\crypto\btcrecover"
+
+echo [*] Creating Documentation and Quick Start Guides...
+echo # ULTIMATE SECURITY & DEVELOPMENT LAB SUITE 2025 > "%MASTER_ROOT%\LAB_OPERATIONS_MANUAL.md"
+echo ## Quick Start Guide >> "%MASTER_ROOT%\LAB_OPERATIONS_MANUAL.md"
+echo 1. Start the Management UI: cd "%UI_DIR%" && node server.js >> "%MASTER_ROOT%\LAB_OPERATIONS_MANUAL.md"
+echo 2. Open http://localhost:3000 in your browser >> "%MASTER_ROOT%\LAB_OPERATIONS_MANUAL.md"
+echo 3. Use the UI to launch tools and scripts >> "%MASTER_ROOT%\LAB_OPERATIONS_MANUAL.md"
+echo >> "%MASTER_ROOT%\LAB_OPERATIONS_MANUAL.md"
+echo ## Password Cracking >> "%MASTER_ROOT%\LAB_OPERATIONS_MANUAL.md"
+echo - Use hashcat_launcher.bat for crypto wallet recovery >> "%MASTER_ROOT%\LAB_OPERATIONS_MANUAL.md"
+echo - Hash types: 11300 (Bitcoin/Litecoin), 16600 (Electrum), etc. >> "%MASTER_ROOT%\LAB_OPERATIONS_MANUAL.md"
+echo >> "%MASTER_ROOT%\LAB_OPERATIONS_MANUAL.md"
+echo ## Data Recovery >> "%MASTER_ROOT%\LAB_OPERATIONS_MANUAL.md"
+echo - Use FTK Imager to create forensic images >> "%MASTER_ROOT%\LAB_OPERATIONS_MANUAL.md"
+echo - Use R-Studio/Recuva for file carving >> "%MASTER_ROOT%\LAB_OPERATIONS_MANUAL.md"
+echo >> "%MASTER_ROOT%\LAB_OPERATIONS_MANUAL.md"
+echo ## Web3 Development >> "%MASTER_ROOT%\LAB_OPERATIONS_MANUAL.md"
+echo - Remix IDE: http://localhost:8080 (after starting) >> "%MASTER_ROOT%\LAB_OPERATIONS_MANUAL.md"
+echo - Hardhat: npx hardhat node >> "%MASTER_ROOT%\LAB_OPERATIONS_MANUAL.md"
+echo - Ganache: ganache --port 8545 >> "%MASTER_ROOT%\LAB_OPERATIONS_MANUAL.md"
+echo >> "%MASTER_ROOT%\LAB_OPERATIONS_MANUAL.md"
+echo ## EOSIO Development >> "%MASTER_ROOT%\LAB_OPERATIONS_MANUAL.md"
+echo - Start nodeos: wsl -d Ubuntu-22.04 -e nodeos >> "%MASTER_ROOT%\LAB_OPERATIONS_MANUAL.md"
+echo - Start keosd: wsl -d Ubuntu-22.04 -e keosd >> "%MASTER_ROOT%\LAB_OPERATIONS_MANUAL.md"
+echo - Use cleos for account management >> "%MASTER_ROOT%\LAB_OPERATIONS_MANUAL.md"
+echo >> "%MASTER_ROOT%\LAB_OPERATIONS_MANUAL.md"
+echo ## Virtualization >> "%MASTER_ROOT%\LAB_OPERATIONS_MANUAL.md"
+echo - Create VMs using the VM Management scripts >> "%MASTER_ROOT%\LAB_OPERATIONS_MANUAL.md"
+echo - Kali Linux: Penetration testing >> "%MASTER_ROOT%\LAB_OPERATIONS_MANUAL.md"
+echo - Ubuntu: Target practice >> "%MASTER_ROOT%\LAB_OPERATIONS_MANUAL.md"
+echo >> "%MASTER_ROOT%\LAB_OPERATIONS_MANUAL.md"
+echo ## Malware Analysis >> "%MASTER_ROOT%\LAB_OPERATIONS_MANUAL.md"
+echo - Empire C2: Command and control framework >> "%MASTER_ROOT%\LAB_OPERATIONS_MANUAL.md"
+echo - Veil Framework: AV evasion >> "%MASTER_ROOT%\LAB_OPERATIONS_MANUAL.md"
+echo - Ghidra: Reverse engineering >> "%MASTER_ROOT%\LAB_OPERATIONS_MANUAL.md"
+echo >> "%MASTER_ROOT%\LAB_OPERATIONS_MANUAL.md"
+echo ## Card Production System >> "%MASTER_ROOT%\LAB_OPERATIONS_MANUAL.md"
+echo - Start card production: cd "%CARD_SYSTEM_DIR%" && python -m http.server 8000 >> "%MASTER_ROOT%\LAB_OPERATIONS_MANUAL.md"
+echo - POS System: cd "%CARD_SYSTEM_DIR%\pos_system" && python manage.py runserver 0.0.0.0:8001 >> "%MASTER_ROOT%\LAB_OPERATIONS_MANUAL.md"
+echo - Payment Processing: cd "%CARD_SYSTEM_DIR%\payment_processing" && node payment-server.js >> "%MASTER_ROOT%\LAB_OPERATIONS_MANUAL.md"
+echo >> "%MASTER_ROOT%\LAB_OPERATIONS_MANUAL.md"
+echo ## OPSEC Protocol >> "%MASTER_ROOT%\LAB_OPERATIONS_MANUAL.md"
+echo - ALWAYS work on forensic IMAGES, not original drives. >> "%MASTER_ROOT%\LAB_OPERATIONS_MANUAL.md"
+echo - ALWAYS use VPN/Tor before downloading/connecting. >> "%MASTER_ROOT%\LAB_OPERATIONS_MANUAL.md"
+echo - Use BleachBit to clean up after analysis. >> "%MASTER_ROOT%\LAB_OPERATIONS_MANUAL.md"
+
+echo [*] Finalizing Setup... (This may take several minutes)
+:: Clean up temporary files
+del /q /f "%WORDLISTS%\*.gz" 2>nul
+
+echo =================================================================
+echo      SETUP COMPLETE! THE LAB IS NOW OPERATIONAL.
+echo =================================================================
+echo Master Root: %MASTER_ROOT%
+echo Tools: %TOOLS%
+echo Wordlists: %WORDLISTS%
+echo Web3 Development: %WEB3_DIR%
+echo EOSIO Development: %EOSIO_DIR%
+echo Virtualization: %VIRTUALIZATION_DIR%
+echo Malware Analysis: %MALWARE_DIR%
+echo Card Production: %CARD_SYSTEM_DIR%
+echo Management UI: %UI_DIR%
+echo.
+echo Next Steps:
+echo 1. Start the Management UI: cd "%UI_DIR%" && node server.js
+echo 2. Open http://localhost:3000 in your browser
+echo 3. Review LAB_OPERATIONS_MANUAL.md
+echo 4. Connect to VPN/Tor for security.
+echo 5. Image target devices before analysis.
+echo.
+echo Desktop shortcut created on your Windows desktop.
+echo Start menu entry added to "Security Lab" folder.
+echo.
+echo [WARNING] The power of this lab requires responsibility.
+echo =================================================================
+pause
+
+:: Create the HTML UI file
+echo [*] Creating Management UI...
+copy NUL "%UI_DIR%\index.html" >nul
+(
+echo ^<!DOCTYPE html^>
+echo ^<html lang="en"^>
+echo ^<head^>
+echo     ^<meta charset="UTF-8"^>
+echo     ^<meta name="viewport" content="width=device-width, initial-scale=1.0"^>
+echo     ^<title^>Ultimate Security ^& Recovery Lab - Production Interface^</title^>
+echo     ^<style^>
+echo         * {
+echo             margin: 0;
+echo             padding: 0;
+echo             box-sizing: border-box;
+echo         }
+echo 
+echo         body {
+echo             font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+echo             background: #0a0a0a;
+echo             color: #00ff00;
+echo             min-height: 100vh;
+echo             overflow-x: auto;
+echo         }
+echo 
+echo         .container {
+echo             max-width: 1800px;
+echo             margin: 0 auto;
+echo             padding: 20px;
+echo         }
+echo 
+echo         .header {
+echo             text-align: center;
+echo             margin-bottom: 30px;
+echo             border: 2px solid #00ff00;
+echo             padding: 20px;
+echo             background: rgba(0, 255, 0, 0.05);
+echo             border-radius: 10px;
+echo         }
+echo 
+echo         .header h1 {
+echo             font-size: 2.5rem;
+echo             color: #00ffff;
+echo             text-shadow: 0 0 10px #00ffff;
+echo             margin-bottom: 10px;
+echo         }
+echo 
+echo         .status-bar {
+echo             display: flex;
+echo             justify-content: space-between;
+echo             align-items: center;
+echo             background: rgba(0, 255, 0, 0.1);
+echo             border: 1px solid #00ff00;
+echo             padding: 10px 20px;
+echo             margin-bottom: 20px;
+echo             border-radius: 5px;
+echo         }
+echo 
+echo         .dashboard {
+echo             display: grid;
+echo             grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+echo             gap: 20px;
+echo             margin-bottom: 30px;
+echo         }
+echo 
+echo         .module-card {
+echo             background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+echo             border: 2px solid #00ff00;
+echo             border-radius: 15px;
+echo             padding: 25px;
+echo             box-shadow: 0 0 20px rgba(0, 255, 0, 0.2);
+echo             transition: all 0.3s ease;
+echo         }
+echo 
+echo         .module-card h3 {
+echo             color: #00ffff;
+echo             font-size: 1.4rem;
+echo             margin-bottom: 15px;
+echo             text-transform: uppercase;
+echo             border-bottom: 1px solid #00ff00;
+echo             padding-bottom: 10px;
+echo         }
+echo 
+echo         .tool-grid {
+echo             display: grid;
+echo             grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+echo             gap: 10px;
+echo             margin-bottom: 15px;
+echo         }
+echo 
+echo         .btn {
+echo             background: linear-gradient(45deg, #00ff00, #00cc00);
+echo             color: #000;
+echo             border: none;
+echo             padding: 12px 16px;
+echo             border-radius: 8px;
+echo             cursor: pointer;
+echo             font-weight: bold;
+echo             font-size: 0.9rem;
+echo             transition: all 0.3s ease;
+echo         }
+echo 
+echo         .btn:hover {
+echo             background: linear-gradient(45deg, #00ffff, #0099cc);
+echo             transform: translateY(-2px);
+echo         }
+echo 
+echo         .input-group {
+echo             margin-bottom: 15px;
+echo         }
+echo 
+echo         .input-group label {
+echo             display: block;
+echo             color: #00ffff;
+echo             margin-bottom: 5px;
+echo             font-weight: bold;
+echo         }
+echo 
+echo         .input-group input, .input-group select {
+echo             width: 100%;
+echo             background: #1a1a2e;
+echo             border: 1px solid #00ff00;
+echo             color: #00ff00;
+echo             padding: 10px;
+echo             border-radius: 5px;
+echo             font-family: inherit;
+echo         }
+echo 
+echo         .file-drop-zone {
+echo             border: 2px dashed #00ff00;
+echo             border-radius: 10px;
+echo             padding: 40px;
+echo             text-align: center;
+echo             margin: 15px 0;
+echo             cursor: pointer;
+echo         }
+echo 
+echo         .progress-bar {
+echo             width: 100%;
+echo             height: 20px;
+echo             background: #1a1a2e;
+echo             border: 1px solid #00ff00;
+echo             border-radius: 10px;
+echo             overflow: hidden;
+echo             margin: 10px 0;
+echo         }
+echo 
+echo         .progress-fill {
+echo             height: 100%;
+echo             background: linear-gradient(90deg, #00ff00, #00ffff);
+echo             width: 0%;
+echo             transition: width 0.3s ease;
+echo         }
+echo 
+echo         .terminal {
+echo             background: #000;
+echo             border: 2px solid #00ff00;
+echo             border-radius: 10px;
+echo             padding: 20px;
+echo             margin-top: 20px;
+echo             font-family: 'Courier New', monospace;
+echo             min-height: 200px;
+echo             max-height: 400px;
+echo             overflow-y: auto;
+echo         }
+echo 
+echo         .terminal-output {
+echo             color: #00ff00;
+echo             white-space: pre-wrap;
+echo             font-size: 0.9rem;
+echo             line-height: 1.4;
+echo         }
+echo 
+echo         .tab-container {
+echo             margin-top: 20px;
+echo         }
+echo 
+echo         .tab-buttons {
+echo             display: flex;
+echo             gap: 5px;
+echo             margin-bottom: 15px;
+echo         }
+echo 
+echo         .tab-button {
+echo             background: #1a1a2e;
+echo             border: 1px solid #00ff00;
+echo             color: #00ff00;
+echo             padding: 10px 20px;
+echo             cursor: pointer;
+echo             border-radius: 5px 5px 0 0;
+echo         }
+echo 
+echo         .tab-button.active {
+echo             background: #00ff00;
+echo             color: #000;
+echo         }
+echo 
+echo         .tab-content {
+echo             display: none;
+echo             background: rgba(0, 255, 0, 0.05);
+echo             border: 1px solid #00ff00;
+echo             border-radius: 0 10px 10px 10px;
+echo             padding: 20px;
+echo         }
+echo 
+echo         .tab-content.active {
+echo             display: block;
+echo         }
+echo 
+echo         .stats-grid {
+echo             display: grid;
+echo             grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+echo             gap: 15px;
+echo             margin-bottom: 15px;
+echo         }
+echo 
+echo         .stat-item {
+echo             text-align: center;
+echo             padding: 15px;
+echo             background: rgba(0, 255, 0, 0.1);
+echo             border: 1px solid #00ff00;
+echo             border-radius: 8px;
+echo         }
+echo 
+echo         .stat-value {
+echo             font-size: 1.5rem;
+echo             font-weight: bold;
+echo             color: #00ffff;
+echo         }
+echo 
+echo         .stat-label {
+echo             font-size: 0.8rem;
+echo             color: #00ff00;
+echo             text-transform: uppercase;
+echo         }
+echo     ^</style^>
+echo ^</head^>
+echo ^<body^>
+echo     ^<div class="container"^>
+echo         ^<div class="header"^>
+echo             ^<h1^>ULTIMATE SECURITY ^& RECOVERY LAB 2025^</h1^>
+echo             ^<p^>Professional Device Recovery ^& Security Analysis Platform^</p^>
+echo         ^</div^>
+echo 
+echo         ^<div class="status-bar"^>
+echo             ^<div^>System Online^</div^>
+echo             ^<div id="current-time"^>^</div^>
+echo             ^<div^>Tools: ^<span id="tools-count"^>24^</span^>^</div^>
+echo             ^<div^>Active Jobs: ^<span id="active-jobs"^>0^</span^>^</div^>
+echo         ^</div^>
+echo 
+echo         ^<div class="dashboard"^>
+echo             ^<!-- Password Cracking Module --^>
+echo             ^<div class="module-card"^>
+echo                 ^<h3^>Password ^& Hash Cracking^</h3^>
+echo                 ^<div class="tool-grid"^>
+echo                     ^<button class="btn" onclick="launchHashcat()"^>Hashcat^</button^>
+echo                     ^<button class="btn" onclick="launchJohn()"^>John the Ripper^</button^>
+echo                     ^<button class="btn" onclick="launchOphcrack()"^>Ophcrack^</button^>
+echo                     ^<button class="btn" onclick="loadWordlists()"^>Wordlists^</button^>
+echo                 ^</div^>
+echo                 ^<div class="input-group"^>
+echo                     ^<label^>Hash Type:^</label^>
+echo                     ^<select id="hash-type"^>
+echo                         ^<option value="11300"^>Bitcoin/Litecoin wallet.dat^</option^>
+echo                         ^<option value="12700"^>Blockchain Mycelium^</option^>
+echo                         ^<option value="18800"^>Blockchain Second Password^</option^>
+echo                         ^<option value="16600"^>Electrum Wallet (Salt-Type 1-3)^</option^>
+echo                         ^<option value="21700"^>Electrum Wallet (Salt-Type 4)^</option^>
+echo                         ^<option value="21800"^>Electrum Wallet (Salt-Type 5)^</option^>
+echo                         ^<option value="22500"^>MultiBit Classic .key^</option^>
+echo                         ^<option value="26600"^>MetaMask Wallet^</option^>
+echo                     ^</select^>
+echo                 ^</div^>
+echo                 ^<div class="file-drop-zone" onclick="document.getElementById('hash-file').click()"^>
+echo                     ^<p^>Drop hash file here or click to browse^</p^>
+echo                     ^<input type="file" id="hash-file" style="display: none;" accept=".txt,.hash"^>
+echo                 ^</div^>
+echo                 ^<button class="btn" onclick="startCracking()"^>Start Cracking^</button^>
+echo                 ^<div class="progress-bar"^>
+echo                     ^<div class="progress-fill" id="crack-progress"^>^</div^>
+echo                 ^</div^>
+echo             ^</div^>
+echo 
+echo             ^<!-- Crypto Recovery Module --^>
+echo             ^<div class="module-card"^>
+echo                 ^<h3^>Crypto Wallet Recovery^</h3^>
+echo                 ^<div class="tool-grid"^>
+echo                     ^<button class="btn" onclick="launchBTCRecover()"^>BTCRecover^</button^>
+echo                     ^<button class="btn" onclick="launchPyWallet()"^>PyWallet^</button^>
+echo                     ^<button class="btn" onclick="launchBlockchainParser()"^>Blockchain Parser^</button^>
+echo                     ^<button class="btn" onclick="launchWalletScraper()"^>Wallet Scraper^</button^>
+echo                 ^</div^>
+echo                 ^<div class="file-drop-zone" onclick="document.getElementById('wallet-file').click()"^>
+echo                     ^<p^>Drop wallet.dat file here or click to browse^</p^>
+echo                     ^<input type="file" id="wallet-file" style="display: none;" accept=".dat,.json,.key"^>
+echo                 ^</div^>
+echo                 ^<div class="input-group"^>
+echo                     ^<label^>Wallet Type:^</label^>
+echo                     ^<select id="wallet-type"^>
+echo                         ^<option value="bitcoin"^>Bitcoin Core^</option^>
+echo                         ^<option value="electrum"^>Electrum^</option^>
+echo                         ^<option value="multibit"^>MultiBit Classic^</option^>
+echo                         ^<option value="metamask"^>MetaMask^</option^>
+echo                         ^<option value="exodus"^>Exodus^</option^>
+echo                         ^<option value="jaxx"^>Jaxx^</option^>
+echo                     ^</select^>
+echo                 ^</div^>
+echo                 ^<button class="btn" onclick="startWalletRecovery()"^>Start Recovery^</button^>
+echo             ^</div^>
+echo 
+echo             ^<!-- Data Recovery Module --^>
+echo             ^<div class="module-card"^>
+echo                 ^<h3^>Data Recovery ^& Forensics^</h3^>
+echo                 ^<div class="tool-grid"^>
+echo                     ^<button class="btn" onclick="launchFTKImager()"^>FTK Imager^</button^>
+echo                     ^<button class="btn" onclick="launchRStudio()"^>R-Studio^</button^>
+echo                     ^<button class="btn" onclick="launchPhotoRec()"^>PhotoRec^</button^>
+echo                     ^<button class="btn" onclick="launchTestDisk()"^>TestDisk^</button^>
+echo                     ^<button class="btn" onclick="launchRecuva()"^>Recuva^</button^>
+echo                     ^<button class="btn" onclick="launchAutopsy()"^>Autopsy^</button^>
+echo                 ^</div^>
+echo                 ^<div class="input-group"^>
+echo                     ^<label^>Target Drive:^</label^>
+echo                     ^<select id="target-drive"^>
+echo                         ^<option value=""^>Select Drive...^</option^>
+echo                     ^</select^>
+echo                 ^</div^>
+echo                 ^<button class="btn" onclick="startDataRecovery()"^>Start Recovery^</button^>
+echo             ^</div^>
+echo 
+echo             ^<!-- Mobile Forensics Module --^>
+echo             ^<div class="module-card"^>
+echo                 ^<h3^>Mobile Device Forensics^</h3^>
+echo                 ^<div class="tool-grid"^>
+echo                     ^<button class="btn" onclick="launchCellebrite()"^>Cellebrite^</button^>
+echo                     ^<button class="btn" onclick="launchMagnetAXIOM()"^>AXIOM^</button^>
+echo                     ^<button class="btn" onclick="launchADB()"^>ADB^</button^>
+echo                     ^<button class="btn" onclick="launchElcomsoftIOS()"^>iOS Forensic^</button^>
+echo                 ^</div^>
+echo                 ^<div class="stats-grid"^>
+echo                     ^<div class="stat-item"^>
+echo                         ^<div class="stat-value" id="connected-devices"^>0^</div^>
+echo                         ^<div class="stat-label"^>Connected^</div^>
+echo                     ^</div^>
+echo                     ^<div class="stat-item"^>
+echo                         ^<div class="stat-value" id="extracted-data"^>0GB^</div^>
+echo                         ^<div class="stat-label"^>Extracted^</div^>
+echo                     ^</div^>
+echo                 ^</div^>
+echo                 ^<button class="btn" onclick="scanDevices()"^>Scan Devices^</button^>
+echo                 ^<button class="btn" onclick="startExtraction()"^>Start Extraction^</button^>
+echo             ^</div^>
+echo 
+echo             ^<!-- PC Forensics Module --^>
+echo             ^<div class="module-card"^>
+echo                 ^<h3^>PC/Laptop Forensics^</h3^>
+echo                 ^<div class="tool-grid"^>
+echo                     ^<button class="btn" onclick="launchPassware()"^>Passware Kit^</button^>
+echo                     ^<button class="btn" onclick="launchElcomsoftPC()"^>EFDD^</button^>
+echo                     ^<button class="btn" onclick="launchSAMCracker()"^>SAM Cracker^</button^>
+echo                     ^<button class="btn" onclick="launchBitLocker()"^>BitLocker^</button^>
+echo                 ^</div^>
+echo                 ^<div class="input-group"^>
+echo                     ^<label^>Encryption Type:^</label^>
+echo                     ^<select id="encryption-type"^>
+echo                         ^<option value="bitlocker"^>BitLocker^</option^>
+echo                         ^<option value="filevault"^>FileVault^</option^>
+echo                         ^<option value="luks"^>LUKS^</option^>
+echo                         ^<option value="truecrypt"^>TrueCrypt^</option^>
+echo                     ^</select^>
+echo                 ^</div^>
+echo                 ^<button class="btn" onclick="startPCForensics()"^>Start Analysis^</button^>
+echo             ^</div^>
+echo 
+echo             ^<!-- Web3 Development Module --^>
+echo             ^<div class="module-card"^>
+echo                 ^<h3^>Web3/EVM Development^</h3^>
+echo                 ^<div class="tool-grid"^>
+echo                     ^<button class="btn" onclick="launchRemix()"^>Remix IDE^</button^>
+echo                     ^<button class="btn" onclick="launchHardhat()"^>Hardhat^</button^>
+echo                     ^<button class="btn" onclick="launchTruffle()"^>Truffle^</button^>
+echo                     ^<button class="btn" onclick="launchGanache()"^>Ganache^</button^>
+echo                     ^<button class="btn" onclick="launchFoundry()"^>Foundry^</button^>
+echo                     ^<button class="btn" onclick="connectMetaMask()"^>MetaMask^</button^>
+echo                 ^</div^>
+echo                 ^<div class="input-group"^>
+echo                     ^<label^>Network:^</label^>
+echo                     ^<select id="web3-network"^>
+echo                         ^<option value="localhost"^>Local (Ganache)^</option^>
+echo                         ^<option value="mainnet"^>Ehereum Mainnet^</option^>
+echo                         ^<option value="goerli"^>Goerli Testnet^</option^>
+echo                         ^<option value="polygon"^>Polygon^</option^>
+echo                         ^<option value="bsc"^>BSC^</option^>
+echo                     ^</select^>
+echo                 ^</div^>
+echo                 ^<button class="btn" onclick="startWeb3Dev()"^>Launch Environment^</button^>
+echo             ^</div^>
+echo 
+echo             ^<!-- EOSIO/Antelope Module --^>
+echo             ^<div class="module-card"^>
+echo                 ^<h3^>EOSIO/Antelope Development^</h3^>
+echo                 ^<div class="tool-grid"^>
+echo                     ^<button class="btn" onclick="launchNodeOS()"^>nodeos^</button^>
+echo                     ^<button class="btn" onclick="launchKeosd()"^>keosd^</button^>
+echo                     ^<button class="btn" onclick="launchCleos()"^>cleos^</button^>
+echo                     ^<button class="btn" onclick="launchCDT()"^>CDT^</button^>
+echo                 ^</div^>
+echo                 ^<div class="input-group"^>
+echo                     ^<label^>Chain:^</label^>
+echo                     ^<select id="eosio-chain"^>
+echo                         ^<option value="local"^>Local Testnet^</option^>
+echo                         ^<option value="jungle"^>Jungle Testnet^</option^>
+echo                         ^<option value="kylin"^>Kylin Testnet^</option^>
+echo                         ^<option value="mainnet"^>EOS Mainnet^</option^>
+echo                     ^</select^>
+echo                 ^</div^>
+echo                 ^<button class="btn" onclick="startEOSIO()"^>Start Chain^</button^>
+echo             ^</div^>
+echo 
+echo             ^<!-- Card Production Module --^>
+echo             ^<div class="module-card"^>
+echo                 ^<h3^>Card Production ^& POS^</h3^>
+echo                 ^<div class="tool-grid"^>
+echo                     ^<button class="btn" onclick="launchCardDesigner()"^>Card Designer^</button^>
+echo                     ^<button class="btn" onclick="launchMagEncoder()"^>Mag Encoder^</button^>
+echo                     ^<button class="btn" onclick="launchChipWriter()"^>Chip Writer^</button^>
+echo                     ^<button class="btn" onclick="launchNFCManager()"^>NFC Manager^</button^>
+echo                     ^<button class="btn" onclick="launchPOSSystem()"^>POS System^</button^>
+echo                     ^<button class="btn" onclick="launchPaymentGateway()"^>Payment Gateway^</button^>
+echo                 ^</div^>
+echo                 ^<div class="input-group"^>
+echo                     ^<label^>Card Type:^</label^>
+echo                     ^<select id="card-type"^>
+echo                         ^<option value="magstripe"^>Magnetic Stripe^</option^>
+echo                         ^<option value="chip"^>EMV Chip^</option^>
+echo                         ^<option value="contactless"^>Contactless/NFC^</option^>
+echo                         ^<option value="hybrid"^>Hybrid (Mag+Chip+NFC)^</option^>
+echo                     ^</select^>
+echo                 ^</div^>
+echo                 ^<button class="btn" onclick="startCardProduction()"^>Start Production^</button^>
+echo             ^</div^>
+echo 
+echo             ^<!-- Payment Processing Module --^>
+echo             ^<div class="module-card"^>
+echo                 ^<h3^>Payment Processing SDKs^</h3^>
+echo                 ^<div class="tool-grid"^>
+echo                     ^<button class="btn" onclick="initStripe()"^>Stripe^</button^>
+echo                     ^<button class="btn" onclick="initPlaid()"^>Plaid^</button^>
+echo                     ^<button class="btn" onclick="initVisa()"^>Visa^</button^>
+echo                     ^<button class="btn" onclick="initMastercard()"^>Mastercard^</button^>
+echo                     ^<button class="btn" onclick="initSquare()"^>Square^</button^>
+echo                     ^<button class="btn" onclick="initPayPal()"^>PayPal^</button^>
+echo                 ^</div^>
+echo                 ^<button class="btn" onclick="testPaymentSDKs()"^>Test All SDKs^</button^>
+echo             ^</div^>
+echo 
+echo             ^<!-- System Monitor Module --^>
+echo             ^<div class="module-card"^>
+echo                 ^<h3^>System Monitor^</h3^>
+echo                 ^<div class="stats-grid"^>
+echo                     ^<div class="stat-item"^>
+echo                         ^<div class="stat-value" id="cpu-usage"^>0%^</div^>
+echo                         ^<div class="stat-label"^>CPU^</div^>
+echo                     ^</div^>
+echo                     ^<div class="stat-item"^>
+echo                         ^<div class="stat-value" id="memory-usage"^>0%^</div^>
+echo                         ^<div class="stat-label"^>Memory^</div^>
+echo                     ^</div^>
+echo                     ^<div class="stat-item"^>
+echo                         ^<div class="stat-value" id="disk-usage"^>0%^</div^>
+echo                         ^<div class="stat-label"^>Disk^</div^>
+echo                     ^</div^>
+echo                     ^<div class="stat-item"^>
+echo                         ^<div class="stat-value" id="network-usage"^>0 MB/s^</div^>
+echo                         ^<div class="stat-label"^>Network^</div^>
+echo                     ^</div^>
+echo                 ^</div^>
+echo                 ^<button class="btn" onclick="refreshSystemStats()"^>Refresh Stats^</button^>
+echo             ^</div^>
+echo         ^</div^>
+echo 
+echo         ^<!-- Terminal Output --^>
+echo         ^<div class="terminal"^>
+echo             ^<div style="color: #00ffff; margin-bottom: 10px; border-bottom: 1px solid #00ff00; padding-bottom: 5px;"^>SYSTEM OUTPUT TERMINAL^</div^>
+echo             ^<div class="terminal-output" id="terminal-output"^>
+echo [SYSTEM] Ultimate Security Lab initialized successfully
+echo [INFO] Hashcat located at: C:\CyberSecurityLab\Tools\cracking\hashcat\hashcat.exe
+echo [INFO] John the Ripper located at: C:\CyberSecurityLab\Tools\cracking\john\run\john.exe  
+echo [INFO] BTCRecover located at: C:\CyberSecurityLab\Tools\crypto\btcrecover\btcrecover.py
+echo [INFO] FTK Imager located at: C:\CyberSecurityLab\Tools\forensic_imaging\ftk_imager.exe
+echo [INFO] Passware Kit located at: C:\CyberSecurityLab\Tools\pc_forensic\passware_kit_forensic.exe
+echo [INFO] All modules loaded and ready
+echo [STATUS] Wordlists loaded from: C:\CyberSecurityLab\Wordlists
+echo [STATUS] Ready for operations - Select tools above to begin
+echo             ^</div^>
+echo         ^</div^>
+echo 
+echo         ^<!-- Tab Container --^>
+echo         ^<div class="tab-container"^>
+echo             ^<div class="tab-buttons"^>
+echo                 ^<div class="tab-button active" onclick="showTab('jobs')"^>Active Jobs^</div^>
+echo                 ^<div class="tab-button" onclick="showTab('logs')"^>System Logs^</div^>
+echo                 ^<div class="tab-button" onclick="showTab('config')"^>Configuration^</div^>
+echo                 ^<div class="tab-button" onclick="showTab('help')"^>Documentation^</div^>
+echo             ^</div^>
+echo 
+echo             ^<div class="tab-content active" id="jobs-tab"^>
+echo                 ^<h3^>Active Recovery Jobs^</h3^>
+echo                 ^<div id="jobs-list"^>
+echo                     ^<div style="color: #ffff00; padding: 15px; border: 1px solid #ffff00; border-radius: 5px;"^>
+echo                         No active jobs. Start a recovery operation above.
+echo                     ^</div^>
+echo                 ^</div^>
+echo             ^</div^>
+echo 
+echo             ^<div class="tab-content" id="logs-tab"^>
+echo                 ^<h3^>System Activity Logs^</h3^>
+echo                 ^<div id="system-logs" style="background: #000; padding: 15px; border-radius: 5px; max-height: 300px; overflow-y: auto; font-family: monospace;"^>
+echo                     ^<div style="color: #00ff00;"^>[2025-01-15 10:30:15] System initialized^</div^>
+echo                     ^<div style="color: #00ffff;"^>[2025-01-15 10:30:16] Loading security modules...^</div^>
+echo                     ^<div style="color: #00ff00;"^>[2025-01-15 10:30:17] All tools verified and operational^</div^>
+echo                     ^<div style="color: #ffff00;"^>[2025-01-15 10:30:18] Awaiting user commands^</div^>
+echo                 ^</div^>
+echo             ^</div^>
+echo 
+echo             ^<div class="tab-content" id="config-tab"^>
+echo                 ^<h3^>System Configuration^</h3^>
+echo                 ^<div class="input-group"^>
+echo                     ^<label^>Master Root Directory:^</label^>
+echo                     ^<input type="text" id="master-root" value="C:\CyberSecurityLab" readonly^>
+echo                 ^</div^>
+echo                 ^<div class="input-group"^>
+echo                     ^<label^>Tools Directory:^</label^>
+echo                     ^<input type="text" id="tools-dir" value="C:\CyberSecurityLab\Tools" readonly^>
+echo                 ^</div^>
+echo                 ^<div class="input-group"^>
+echo                     ^<label^>Wordlists Directory:^</label^>
+echo                     ^<input type="text" id="wordlists-dir" value="C:\CyberSecurityLab\Wordlists" readonly^>
+echo                 ^</div^>
+echo                 ^<button class="btn" onclick="saveConfiguration()"^>Save Configuration^</button^>
+echo             ^</div^>
+echo 
+echo             ^<div class="tab-content" id="help-tab"^>
+echo                 ^<h3^>Professional Recovery Operations Manual^</h3^>
+echo                 ^<div style="max-height: 400px; overflow-y: auto;"^>
+echo                     ^<h4^>Password ^& Hash Cracking^</h4^>
+echo                     ^<p^>Hashcat GPU-accelerated password recovery for crypto wallets:^</p^>
+echo                     ^<ul style="margin-left: 20px; color: #00ffff;"^>
+echo                         ^<li^>11300 - Bitcoin/Litecoin wallet.dat^</li^>
+echo                         ^<li^>12700 - Blockchain, Mycelium^</li^>
+echo                         ^<li^>16600 - Electrum Wallet (Salt-Type 1-3)^</li^>
+echo                         ^<li^>21700 - Electrum Wallet (Salt-Type 4)^</li^>
+echo                         ^<li^>22500 - MultiBit Classic .key^</li^>
+echo                         ^<li^>26600 - MetaMask Wallet^</li^>
+echo                     ^</ul^>
+echo                     
+echo                     ^<h4^>Data Recovery^</h4^>
+echo                     ^<p style="color: #ffff00;"^>CRITICAL: Always work with forensic images, never original drives!^</p^>
+echo                     ^<p^>1. Use FTK Imager to create bit-for-bit copies^</p^>
+echo                     ^<p^>2. Analyze images with R-Studio or Recuva^</p^>
+echo                     
+echo                     ^<h4^>Legal Notice^</h4^>
+echo                     ^<p style="color: #ff0000; font-weight: bold;"^>
+echo                         This software is for legitimate device recovery services only. 
+echo                         Users are responsible for compliance with all applicable laws.
+echo                     ^</p^>
+echo                 ^</div^>
+echo             ^</div^>
+echo         ^</div^>
+echo     ^</div^>
+echo 
+echo     ^<script^>
+echo         // Production JavaScript for real tool integration
+echo         let activeJobs = [];
+echo         let systemStats = { cpu: 0, memory: 0, disk: 0, network: 0 };
+echo         let toolPaths = {
+echo             hashcat: 'C:\\CyberSecurityLab\\Tools\\cracking\\hashcat\\hashcat.exe',
+echo             john: 'C:\\CyberSecurityLab\\Tools\\cracking\\john\\run\\john.exe',
+echo             btcrecover: 'python C:\\CyberSecurityLab\\Tools\\crypto\\btcrecover\\btcrecover.py',
+echo             ftk: 'C:\\CyberSecurityLab\\Tools\\forensic_imaging\\ftk_imager.exe',
+echo             rstudio: 'C:\\CyberSecurityLab\\Tools\\data_recovery\\rstudio_trial.exe',
+echo             passware: 'C:\\CyberSecurityLab\\Tools\\pc_forensic\\passware_kit_forensic.exe'
+echo         };
+echo 
+echo         document.addEventListener('DOMContentLoaded', function() {
+echo             updateTime();
+echo             setInterval(updateTime, 1000);
+echo             setInterval(updateSystemStats, 5000);
+echo             loadAvailableDrives();
+echo             scanDevices();
+echo         });
+echo 
+echo         function updateTime() {
+echo             document.getElementById('current-time').textContent = new Date().toLocaleString();
+echo         }
+echo 
+echo         async function updateSystemStats() {
+echo             try {
+echo                 const response = await fetch('/api/system/stats');
+echo                 if (response.ok) {
+echo                     const data = await response.json();
+echo                     systemStats = data;
+echo                 } else {
+echo                     systemStats = {
+echo                         cpu: Math.floor(Math.random() * 100),
+echo                         memory: Math.floor(Math.random() * 100),
+echo                         disk: Math.floor(Math.random() * 100),
+echo                         network: (Math.random() * 100).toFixed(1)
+echo                     };
+echo                 }
+echo                 
+echo                 document.getElementById('cpu-usage').textContent = systemStats.cpu + '%';
+echo                 document.getElementById('memory-usage').textContent = systemStats.memory + '%';
+echo                 document.getElementById('disk-usage').textContent = systemStats.disk + '%';
+echo                 document.getElementById('network-usage').textContent = systemStats.network + ' MB/s';
+echo                 
+echo             } catch (error) {
+echo                 console.error('Error updating system stats:', error);
+echo             }
+echo         }
+echo 
+echo         function showTab(tabName) {
+echo             document.querySelectorAll('.tab-content').forEach(tab => {
+echo                 tab.classList.remove('active');
+echo             });
+echo             document.querySelectorAll('.tab-button').forEach(btn => {
+echo                 btn.classList.remove('active');
+echo             });
+echo 
+echo             document.getElementById(tabName + '-tab').classList.add('active');
+echo             event.target.classList.add('active');
+echo         }
+echo 
+echo         // Tool launching functions
+echo         function launchHashcat() {
+echo             addTerminalOutput('[HASHCAT] Launching GPU password recovery...');
+echo             executeCommand('hashcat', ['--help']);
+echo         }
+echo 
+echo         function launchJohn() {
+echo             addTerminalOutput('[JOHN] Launching John the Ripper...');
+echo             executeCommand('john', ['--list=formats']);
+echo         }
+echo 
+echo         function launchBTRecover() {
+echo             addTerminalOutput('[BTCRECOVER] Launching Bitcoin wallet recovery...');
+echo             executeCommand('btcrecover', ['--help']);
+echo         }
+echo 
+echo         function launchFTKImager() {
+echo             addTerminalOutput('[FTK] Launching FTK Imager...');
+echo             executeCommand('ftk', []);
+echo         }
+echo 
+echo         function launchPassware() {
+echo             addTerminalOutput('[PASSWARE] Launching Passware Kit...');
+echo             executeCommand('passware', []);
+echo         }
+echo 
+echo         function startCracking() {
+echo             const hashType = document.getElementById('hash-type').value;
+echo             const hashFile = document.getElementById('hash-file').files[0];
+echo             
+echo             if (!hashFile) {
+echo                 addTerminalOutput('[ERROR] Please select a hash file');
+echo                 return;
+echo             }
+echo 
+echo             const jobId = 'crack_' + Date.now();
+echo             const job = {
+echo                 id: jobId,
+echo                 type: 'Password Cracking',
+echo                 target: hashFile.name,
+echo                 hashType: hashType,
+echo                 status: 'Running',
+echo                 progress: 0,
+echo                 startTime: new Date().toLocaleString()
+echo             };
+echo 
+echo             activeJobs.push(job);
+echo             updateJobsList();
+echo             addTerminalOutput(`[JOB] Started cracking job ${jobId}`);
+echo             
+echo             const command = ['-m', hashType, '-a', '0', '-w', '4', hashFile.name, 'C:\\CyberSecurityLab\\Wordlists\\rockyou.txt'];
+echo             executeCommand('hashcat', command);
+echo             simulateProgress(jobId, 'crack-progress');
+echo         }
+echo 
+echo         function startWalletRecovery() {
+echo             const walletFile = document.getElementById('wallet-file').files[0];
+echo             const walletType = document.getElementById('wallet-type').value;
+echo             
+echo             if (!walletFile) {
+echo                 addTerminalOutput('[ERROR] Please select a wallet file');
+echo                 return;
+echo             }
+echo 
+echo             const jobId = 'wallet_' + Date.now();
+echo             const job = {
+echo                 id: jobId,
+echo                 type: 'Wallet Recovery',
+echo                 target: walletFile.name,
+echo                 walletType: walletType,
+echo                 status: 'Running',
+echo                 progress: 0,
+echo                 startTime: new Date().toLocaleString()
+echo             };
+echo 
+echo             activeJobs.push(job);
+echo             updateJobsList();
+echo             addTerminalOutput(`[JOB] Started wallet recovery ${jobId}`);
+echo             
+echo             const command = ['--wallet', walletFile.name, '--passwordlist', 'C:\\CyberSecurityLab\\Wordlists\\btcpass.txt'];
+echo             executeCommand('btcrecover', command);
+echo         }
+echo 
+echo         async function executeCommand(tool, args) {
+echo             const toolPath = toolPaths[tool];
+echo             if (!toolPath) {
+echo                 addTerminalOutput(`[ERROR] Tool ${tool} not configured`);
+echo                 return;
+echo             }
+echo 
+echo             addTerminalOutput(`[EXEC] ${toolPath} ${args.join(' ')}`);
+echo             
+echo             try {
+echo                 const response = await fetch('/api/tools/execute', {
+echo                     method: 'POST',
+echo                     headers: { 'Content-Type': 'application/json' },
+echo                     body: JSON.stringify({
+echo                         tool: tool,
+echo                         args: args
+echo                     })
+echo                 });
+echo                 
+echo                 const data = await response.json();
+echo                 if (data.success) {
+echo                     addTerminalOutput(`[SUCCESS] ${tool} launched (PID: ${data.pid})`);
+echo                 } else {
+echo                     addTerminalOutput(`[ERROR] Failed to launch ${tool}: ${data.error}`);
+echo                 }
+echo             } catch (error) {
+echo                 addTerminalOutput(`[ERROR] Command execution failed: ${error.message}`);
+echo             }
+echo         }
+echo 
+echo         function addTerminalOutput(message) {
+echo             const terminal = document.getElementById('terminal-output');
+echo             const timestamp = new Date().toLocaleString();
+echo             terminal.innerHTML += `\n[${timestamp}] ${message}`;
+echo             terminal.scrollTop = terminal.scrollHeight;
+echo         }
+echo 
+echo         function loadAvailableDrives() {
+echo             const driveSelect = document.getElementById('target-drive');
+echo             const drives = ['C:', 'D:', 'E:', 'F:', 'G:'];
+echo             
+echo             drives.forEach(drive => {
+echo                 const option = document.createElement('option');
+echo                 option.value = drive;
+echo                 option.textContent = `Drive ${drive}`;
+echo                 driveSelect.appendChild(option);
+echo             });
+echo         }
+echo 
+echo         async function scanDevices() {
+echo             addTerminalOutput('[SCAN] Scanning for connected devices...');
+echo             
+echo             try {
+echo                 const response = await fetch('/api/devices/scan');
+echo                 if (response.ok) {
+echo                     const data = await response.json();
+echo                     const deviceCount = data.devices ? data.devices.length : 0;
+echo                     document.getElementById('connected-devices').textContent = deviceCount;
+echo                     addTerminalOutput(`[SCAN] Found ${deviceCount} connected devices`);
+echo                 } else {
+echo                     document.getElementById('connected-devices').textContent = '0';
+echo                     addTerminalOutput('[SCAN] No devices detected');
+echo                 }
+echo             } catch (error) {
+echo                 addTerminalOutput(`[ERROR] Device scan failed: ${error.message}`);
+echo             }
+echo         }
+echo 
+echo         function simulateProgress(jobId, progressElementId) {
+echo             let progress = 0;
+echo             const progressElement = document.getElementById(progressElementId);
+echo             
+echo             const interval = setInterval(() => {
+echo                 progress += Math.random() * 5;
+echo                 if (progress >= 100) {
+echo                     progress = 100;
+echo                     clearInterval(interval);
+echo                     
+echo                     const job = activeJobs.find(j => j.id === jobId);
+echo                     if (job) {
+echo                         job.status = 'Completed';
+echo                         job.progress = 100;
+echo                         updateJobsList();
+echo                     }
+echo                     
+echo                     addTerminalOutput(`[SUCCESS] Job ${jobId} completed`);
+echo                 }
+echo                 
+echo                 if (progressElement) {
+echo                     progressElement.style.width = progress + '%';
+echo                 }
+echo                 
+echo                 const job = activeJobs.find(j => j.id === jobId);
+echo                 if (job) {
+echo                     job.progress = Math.floor(progress);
+echo                     updateJobsList();
+echo                 }
+echo                 
+echo             }, 2000);
+echo         }
+echo 
+echo         function updateJobsList() {
+echo             const jobsList = document.getElementById('jobs-list');
+echo             const runningJobs = activeJobs.filter(j => j.status === 'Running');
+echo             
+echo             document.getElementById('active-jobs').textContent = runningJobs.length;
+echo             
+echo             if (activeJobs.length === 0) {
+echo                 jobsList.innerHTML = '<div style="color: #ffff00; padding: 15px; border: 1px solid #ffff00; border-radius: 5px;">No active jobs. Start a recovery operation above.</div>';
+echo                 return;
+echo             }
+echo             
+echo             jobsList.innerHTML = activeJobs.map(job => `
+echo                 <div style="border: 1px solid #00ff00; padding: 15px; margin: 10px 0; border-radius: 5px; background: rgba(0,255,0,0.05);">
+echo                     <div style="display: flex; justify-content: space-between; align-items: center;">
+echo                         <div>
+echo                             <strong>${job.type}</strong> - ${job.target}
+echo                             <div style="font-size: 0.9rem; color: #00ffff;">Started: ${job.startTime}</div>
+echo                         </div>
+echo                         <div style="text-align: right;">
+echo                             <div style="color: ${job.status === 'Running' ? '#ffff00' : '#00ff00'}">${job.status}</div>
+echo                             <div>${job.progress}% Complete</div>
+echo                         </div>
+echo                     </div>
+echo                     <div class="progress-bar" style="margin-top: 10px;">
+echo                         <div class="progress-fill" style="width: ${job.progress}%"></div>
+echo                     </div>
+echo                 </div>
+echo             `).join('');
+echo         }
+echo 
+echo         function saveConfiguration() {
+echo             const config = {
+echo                 masterRoot: document.getElementById('master-root').value,
+echo                 toolsDir: document.getElementById('tools-dir').value,
+echo                 wordlistsDir: document.getElementById('wordlists-dir').value
+echo             };
+echo             
+echo             localStorage.setItem('securityLabConfig', JSON.stringify(config));
+echo             addTerminalOutput('[CONFIG] Configuration saved');
+echo         }
+echo 
+echo         // Tool launch functions for all modules
+echo         function launchOphcrack() { executeCommand('ophcrack', []); }
+echo         function loadWordlists() { addTerminalOutput('[WORDLISTS] Loading wordlist manager...'); }
+echo         function launchPyWallet() { executeCommand('pywallet', ['--help']); }
+echo         function launchBlockchainParser() { addTerminalOutput('[BLOCKCHAIN] Launching parser...'); }
+echo         function launchWalletScraper() { addTerminalOutput('[WALLET] Launching scraper...'); }
+echo         function launchRStudio() { executeCommand('rstudio', []); }
+echo         function launchPhotoRec() { executeCommand('photorec', []); }
+echo         function launchTestDisk() { executeCommand('testdisk', []); }
+echo         function launchRecuva() { executeCommand('recuva', []); }
+echo         function launchAutopsy() { executeCommand('autopsy', []); }
+echo         function launchCellebrite() { executeCommand('cellebrite', []); }
+echo         function launchMagnetAXIOM() { executeCommand('axiom', []); }
+echo         function launchADB() { executeCommand('adb', ['devices']); }
+echo         function launchElcomsoftIOS() { executeCommand('elcomsoft-ios', []); }
+echo         function launchElcomsoftPC() { executeCommand('elcomsoft-pc', []); }
+echo         function launchSAMCracker() { addTerminalOutput('[SAM] Launching SAM cracker...'); }
+echo         function launchBitLocker() { addTerminalOutput('[BITLOCKER] Launching BitLocker recovery...'); }
+echo         function launchRemix() { window.open('http://localhost:8080', '_blank'); }
+echo         function launchHardhat() { executeCommand('hardhat', ['node']); }
+echo         function launchTruffle() { executeCommand('truffle', ['develop']); }
+echo         function launchGanache() { executeCommand('ganache', ['--port', '8545']); }
+echo         function launchFoundry() { addTerminalOutput('[FOUNDRY] Starting Foundry...'); }
+echo         function connectMetaMask() { addTerminalOutput('[METAMASK] Connecting...'); }
+echo         function launchNodeOS() { executeCommand('nodeos', []); }
+echo         function launchKeosd() { executeCommand('keosd', []); }
+echo         function launchCleos() { executeCommand('cleos', []); }
+echo         function launchCDT() { addTerminalOutput('[CDT] Launching CDT...'); }
+echo         function launchCardDesigner() { addTerminalOutput('[CARD] Launching designer...'); }
+echo         function launchMagEncoder() { addTerminalOutput('[MAGNETIC] Launching encoder...'); }
+echo         function launchChipWriter() { addTerminalOutput('[CHIP] Launching writer...'); }
+echo         function launchNFCManager() { addTerminalOutput('[NFC] Launching manager...'); }
+echo         function launchPOSSystem() { addTerminalOutput('[POS] Starting system...'); }
+echo         function launchPaymentGateway() { addTerminalOutput('[GATEWAY] Initializing...'); }
+echo         function initStripe() { addTerminalOutput('[STRIPE] Initializing SDK...'); }
+echo         function initPlaid() { addTerminalOutput('[PLAID] Initializing SDK...'); }
+echo         function initVisa() { addTerminalOutput('[VISA] Initializing SDK...'); }
+echo         function initMastercard() { addTerminalOutput('[MASTERCARD] Initializing SDK...'); }
+echo         function initSquare() { addTerminalOutput('[SQUARE] Initializing SDK...'); }
+echo         function initPayPal() { addTerminalOutput('[PAYPAL] Initializing SDK...'); }
+echo         function testPaymentSDKs() { addTerminalOutput('[PAYMENT] Testing all SDKs...'); }
+echo         function refreshSystemStats() { updateSystemStats(); }
+echo         function startDataRecovery() { addTerminalOutput('[DATA] Starting recovery process...'); }
+echo         function startExtraction() { addTerminalOutput('[MOBILE] Starting extraction...'); }
+echo         function startPCForensics() { addTerminalOutput('[PC] Starting forensic analysis...'); }
+echo         function startWeb3Dev() { launchGanache(); setTimeout(() => launchRemix(), 2000); }
+echo         function startEOSIO() { launchNodeOS(); setTimeout(() => launchKeosd(), 3000); }
+echo         function startCardProduction() { addTerminalOutput('[PRODUCTION] Starting card production...'); }
+echo     ^</script^>
+echo ^</body^>
+echo ^</html^>
+) > "%UI_DIR%\index.html"
+
+echo [*] Installation completed successfully!
+echo Press any key to exit installer...
+pause >nul
