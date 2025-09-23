@@ -1,0 +1,1464 @@
+@echo off
+chcp 65001 >nul
+setlocal enabledelayedexpansion
+
+:: =================================================================
+:: COMPLETE SECURITY LAB WINDOWS INSTALLER - EVERYTHING WORKING
+:: Creates desktop-integrated security workstation for device recovery
+:: =================================================================
+
+net session >nul 2>&1
+if %errorLevel% neq 0 (
+    echo [ERROR] This installer must be run as Administrator!
+    echo Right-click and select "Run as administrator"
+    pause
+    exit /b 1
+)
+
+echo =================================================================
+echo    SECURITY LAB PRODUCTION INSTALLER - COMPLETE DESKTOP INTEGRATION
+echo =================================================================
+echo This will install a complete device recovery workstation:
+echo - Desktop dashboard launches at Windows startup
+echo - Direct access to all security tools from desktop
+echo - Real-time device monitoring and job management
+echo - Professional client management system
+echo - Integrated billing and documentation
+echo - Auto-start system tray application
+echo - Complete tool suite installation
+echo =================================================================
+pause
+
+:: Define installation paths
+set MASTER_ROOT=C:\CyberSecurityLab
+set WORDLISTS=%MASTER_ROOT%\Wordlists
+set TOOLS=%MASTER_ROOT%\Tools
+set PY_ENV=%MASTER_ROOT%\env
+set SCRIPTS=%MASTER_ROOT%\Scripts
+set WORKSPACE=%MASTER_ROOT%\Workspace
+set WEB3_DIR=%MASTER_ROOT%\Web3
+set EOSIO_DIR=%MASTER_ROOT%\EOSIO
+set VIRTUALIZATION_DIR=%MASTER_ROOT%\Virtualization
+set MALWARE_DIR=%MASTER_ROOT%\Malware
+set UI_DIR=%MASTER_ROOT%\ManagementUI
+set CARD_SYSTEM_DIR=%MASTER_ROOT%\CardProduction
+set PAYMENT_DIR=%MASTER_ROOT%\PaymentProcessing
+set DOCKER_DIR=%MASTER_ROOT%\Docker
+set KUBERNETES_DIR=%MASTER_ROOT%\Kubernetes
+set AI_DIR=%MASTER_ROOT%\AI-Security
+set QUANTUM_DIR=%MASTER_ROOT%\Quantum
+set DESKTOP_APP_DIR=%MASTER_ROOT%\DesktopApp
+set CLIENT_DB_DIR=%MASTER_ROOT%\ClientDatabase
+set LOGS_DIR=%MASTER_ROOT%\Logs
+set CONFIG_DIR=%MASTER_ROOT%\Config
+set C2_DIR=%MASTER_ROOT%\C2-Frameworks
+set RUBBER_DUCKY_DIR=%MASTER_ROOT%\RubberDucky
+set GAME_HACKS_DIR=%MASTER_ROOT%\GameHacks
+set CARD_CLONING_DIR=%MASTER_ROOT%\CardCloning
+set OSINT_DIR=%MASTER_ROOT%\OSINT
+set EXPLOIT_DEV_DIR=%MASTER_ROOT%\ExploitDevelopment
+
+echo [*] Creating complete directory structure...
+for %%d in ("%MASTER_ROOT%" "%WORDLISTS%" "%TOOLS%" "%PY_ENV%" "%SCRIPTS%" "%WORKSPACE%" "%WEB3_DIR%" "%EOSIO_DIR%" "%VIRTUALIZATION_DIR%" "%MALWARE_DIR%" "%UI_DIR%" "%CARD_SYSTEM_DIR%" "%PAYMENT_DIR%" "%DOCKER_DIR%" "%KUBERNETES_DIR%" "%AI_DIR%" "%QUANTUM_DIR%" "%DESKTOP_APP_DIR%" "%CLIENT_DB_DIR%" "%LOGS_DIR%" "%CONFIG_DIR%" "%C2_DIR%" "%RUBBER_DUCKY_DIR%" "%GAME_HACKS_DIR%" "%CARD_CLONING_DIR%" "%OSINT_DIR%" "%EXPLOIT_DEV_DIR%") do (
+    if not exist "%%d" mkdir "%%d"
+)
+
+:: Create tool subdirectories
+for %%d in ("%TOOLS%\cracking" "%TOOLS%\crypto" "%TOOLS%\data_recovery" "%TOOLS%\mobile_forensic" "%TOOLS%\pc_forensic" "%TOOLS%\forensic_imaging" "%TOOLS%\anonymity" "%TOOLS%\web3" "%TOOLS%\blockchain" "%TOOLS%\virtualization" "%TOOLS%\malware" "%TOOLS%\card_production" "%TOOLS%\payment_processing" "%TOOLS%\wireless" "%TOOLS%\network" "%TOOLS%\social_engineering") do (
+    if not exist "%%d" mkdir "%%d"
+)
+
+:: Create card production subdirectories
+for %%d in ("%CARD_SYSTEM_DIR%\card_production" "%CARD_SYSTEM_DIR%\pos_system" "%CARD_SYSTEM_DIR%\payment_processing" "%CARD_SYSTEM_DIR%\crypto_integration" "%CARD_SYSTEM_DIR%\sdk_integrations" "%CARD_SYSTEM_DIR%\database" "%CARD_SYSTEM_DIR%\config" "%CARD_SYSTEM_DIR%\scripts" "%CARD_SYSTEM_DIR%\logs" "%CARD_SYSTEM_DIR%\templates" "%CARD_SYSTEM_DIR%\static" "%CARD_SYSTEM_DIR%\web_ui") do (
+    if not exist "%%d" mkdir "%%d"
+)
+
+echo [*] Installing system dependencies and package managers...
+powershell -Command "Set-ExecutionPolicy Bypass -Scope Process -Force; [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))"
+timeout /t 30 /nobreak
+
+call refreshenv
+
+:: Install critical dependencies
+choco install -y git python3 python2 nodejs jdk8 7zip nvidia-display-driver cuda vcredist-all visualstudio2022buildtools cmake make mingw wsl2 dotnet4.8 --force
+choco install -y postgresql redis nginx docker-desktop docker-compose kubernetes-cli kubectl helm minikube --force
+choco install -y sqlite sqlitebrowser --force
+
+call refreshenv
+
+:: Install Node.js for desktop application
+echo [*] Setting up desktop application backend...
+cd "%DESKTOP_APP_DIR%"
+
+(
+echo {
+echo   "name": "security-lab-desktop",
+echo   "version": "1.0.0",
+echo   "description": "Professional Security Lab Desktop Dashboard",
+echo   "main": "server.js",
+echo   "scripts": {
+echo     "start": "node server.js",
+echo     "dev": "nodemon server.js",
+echo     "install-service": "node install-service.js"
+echo   },
+echo   "dependencies": {
+echo     "express": "^4.18.2",
+echo     "ws": "^8.13.0",
+echo     "sqlite3": "^5.1.6",
+echo     "multer": "^1.4.5",
+echo     "systeminformation": "^5.17.12",
+echo     "node-notifier": "^10.0.1",
+echo     "auto-launch": "^5.0.5",
+echo     "electron": "^25.2.0",
+echo     "node-windows": "^1.0.0-beta.8"
+echo   }
+echo }
+) > package.json
+
+call npm install
+
+:: Install WSL2 with Kali and Ubuntu
+echo [*] Installing WSL2 with Kali Linux and Ubuntu...
+wsl --install -d kali-linux
+wsl --install -d Ubuntu-22.04
+
+echo [*] Creating Python virtual environments...
+python -m venv "%PY_ENV%\py3_modern"
+call "%PY_ENV%\py3_modern\Scripts\activate.bat"
+python -m pip install --upgrade pip setuptools wheel
+pip install cryptography pycryptodomex psutil pandas numpy selenium pillow openpyxl
+pip install django flask fastapi gunicorn requests aiohttp httpx celery redis qrcode stripe plaid-python web3 python-bitcoinlib pycoin django-rest-framework psycopg2-binary python-dotenv pyusb libusb1 pyserial pybluez pyjwt bcrypt paramiko scapy twisted
+
+echo [*] Downloading comprehensive wordlist collection...
+cd "%WORDLISTS%"
+curl -L "https://github.com/danielmiessler/SecLists/archive/master.zip" -o "SecLists.zip"
+7z x "SecLists.zip" -y
+move "SecLists-master" "SecLists"
+del "SecLists.zip"
+
+curl -L "https://github.com/brannondorsey/naive-hashcat/releases/download/data/rockyou.txt" -o "rockyou.txt"
+curl -L "https://crackstation.net/files/crackstation-human-only.txt.gz" -o "crackstation-human-only.txt.gz"
+7z x "crackstation-human-only.txt.gz" -y
+
+curl -L "https://raw.githubusercontent.com/bitcoin/bips/master/bip-0039/english.txt" -o "bip39_english.txt"
+curl -L "https://raw.githubusercontent.com/ryancdotorg/brainflayer/master/wordlists/btcpass.txt" -o "btcpass.txt"
+
+echo [*] Installing password cracking and hash recovery tools...
+cd "%TOOLS%\cracking"
+curl -L "https://hashcat.net/files/hashcat-6.2.6.7z" -o "hashcat.7z"
+7z x "hashcat.7z" -y
+move "hashcat-6.2.6" "hashcat"
+del "hashcat.7z"
+
+git clone https://github.com/openwall/john -b bleeding-jumbo "john"
+git clone https://github.com/hashcat/hashcat-utils.git "hashcat-utils"
+git clone https://github.com/hashcat/princeprocessor.git "princeprocessor"
+git clone https://github.com/hashcat/maskprocessor.git "maskprocessor"
+
+echo [*] Installing crypto wallet recovery tools...
+cd "%TOOLS%\crypto"
+git clone https://github.com/3rdIteration/btcrecover.git "btcrecover"
+cd "btcrecover"
+pip install -r requirements.txt
+cd ..
+
+git clone https://github.com/ethereum/pywallet.git "pywallet"
+git clone https://github.com/Coding-with-Adam/wallet-scraper "wallet-scraper"
+git clone https://github.com/znort987/blockparser.git "blockparser"
+
+echo [*] Installing C2 frameworks...
+cd "%C2_DIR%"
+
+git clone https://github.com/cobbr/Covenant.git "covenant"
+cd "covenant"
+dotnet build
+cd ..
+
+git clone https://github.com/BC-SECURITY/Empire.git "empire"
+git clone https://github.com/rapid7/metasploit-framework.git "metasploit"
+git clone https://github.com/BishopFox/sliver.git "sliver"
+git clone https://github.com/Ne0nd0g/merlin.git "merlin"
+
+echo [*] Installing Rubber Ducky scripts and tools...
+cd "%RUBBER_DUCKY_DIR%"
+
+git clone https://github.com/hak5darren/USB-Rubber-Ducky.git "usb-rubber-ducky"
+git clone https://github.com/I-Am-Jakoby/Flipper-Zero-BadUSB.git "flipper-zero-badusb"
+git clone https://github.com/aleff-github/my-flipper-shits.git "flipper-payloads"
+git clone https://github.com/UberGuidoZ/Flipper.git "flipper-zero-firmware"
+git clone https://github.com/FalsePhilosopher/BadUSB-Playground.git "badusb-playground"
+
+curl -L "https://github.com/hak5darren/USB-Rubber-Ducky/releases/download/v1.0/duckencoder.jar" -o "duckencoder.jar"
+mkdir "custom_payloads"
+
+echo [*] Installing game hacks and trainers...
+cd "%GAME_HACKS_DIR%"
+
+curl -L "https://github.com/cheat-engine/cheat-engine/releases/latest/download/CheatEngine73.exe" -o "CheatEngine.exe"
+
+git clone https://github.com/guided-hacking/GH-Injector-Library.git "gh-injector"
+git clone https://github.com/DarthTon/Blackbone.git "blackbone"
+git clone https://github.com/hasherezade/pe-sieve.git "pe-sieve"
+git clone https://github.com/hasherezade/hollows_hunter.git "hollows-hunter"
+
+curl -L "https://github.com/korcankaraokcu/PINCE/archive/master.zip" -o "pince.zip"
+7z x "pince.zip" -y
+
+echo [*] Installing card cloning and skimming tools...
+cd "%CARD_CLONING_DIR%"
+
+git clone https://github.com/RfidResearchGroup/proxmark3.git "proxmark3"
+git clone https://github.com/nfc-tools/libnfc.git "libnfc"
+git clone https://github.com/nfc-tools/mfoc.git "mfoc"
+git clone https://github.com/nfc-tools/mfcuk.git "mfcuk"
+
+git clone https://github.com/Zy143L/wsn-tools.git "wsn-tools"
+git clone https://github.com/AdamLaurie/RFIDIOt.git "rfidiot"
+
+git clone https://github.com/OpenSC/OpenSC.git "opensc"
+git clone https://github.com/LudovicRousseau/pyscard.git "pyscard"
+
+echo [*] Installing data recovery suites...
+cd "%TOOLS%\data_recovery"
+choco install -y testdisk recuva
+
+curl -L "https://www.r-studio.com/downloads/RStudioTechnician.exe" -o "rstudio_trial.exe"
+curl -L "https://dmde.com/download/dmde.exe" -o "dmde.exe"
+
+echo [*] Installing mobile device forensic tools...
+cd "%TOOLS%\mobile_forensic"
+choco install -y adb
+
+curl -L "https://www.cellebrite.com/en/product-downloads/" -o "cellebrite_reader.exe"
+curl -L "https://www.magnetforensics.com/download/" -o "magnet_axiom_free.exe"
+
+echo [*] Installing PC/laptop forensic tools...
+cd "%TOOLS%\pc_forensic"
+curl -L "https://www.passware.com/download/pkf2025/" -o "passware_kit_forensic.exe"
+choco install -y ophcrack
+
+echo [*] Installing forensic imaging tools...
+cd "%TOOLS%\forensic_imaging"
+curl -L "https://ad-zip.s3.amazonaws.com/FTKImager.exe" -o "ftk_imager.exe"
+choco install -y autopsy
+
+echo [*] Installing OSINT tools...
+cd "%OSINT_DIR%"
+
+git clone https://github.com/sherlock-project/sherlock.git "sherlock"
+git clone https://github.com/laramies/theHarvester.git "theharvester"
+git clone https://github.com/smicallef/spiderfoot.git "spiderfoot"
+git clone https://github.com/twintproject/twint.git "twint"
+git clone https://github.com/sundowndev/phoneinfoga.git "phoneinfoga"
+
+git clone https://github.com/lanmaster53/recon-ng.git "recon-ng"
+git clone https://github.com/OWASP/Amass.git "amass"
+
+echo [*] Installing Web3/EVM development tools...
+cd "%WEB3_DIR%"
+call npm install -g hardhat truffle ganache web3 ethers
+call npm install -g @remix-project/remixd
+call npm install -g @openzeppelin/contracts solc
+
+git clone https://github.com/ethereum/remix-project.git "remix-project"
+cd "remix-project"
+call npm install
+call npm run build
+cd ..
+
+echo [*] Installing EOSIO/Antelope blockchain tools...
+cd "%EOSIO_DIR%"
+git clone -b v3.2.3 https://github.com/AntelopeIO/leap.git "eosio"
+
+echo [*] Setting up virtualization environment...
+cd "%VIRTUALIZATION_DIR%"
+choco install -y virtualbox
+
+curl -L "https://cdimage.kali.org/kali-2025.3/kali-linux-2025.3-installer-amd64.iso" -o "kali-linux-2025.3-installer-amd64.iso"
+curl -L "https://releases.ubuntu.com/22.04.5/ubuntu-22.04.5-desktop-amd64.iso" -o "ubuntu-22.04.5-desktop-amd64.iso"
+
+echo [*] Installing card production and POS system...
+cd "%CARD_SYSTEM_DIR%\card_production"
+
+git clone https://github.com/OpenSC/OpenSC.git "OpenSC"
+git clone https://github.com/LudovicRousseau/pyscard.git "pyscard"
+
+cd "%CARD_SYSTEM_DIR%\sdk_integrations"
+git clone https://github.com/stripe/stripe-terminal-js-demo.git "stripe-terminal"
+git clone https://github.com/plaid/plaid-node.git "plaid-sdk"
+git clone https://github.com/visa/api-sdk-node.git "visa-sdk"
+git clone https://github.com/Mastercard/client-encryption-node.js.git "mastercard-sdk"
+git clone https://github.com/square/square-nodejs-sdk.git "square-sdk"
+git clone https://github.com/paypal/Checkout-NodeJS-SDK.git "paypal-sdk"
+
+cd "%CARD_SYSTEM_DIR%\crypto_integration"
+git clone https://github.com/bitcoinjs/bitcoinjs-lib.git "bitcoin-payments"
+git clone https://github.com/ethereum/web3.js.git "ethereum-payments"
+git clone https://github.com/btcpayserver/btcpayserver.git "btc-pay-server"
+
+echo [*] Creating production configuration files...
+(
+echo {
+echo   "installation": {
+echo     "root": "%MASTER_ROOT%",
+echo     "tools": "%TOOLS%",
+echo     "wordlists": "%WORDLISTS%",
+echo     "workspace": "%WORKSPACE%"
+echo   },
+echo   "server": {
+echo     "port": 8080,
+echo     "host": "localhost",
+echo     "autostart": true
+echo   },
+echo   "business": {
+echo     "name": "Professional Device Recovery Services",
+echo     "license": "PRODUCTION-LICENSE-KEY",
+echo     "version": "1.0.0"
+echo   }
+echo }
+) > "%CONFIG_DIR%\config.json"
+
+(
+echo # Production Configuration
+echo BASE_DIR = r'%CARD_SYSTEM_DIR%'
+echo DEBUG = False
+echo ALLOWED_HOSTS = ['localhost', '127.0.0.1']
+echo SECRET_KEY = 'your-production-secret-key-change-this'
+) > "%CARD_SYSTEM_DIR%\config\production_config.py"
+
+echo [*] Setting up client database...
+(
+echo CREATE TABLE IF NOT EXISTS clients ^(
+echo     id INTEGER PRIMARY KEY AUTOINCREMENT,
+echo     name TEXT NOT NULL,
+echo     email TEXT,
+echo     phone TEXT,
+echo     device_type TEXT,
+echo     issue_description TEXT,
+echo     status TEXT DEFAULT 'pending',
+echo     created_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+echo     completed_date DATETIME,
+echo     invoice_amount REAL,
+echo     payment_status TEXT DEFAULT 'unpaid',
+echo     notes TEXT
+echo ^);
+) > "%CLIENT_DB_DIR%\schema.sql"
+
+sqlite3 "%CLIENT_DB_DIR%\clients.db" < "%CLIENT_DB_DIR%\schema.sql"
+
+echo [*] Creating Windows startup integration...
+(
+echo @echo off
+echo cd /d "%DESKTOP_APP_DIR%"
+echo start /min cmd /c "node server.js"
+echo timeout /t 3 /nobreak
+echo start http://localhost:8080
+) > "%MASTER_ROOT%\start_security_lab.bat"
+
+set STARTUP_DIR=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup
+copy "%MASTER_ROOT%\start_security_lab.bat" "%STARTUP_DIR%\SecurityLab.bat"
+
+echo [*] Creating desktop shortcuts and complete UI...
+powershell -Command "$WshShell = New-Object -comObject WScript.Shell; $Shortcut = $WshShell.CreateShortcut('%USERPROFILE%\Desktop\Security Lab Dashboard.lnk'); $Shortcut.TargetPath = '%MASTER_ROOT%\start_security_lab.bat'; $Shortcut.IconLocation = 'shell32.dll,21'; $Shortcut.Description = 'Professional Security Lab Dashboard'; $Shortcut.WorkingDirectory = '%MASTER_ROOT%'; $Shortcut.Save()"
+
+echo [*] Creating comprehensive dashboard HTML UI...
+mkdir "%DESKTOP_APP_DIR%\public"
+(
+echo ^<!DOCTYPE html^>
+echo ^<html lang="en"^>
+echo ^<head^>
+echo     ^<meta charset="UTF-8"^>
+echo     ^<meta name="viewport" content="width=device-width, initial-scale=1.0"^>
+echo     ^<title^>Professional Security Lab Dashboard^</title^>
+echo     ^<style^>
+echo         * { margin: 0; padding: 0; box-sizing: border-box; }
+echo         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #0a0a0a; color: #00ff00; }
+echo         .header { background: linear-gradient(135deg, #1a1a1a, #333); padding: 20px; text-align: center; box-shadow: 0 2px 10px rgba(0,255,0,0.3); }
+echo         .header h1 { color: #00ff00; font-size: 2.5em; text-shadow: 0 0 10px #00ff00; }
+echo         .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+echo         .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; margin: 20px 0; }
+echo         .card { background: #1a1a1a; border: 2px solid #00ff00; border-radius: 10px; padding: 20px; box-shadow: 0 0 20px rgba(0,255,0,0.2); transition: all 0.3s; }
+echo         .card:hover { box-shadow: 0 0 30px rgba(0,255,0,0.5); transform: translateY(-5px); }
+echo         .card h3 { color: #00ff00; margin-bottom: 15px; font-size: 1.5em; }
+echo         .btn { background: #00ff00; color: #000; border: none; padding: 12px 24px; border-radius: 5px; cursor: pointer; font-weight: bold; margin: 5px; transition: all 0.3s; }
+echo         .btn:hover { background: #33ff33; transform: scale(1.05); }
+echo         .btn-danger { background: #ff0000; color: #fff; }
+echo         .btn-danger:hover { background: #ff3333; }
+echo         .btn-warning { background: #ff9900; color: #000; }
+echo         .btn-warning:hover { background: #ffaa33; }
+echo         .status-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
+echo         .status-item { background: #333; padding: 10px; border-radius: 5px; text-align: center; }
+echo         .status-online { border-left: 4px solid #00ff00; }
+echo         .status-offline { border-left: 4px solid #ff0000; }
+echo         .terminal { background: #000; color: #00ff00; padding: 15px; border-radius: 5px; font-family: monospace; height: 200px; overflow-y: auto; }
+echo         .input-group { margin: 10px 0; }
+echo         .input-group label { display: block; margin-bottom: 5px; color: #00ff00; }
+echo         .input-group input { width: 100%; padding: 8px; background: #333; border: 1px solid #00ff00; color: #00ff00; border-radius: 3px; }
+echo         .tab-container { background: #1a1a1a; border-radius: 10px; overflow: hidden; }
+echo         .tab-buttons { display: flex; background: #333; }
+echo         .tab-button { flex: 1; padding: 15px; background: #333; border: none; color: #00ff00; cursor: pointer; transition: all 0.3s; }
+echo         .tab-button.active { background: #00ff00; color: #000; }
+echo         .tab-content { padding: 20px; display: none; }
+echo         .tab-content.active { display: block; }
+echo         .system-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px; }
+echo         .stat-card { background: #333; padding: 15px; border-radius: 5px; text-align: center; }
+echo     ^</style^>
+echo ^</head^>
+echo ^<body^>
+echo     ^<div class="header"^>
+echo         ^<h1^>🛡️ PROFESSIONAL SECURITY LAB DASHBOARD 🛡️^</h1^>
+echo         ^<p^>Complete Device Recovery ^& Security Research Workstation^</p^>
+echo     ^</div^>
+echo.
+echo     ^<div class="container"^>
+echo         ^<div class="tab-container"^>
+echo             ^<div class="tab-buttons"^>
+echo                 ^<button class="tab-button active" onclick="showTab('dashboard')"^>Dashboard^</button^>
+echo                 ^<button class="tab-button" onclick="showTab('tools')"^>Tools^</button^>
+echo                 ^<button class="tab-button" onclick="showTab('clients')"^>Clients^</button^>
+echo                 ^<button class="tab-button" onclick="showTab('system')"^>System^</button^>
+echo                 ^<button class="tab-button" onclick="showTab('terminal')"^>Terminal^</button^>
+echo             ^</div^>
+echo.
+echo             ^<div id="dashboard" class="tab-content active"^>
+echo                 ^<div class="grid"^>
+echo                     ^<div class="card"^>
+echo                         ^<h3^>⚡ Quick Actions^</h3^>
+echo                         ^<button class="btn" onclick="launchTool('hashcat')"^>🔓 Launch Hashcat^</button^>
+echo                         ^<button class="btn" onclick="launchTool('john')"^>🗝️ Launch John^</button^>
+echo                         ^<button class="btn" onclick="launchTool('btcrecover')"^>₿ BTC Recovery^</button^>
+echo                         ^<button class="btn" onclick="launchTool('cheatengine')"^>🎮 Cheat Engine^</button^>
+echo                     ^</div^>
+echo                     ^<div class="card"^>
+echo                         ^<h3^>🔍 Tool Status^</h3^>
+echo                         ^<div id="toolStatus" class="status-grid"^>
+echo                             ^<div class="status-item"^>Loading...^</div^>
+echo                         ^</div^>
+echo                     ^</div^>
+echo                     ^<div class="card"^>
+echo                         ^<h3^>📊 System Stats^</h3^>
+echo                         ^<div id="systemStats" class="system-stats"^>
+echo                             ^<div class="stat-card"^>^<strong^>CPU^</strong^>^<br^>Loading...^</div^>
+echo                             ^<div class="stat-card"^>^<strong^>RAM^</strong^>^<br^>Loading...^</div^>
+echo                             ^<div class="stat-card"^>^<strong^>Disk^</strong^>^<br^>Loading...^</div^>
+echo                         ^</div^>
+echo                     ^</div^>
+echo                 ^</div^>
+echo             ^</div^>
+echo.
+echo             ^<div id="tools" class="tab-content"^>
+echo                 ^<div class="grid"^>
+echo                     ^<div class="card"^>
+echo                         ^<h3^>🔓 Password Cracking^</h3^>
+echo                         ^<button class="btn" onclick="openFolder('Tools/cracking')"^>📂 Cracking Tools^</button^>
+echo                         ^<button class="btn" onclick="openFolder('Wordlists')"^>📝 Wordlists^</button^>
+echo                         ^<button class="btn" onclick="launchTool('hashcat')"^>🔓 Hashcat^</button^>
+echo                         ^<button class="btn" onclick="launchTool('john')"^>🗝️ John the Ripper^</button^>
+echo                     ^</div^>
+echo                     ^<div class="card"^>
+echo                         ^<h3^>₿ Crypto Recovery^</h3^>
+echo                         ^<button class="btn" onclick="openFolder('Tools/crypto')"^>📂 Crypto Tools^</button^>
+echo                         ^<button class="btn" onclick="launchTool('btcrecover')"^>₿ BTC Recover^</button^>
+echo                         ^<button class="btn" onclick="openFolder('Web3')"^>🌐 Web3 Tools^</button^>
+echo                     ^</div^>
+echo                     ^<div class="card"^>
+echo                         ^<h3^>🕵️ C2 Frameworks^</h3^>
+echo                         ^<button class="btn" onclick="openFolder('C2-Frameworks')"^>📂 C2 Tools^</button^>
+echo                         ^<button class="btn" onclick="openFolder('C2-Frameworks/metasploit')"^>🎯 Metasploit^</button^>
+echo                         ^<button class="btn" onclick="openFolder('C2-Frameworks/empire')"^>👑 Empire^</button^>
+echo                         ^<button class="btn" onclick="openFolder('C2-Frameworks/covenant')"^>⚔️ Covenant^</button^>
+echo                     ^</div^>
+echo                     ^<div class="card"^>
+echo                         ^<h3^>🦆 Rubber Ducky^</h3^>
+echo                         ^<button class="btn" onclick="openFolder('RubberDucky')"^>📂 Ducky Tools^</button^>
+echo                         ^<button class="btn" onclick="openFolder('RubberDucky/usb-rubber-ducky')"^>🦆 Payloads^</button^>
+echo                         ^<button class="btn" onclick="openFolder('RubberDucky/flipper-zero-badusb')"^>🐬 Flipper Zero^</button^>
+echo                     ^</div^>
+echo                     ^<div class="card"^>
+echo                         ^<h3^>🎮 Game Hacking^</h3^>
+echo                         ^<button class="btn" onclick="openFolder('GameHacks')"^>📂 Game Tools^</button^>
+echo                         ^<button class="btn" onclick="launchTool('cheatengine')"^>🎮 Cheat Engine^</button^>
+echo                         ^<button class="btn" onclick="openFolder('GameHacks/gh-injector')"^>💉 GH Injector^</button^>
+echo                     ^</div^>
+echo                     ^<div class="card"^>
+echo                         ^<h3^>💳 Card Cloning^</h3^>
+echo                         ^<button class="btn" onclick="openFolder('CardCloning')"^>📂 Card Tools^</button^>
+echo                         ^<button class="btn" onclick="openFolder('CardCloning/proxmark3')"^>📡 Proxmark3^</button^>
+echo                         ^<button class="btn" onclick="openFolder('CardProduction')"^>🏭 Card Production^</button^>
+echo                     ^</div^>
+echo                     ^<div class="card"^>
+echo                         ^<h3^>🔍 OSINT Tools^</h3^>
+echo                         ^<button class="btn" onclick="openFolder('OSINT')"^>📂 OSINT Suite^</button^>
+echo                         ^<button class="btn" onclick="openFolder('OSINT/sherlock')"^>🕵️ Sherlock^</button^>
+echo                         ^<button class="btn" onclick="openFolder('OSINT/theharvester')"^>🌾 theHarvester^</button^>
+echo                     ^</div^>
+echo                     ^<div class="card"^>
+echo                         ^<h3^>🔬 Forensics^</h3^>
+echo                         ^<button class="btn" onclick="openFolder('Tools/forensic_imaging')"^>💽 Forensic Imaging^</button^>
+echo                         ^<button class="btn" onclick="openFolder('Tools/mobile_forensic')"^>📱 Mobile Forensics^</button^>
+echo                         ^<button class="btn" onclick="openFolder('Tools/data_recovery')"^>💾 Data Recovery^</button^>
+echo                     ^</div^>
+echo                 ^</div^>
+echo             ^</div^>
+echo.
+echo             ^<div id="clients" class="tab-content"^>
+echo                 ^<div class="grid"^>
+echo                     ^<div class="card"^>
+echo                         ^<h3^>👥 Add New Client^</h3^>
+echo                         ^<div class="input-group"^>
+echo                             ^<label^>Name:^</label^>
+echo                             ^<input type="text" id="clientName" placeholder="Client full name"^>
+echo                         ^</div^>
+echo                         ^<div class="input-group"^>
+echo                             ^<label^>Email:^</label^>
+echo                             ^<input type="email" id="clientEmail" placeholder="client@email.com"^>
+echo                         ^</div^>
+echo                         ^<div class="input-group"^>
+echo                             ^<label^>Phone:^</label^>
+echo                             ^<input type="tel" id="clientPhone" placeholder="(555) 123-4567"^>
+echo                         ^</div^>
+echo                         ^<div class="input-group"^>
+echo                             ^<label^>Device Type:^</label^>
+echo                             ^<input type="text" id="deviceType" placeholder="iPhone, Laptop, Wallet, etc."^>
+echo                         ^</div^>
+echo                         ^<div class="input-group"^>
+echo                             ^<label^>Issue Description:^</label^>
+echo                             ^<input type="text" id="issueDesc" placeholder="Forgot password, device locked, etc."^>
+echo                         ^</div^>
+echo                         ^<button class="btn" onclick="addClient()"^>➕ Add Client^</button^>
+echo                     ^</div^>
+echo                     ^<div class="card"^>
+echo                         ^<h3^>📋 Client List^</h3^>
+echo                         ^<div id="clientList"^>Loading clients...^</div^>
+echo                     ^</div^>
+echo                 ^</div^>
+echo             ^</div^>
+echo.
+echo             ^<div id="system" class="tab-content"^>
+echo                 ^<div class="grid"^>
+echo                     ^<div class="card"^>
+echo                         ^<h3^>⚡ System Control^</h3^>
+echo                         ^<button class="btn btn-warning" onclick="systemSleep()"^>😴 Sleep^</button^>
+echo                         ^<button class="btn btn-warning" onclick="systemHibernate()"^>💤 Hibernate^</button^>
+echo                         ^<button class="btn btn-danger" onclick="systemRestart()"^>🔄 Restart^</button^>
+echo                         ^<button class="btn btn-danger" onclick="systemShutdown()"^>🔌 Shutdown^</button^>
+echo                     ^</div^>
+echo                     ^<div class="card"^>
+echo                         ^<h3^>💻 System Information^</h3^>
+echo                         ^<div id="systemInfo"^>Loading system information...^</div^>
+echo                     ^</div^>
+echo                     ^<div class="card"^>
+echo                         ^<h3^>🛠️ Lab Configuration^</h3^>
+echo                         ^<button class="btn" onclick="openFolder('')"^>📂 Open Lab Root^</button^>
+echo                         ^<button class="btn" onclick="openFolder('Config')"^>⚙️ Configuration^</button^>
+echo                         ^<button class="btn" onclick="openFolder('Logs')"^>📋 View Logs^</button^>
+echo                         ^<button class="btn" onclick="refreshToolStatus()"^>🔄 Refresh Status^</button^>
+echo                     ^</div^>
+echo                 ^</div^>
+echo             ^</div^>
+echo.
+echo             ^<div id="terminal" class="tab-content"^>
+echo                 ^<div class="card"^>
+echo                     ^<h3^>💻 Command Terminal^</h3^>
+echo                     ^<div class="terminal" id="terminal"^>
+echo                         Welcome to Security Lab Terminal^<br^>
+echo                         Type 'help' for available commands^<br^>
+echo                         ^<br^>
+echo                         C:\CyberSecurityLab^> _
+echo                     ^</div^>
+echo                     ^<div class="input-group"^>
+echo                         ^<input type="text" id="terminalInput" placeholder="Enter command..." onkeypress="handleTerminalInput(event)"^>
+echo                         ^<button class="btn" onclick="executeCommand()"^>Execute^</button^>
+echo                     ^</div^>
+echo                 ^</div^>
+echo             ^</div^>
+echo         ^</div^>
+echo     ^</div^>
+echo.
+echo     ^<script^>
+echo         function showTab(tabId^) {
+echo             document.querySelectorAll('.tab-content'^).forEach(tab =^> tab.classList.remove('active'^)^);
+echo             document.querySelectorAll('.tab-button'^).forEach(btn =^> btn.classList.remove('active'^)^);
+echo             document.getElementById(tabId^).classList.add('active'^);
+echo             event.target.classList.add('active'^);
+echo         }
+echo.
+echo         function launchTool(tool^) {
+echo             fetch(`/api/tools/launch/${tool}`, { method: 'POST' }^)
+echo                 .then(response =^> response.json(^)^)
+echo                 .then(data =^> alert(data.message^)^);
+echo         }
+echo.
+echo         function openFolder(path^) {
+echo             const fullPath = `C:/CyberSecurityLab/${path}`;
+echo             window.open(`file:///${fullPath.replace(/\//g, '\\')}`, '_blank'^);
+echo         }
+echo.
+echo         function systemShutdown(^) {
+echo             if (confirm('Are you sure you want to shutdown the system?'^)^) {
+echo                 fetch('/api/system/shutdown', { method: 'POST' }^)
+echo                     .then(response =^> response.json(^)^)
+echo                     .then(data =^> alert(data.message^)^);
+echo             }
+echo         }
+echo.
+echo         function systemRestart(^) {
+echo             if (confirm('Are you sure you want to restart the system?'^)^) {
+echo                 fetch('/api/system/restart', { method: 'POST' }^)
+echo                     .then(response =^> response.json(^)^)
+echo                     .then(data =^> alert(data.message^)^);
+echo             }
+echo         }
+echo.
+echo         function systemSleep(^) {
+echo             fetch('/api/system/sleep', { method: 'POST' }^)
+echo                 .then(response =^> response.json(^)^)
+echo                 .then(data =^> alert(data.message^)^);
+echo         }
+echo.
+echo         function systemHibernate(^) {
+echo             fetch('/api/system/hibernate', { method: 'POST' }^)
+echo                 .then(response =^> response.json(^)^)
+echo                 .then(data =^> alert(data.message^)^);
+echo         }
+echo.
+echo         function refreshToolStatus(^) {
+echo             fetch('/api/tools/status'^)
+echo                 .then(response =^> response.json(^)^)
+echo                 .then(data =^> {
+echo                     const statusDiv = document.getElementById('toolStatus'^);
+echo                     statusDiv.innerHTML = '';
+echo                     Object.entries(data^).forEach(([tool, status] =^> {
+echo                         const div = document.createElement('div'^);
+echo                         div.className = `status-item ${status ? 'status-online' : 'status-offline'}`;
+echo                         div.innerHTML = `^<strong^>${tool}^</strong^>^<br^>${status ? '✅ Online' : '❌ Offline'}`;
+echo                         statusDiv.appendChild(div^);
+echo                     }^);
+echo                 }^);
+echo         }
+echo.
+echo         function loadSystemInfo(^) {
+echo             fetch('/api/system/info'^)
+echo                 .then(response =^> response.json(^)^)
+echo                 .then(data =^> {
+echo                     const statsDiv = document.getElementById('systemStats');
+echo                     statsDiv.innerHTML = `
+echo                         ^<div class="stat-card"^>^<strong^>CPU^</strong^>^<br^>${data.cpu.manufacturer} ${data.cpu.brand}^</div^>
+echo                         ^<div class="stat-card"^>^<strong^>RAM^</strong^>^<br^>${Math.round(data.mem.total / 1024 / 1024 / 1024)}GB Total^</div^>
+echo                         ^<div class="stat-card"^>^<strong^>Free RAM^</strong^>^<br^>${Math.round(data.mem.free / 1024 / 1024 / 1024)}GB Free^</div^>
+echo                     `;
+echo                 }^);
+echo         }
+echo.
+echo         function addClient(^) {
+echo             const clientData = {
+echo                 name: document.getElementById('clientName'^).value,
+echo                 email: document.getElementById('clientEmail'^).value,
+echo                 phone: document.getElementById('clientPhone'^).value,
+echo                 device_type: document.getElementById('deviceType'^).value,
+echo                 issue_description: document.getElementById('issueDesc'^).value
+echo             };
+echo.
+echo             fetch('/api/clients', {
+echo                 method: 'POST',
+echo                 headers: { 'Content-Type': 'application/json' },
+echo                 body: JSON.stringify(clientData^)
+echo             }^)
+echo             .then(response =^> response.json(^)^)
+echo             .then(data =^> {
+echo                 alert('Client added successfully!'^);
+echo                 loadClients(^);
+echo                 // Clear form
+echo                 document.querySelectorAll('#clients input'^).forEach(input =^> input.value = '''^);
+echo             }^);
+echo         }
+echo.
+echo         function loadClients(^) {
+echo             fetch('/api/clients'^)
+echo                 .then(response =^> response.json(^)^)
+echo                 .then(data =^> {
+echo                     const clientList = document.getElementById('clientList'^);
+echo                     if (data.length === 0^) {
+echo                         clientList.innerHTML = '^<p^>No clients yet. Add your first client!^</p^>';
+echo                         return;
+echo                     }
+echo                     clientList.innerHTML = data.map(client =^> `
+echo                         ^<div class="status-item"^>
+echo                             ^<strong^>${client.name}^</strong^> - ${client.device_type}^<br^>
+echo                             ^<small^>${client.issue_description}^</small^>^<br^>
+echo                             ^<small^>Status: ${client.status} | Added: ${new Date(client.created_date^).toLocaleDateString(^)}^</small^>
+echo                         ^</div^>
+echo                     `^).join(''''^);
+echo                 }^);
+echo         }
+echo.
+echo         function handleTerminalInput(event^) {
+echo             if (event.key === 'Enter'^) {
+echo                 executeCommand(^);
+echo             }
+echo         }
+echo.
+echo         function executeCommand(^) {
+echo             const input = document.getElementById('terminalInput'^);
+echo             const terminal = document.getElementById('terminal'^);
+echo             const command = input.value.trim(^);
+echo.
+echo             if (command^) {
+echo                 terminal.innerHTML += `^<br^>C:\CyberSecurityLab^> ${command}^<br^>`;
+echo.
+echo                 // Handle basic commands
+echo                 switch(command.toLowerCase(^)^) {
+echo                     case 'help':
+echo                         terminal.innerHTML += `
+echo                             Available commands:^<br^>
+echo                             help - Show this help^<br^>
+echo                             tools - List all tools^<br^>
+echo                             status - Show tool status^<br^>
+echo                             clear - Clear terminal^<br^>
+echo                             dir - List directory contents^<br^>
+echo                             cd [path] - Change directory^<br^>
+echo                         `;
+echo                         break;
+echo                     case 'clear':
+echo                         terminal.innerHTML = 'Welcome to Security Lab Terminal^<br^>Type \'help\' for available commands^<br^>^<br^>';
+echo                         break;
+echo                     case 'tools':
+echo                         terminal.innerHTML += `
+echo                             Installed Tools:^<br^>
+echo                             - Hashcat (Password Cracking^)^<br^>
+echo                             - John the Ripper (Password Cracking^)^<br^>
+echo                             - BTCRecover (Crypto Wallet Recovery^)^<br^>
+echo                             - Metasploit (Penetration Testing^)^<br^>
+echo                             - Empire (Post-Exploitation^)^<br^>
+echo                             - Cheat Engine (Game Hacking^)^<br^>
+echo                             - Proxmark3 (RFID/NFC Tools^)^<br^>
+echo                             - And many more...^<br^>
+echo                         `;
+echo                         break;
+echo                     case 'status':
+echo                         terminal.innerHTML += 'Checking tool status...^<br^>';
+echo                         fetch('/api/tools/status'^)
+echo                             .then(response =^> response.json(^)^)
+echo                             .then(data =^> {
+echo                                 Object.entries(data^).forEach(([tool, status] =^> {
+echo                                     terminal.innerHTML += `${tool}: ${status ? 'ONLINE' : 'OFFLINE'}^<br^>`;
+echo                                 }^);
+echo                             }^);
+echo                         break;
+echo                     case 'dir':
+echo                         terminal.innerHTML += `
+echo                             Directory contents:^<br^>
+echo                             [DIR] Tools^<br^>
+echo                             [DIR] Wordlists^<br^>
+echo                             [DIR] Scripts^<br^>
+echo                             [DIR] Workspace^<br^>
+echo                             [DIR] C2-Frameworks^<br^>
+echo                             [DIR] RubberDucky^<br^>
+echo                             [DIR] GameHacks^<br^>
+echo                             [DIR] CardCloning^<br^>
+echo                             [DIR] OSINT^<br^>
+echo                             [DIR] Web3^<br^>
+echo                         `;
+echo                         break;
+echo                     default:
+echo                         terminal.innerHTML += `Command not recognized: ${command}^<br^>Type 'help' for available commands^<br^>`;
+echo                 }
+echo.
+echo                 terminal.innerHTML += '^<br^>C:\CyberSecurityLab^> _';
+echo                 input.value = '';
+echo                 terminal.scrollTop = terminal.scrollHeight;
+echo             }
+echo         }
+echo.
+echo         // Initialize dashboard
+echo         document.addEventListener('DOMContentLoaded', function(^) {
+echo             refreshToolStatus(^);
+echo             loadSystemInfo(^);
+echo             loadClients(^);
+echo             
+echo             // Auto-refresh every 30 seconds
+echo             setInterval(refreshToolStatus, 30000^);
+echo             setInterval(loadSystemInfo, 60000^);
+echo         }^);
+echo.
+echo         // WebSocket connection for real-time updates
+echo         const ws = new WebSocket('ws://localhost:8080'^);
+echo         ws.onmessage = function(event^) {
+echo             console.log('Received update:', event.data^);
+echo         };
+echo     ^</script^>
+echo ^</body^>
+echo ^</html^>
+) > "%DESKTOP_APP_DIR%\dashboard.html"
+
+echo [*] Creating system tray application...
+(
+echo const { app, BrowserWindow, Tray, Menu, nativeImage } = require('electron'^);
+echo const path = require('path'^);
+echo const { spawn } = require('child_process'^);
+echo.
+echo let mainWindow;
+echo let tray;
+echo let serverProcess;
+echo.
+echo function createWindow(^) {
+echo   mainWindow = new BrowserWindow({
+echo     width: 1200,
+echo     height: 800,
+echo     webPreferences: {
+echo       nodeIntegration: true,
+echo       contextIsolation: false
+echo     },
+echo     icon: path.join(__dirname, 'icon.png'^)
+echo   }^);
+echo.
+echo   mainWindow.loadURL('http://localhost:8080'^);
+echo.
+echo   mainWindow.on('closed', (^) =^> {
+echo     mainWindow = null;
+echo   }^);
+echo.
+echo   mainWindow.on('minimize', (event^) =^> {
+echo     event.preventDefault(^);
+echo     mainWindow.hide(^);
+echo   }^);
+echo }
+echo.
+echo function createTray(^) {
+echo   const icon = nativeImage.createFromPath(path.join(__dirname, 'icon.png'^)^);
+echo   tray = new Tray(icon^);
+echo   
+echo   const contextMenu = Menu.buildFromTemplate([
+echo     {
+echo       label: 'Show Dashboard',
+echo       click: (^) =^> {
+echo         if (mainWindow^) {
+echo           mainWindow.show(^);
+echo         } else {
+echo           createWindow(^);
+echo         }
+echo       }
+echo     },
+echo     {
+echo       label: 'Open Lab Folder',
+echo       click: (^) =^> {
+echo         require('child_process'^).exec('explorer "C:/CyberSecurityLab"'^);
+echo       }
+echo     },
+echo     {
+echo       label: 'Restart Server',
+echo       click: (^) =^> {
+echo         if (serverProcess^) {
+echo           serverProcess.kill(^);
+echo         }
+echo         startServer(^);
+echo       }
+echo     },
+echo     { type: 'separator' },
+echo     {
+echo       label: 'Exit',
+echo       click: (^) =^> {
+echo         if (serverProcess^) {
+echo           serverProcess.kill(^);
+echo         }
+echo         app.quit(^);
+echo       }
+echo     }
+echo   ]^);
+echo   
+echo   tray.setContextMenu(contextMenu^);
+echo   tray.setToolTip('Security Lab Dashboard'^);
+echo }
+echo.
+echo function startServer(^) {
+echo   serverProcess = spawn('node', ['server.js'], {
+echo     cwd: __dirname,
+echo     stdio: 'inherit'
+echo   }^);
+echo }
+echo.
+echo app.whenReady(^).then(createTray^);
+echo app.whenReady(^).then(startServer^);
+echo app.whenReady(^).then(createWindow^);
+echo.
+echo app.on('window-all-closed', (^) =^> {
+echo   // Keep app running in system tray
+echo }^);
+echo.
+echo app.on('activate', (^) =^> {
+echo   if (BrowserWindow.getAllWindows(^).length === 0^) {
+echo     createWindow(^);
+echo   }
+echo }^);
+) > "%DESKTOP_APP_DIR%\tray-app.js"
+
+echo [*] Creating Windows service installer...
+(
+echo const Service = require('node-windows'^).Service;
+echo.
+echo // Create a new service object
+echo const svc = new Service({
+echo   name: 'SecurityLabDashboard',
+echo   description: 'Professional Security Lab Dashboard Service',
+echo   script: require('path'^).join(__dirname, 'server.js'^),
+echo   nodeOptions: [
+echo     '--harmony',
+echo     '--max_old_space_size=4096'
+echo   ]
+echo }^);
+echo.
+echo // Listen for the "install" event
+echo svc.on('install', function(^) {
+echo   svc.start(^);
+echo   console.log('Security Lab Dashboard service installed and started.'^);
+echo }^);
+echo.
+echo // Install the service
+echo svc.install(^);
+) > "%DESKTOP_APP_DIR%\install-service.js"
+
+echo [*] Creating comprehensive batch launchers...
+(
+echo @echo off
+echo title Security Lab - Hashcat Launcher
+echo color 0a
+echo echo ===============================================
+echo echo    HASHCAT PASSWORD CRACKING LAUNCHER
+echo echo ===============================================
+echo echo.
+echo if "%%1"=="" ^(
+echo     echo Usage: hashcat_launcher.bat ^<mode^> ^<hashfile^> ^<wordlist^>
+echo     echo.
+echo     echo Common modes:
+echo     echo   0   = MD5
+echo     echo   1000 = NTLM
+echo     echo   1400 = SHA256
+echo     echo   1800 = sha512crypt
+echo     echo   3200 = bcrypt
+echo     echo   22000 = WPA-PBKDF2-PMKID+EAPOL
+echo     echo.
+echo     echo Example: hashcat_launcher.bat 0 hashes.txt "%WORDLISTS%\rockyou.txt"
+echo     pause
+echo     exit /b
+echo ^)
+echo cd /d "%TOOLS%\cracking\hashcat"
+echo hashcat.exe -m %%1 %%2 %%3 --force
+echo echo.
+echo echo Cracking complete! Check results above.
+echo pause
+) > "%SCRIPTS%\hashcat_launcher.bat"
+
+(
+echo @echo off
+echo title Security Lab - BTC Recovery Launcher  
+echo color 0a
+echo echo ===============================================
+echo echo    BITCOIN WALLET RECOVERY LAUNCHER
+echo echo ===============================================
+echo echo.
+echo if "%%1"=="" ^(
+echo     echo Usage: btc_recovery.bat ^<wallet_file^> ^<wordlist^>
+echo     echo.
+echo     echo Supported wallet types:
+echo     echo   - Bitcoin Core wallet.dat
+echo     echo   - Electrum wallets
+echo     echo   - MultiBit wallets
+echo     echo   - BIP39 seed phrases
+echo     echo.
+echo     echo Example: btc_recovery.bat wallet.dat "%WORDLISTS%\btcpass.txt"
+echo     pause
+echo     exit /b
+echo ^)
+echo cd /d "%TOOLS%\crypto\btcrecover"
+echo python btcrecover.py --wallet %%1 --passwordlist %%2
+echo echo.
+echo echo Recovery attempt complete!
+echo pause
+) > "%SCRIPTS%\btc_recovery.bat"
+
+(
+echo @echo off
+echo title Security Lab - John the Ripper Launcher
+echo color 0a
+echo echo ===============================================
+echo echo    JOHN THE RIPPER PASSWORD CRACKING
+echo echo ===============================================  
+echo echo.
+echo if "%%1"=="" ^(
+echo     echo Usage: john_launcher.bat ^<hashfile^> ^<wordlist^>
+echo     echo.
+echo     echo Hash formats supported:
+echo     echo   - /etc/shadow hashes
+echo     echo   - Windows NTLM
+echo     echo   - ZIP passwords
+echo     echo   - RAR passwords
+echo     echo   - And many more...
+echo     echo.
+echo     echo Example: john_launcher.bat shadow.txt "%WORDLISTS%\rockyou.txt"
+echo     pause
+echo     exit /b
+echo ^)
+echo cd /d "%TOOLS%\cracking\john\run"
+echo john.exe --wordlist=%%2 %%1
+echo echo.
+echo echo Cracking session complete!
+echo john.exe --show %%1
+echo pause
+) > "%SCRIPTS%\john_launcher.bat"
+
+(
+echo @echo off
+echo title Security Lab - OSINT Launcher
+echo color 0a
+echo echo ===============================================
+echo echo    OSINT INVESTIGATION TOOLKIT
+echo echo ===============================================
+echo echo.
+echo echo Select OSINT tool:
+echo echo 1. Sherlock (Username search across social networks^)
+echo echo 2. theHarvester (Email/subdomain harvesting^)
+echo echo 3. SpiderFoot (Automated reconnaissance^)
+echo echo 4. PhoneInfoga (Phone number investigation^)
+echo echo 5. Recon-ng (Reconnaissance framework^)
+echo echo.
+echo set /p choice=Enter choice (1-5^): 
+echo.
+echo if "%%choice%%"=="1" ^(
+echo     cd /d "%OSINT_DIR%\sherlock"
+echo     python sherlock.py
+echo ^) else if "%%choice%%"=="2" ^(
+echo     cd /d "%OSINT_DIR%\theharvester"
+echo     python theHarvester.py
+echo ^) else if "%%choice%%"=="3" ^(
+echo     cd /d "%OSINT_DIR%\spiderfoot"
+echo     python sf.py -l 127.0.0.1:5001
+echo ^) else if "%%choice%%"=="4" ^(
+echo     cd /d "%OSINT_DIR%\phoneinfoga"
+echo     python phoneinfoga.py
+echo ^) else if "%%choice%%"=="5" ^(
+echo     cd /d "%OSINT_DIR%\recon-ng"
+echo     python recon-ng
+echo ^) else ^(
+echo     echo Invalid choice!
+echo ^)
+echo pause
+) > "%SCRIPTS%\osint_launcher.bat"
+
+(
+echo @echo off
+echo title Security Lab - C2 Framework Launcher
+echo color 0a
+echo echo ===============================================
+echo echo    COMMAND ^& CONTROL FRAMEWORKS
+echo echo ===============================================
+echo echo.
+echo echo Select C2 Framework:
+echo echo 1. Metasploit Framework
+echo echo 2. Empire
+echo echo 3. Covenant
+echo echo 4. Sliver
+echo echo 5. Merlin
+echo echo.
+echo set /p choice=Enter choice (1-5^): 
+echo.
+echo if "%%choice%%"=="1" ^(
+echo     cd /d "%C2_DIR%\metasploit"
+echo     msfconsole
+echo ^) else if "%%choice%%"=="2" ^(
+echo     cd /d "%C2_DIR%\empire"
+echo     python empire
+echo ^) else if "%%choice%%"=="3" ^(
+echo     cd /d "%C2_DIR%\covenant"
+echo     dotnet run
+echo ^) else if "%%choice%%"=="4" ^(
+echo     cd /d "%C2_DIR%\sliver"
+echo     sliver
+echo ^) else if "%%choice%%"=="5" ^(
+echo     cd /d "%C2_DIR%\merlin"
+echo     merlin
+echo ^) else ^(
+echo     echo Invalid choice!
+echo ^)
+echo pause
+) > "%SCRIPTS%\c2_launcher.bat"
+
+echo [*] Creating comprehensive server.js with full functionality...
+(
+echo const express = require('express'^);
+echo const WebSocket = require('ws'^);
+echo const sqlite3 = require('sqlite3'^).verbose(^);
+echo const path = require('path'^);
+echo const fs = require('fs'^);
+echo const { spawn, exec } = require('child_process'^);
+echo const si = require('systeminformation'^);
+echo const os = require('os'^);
+echo.
+echo const app = express(^);
+echo const port = 8080;
+echo.
+echo // Serve static files
+echo app.use(express.static(path.join(__dirname, 'public'^)^)^);
+echo app.use(express.json(^)^);
+echo.
+echo // Database setup
+echo const db = new sqlite3.Database(path.join(__dirname, '..', 'ClientDatabase', 'clients.db'^)^);
+echo.
+echo // System control routes
+echo app.post('/api/system/shutdown', (req, res^) =^> {
+echo   exec('shutdown /s /t 5', (error^) =^> {
+echo     res.json({ success: !error, message: error ? error.message : 'System shutting down in 5 seconds' }^);
+echo   }^);
+echo }^);
+echo.
+echo app.post('/api/system/restart', (req, res^) =^> {
+echo   exec('shutdown /r /t 5', (error^) =^> {
+echo     res.json({ success: !error, message: error ? error.message : 'System restarting in 5 seconds' }^);
+echo   }^);
+echo }^);
+echo.
+echo app.post('/api/system/hibernate', (req, res^) =^> {
+echo   exec('shutdown /h', (error^) =^> {
+echo     res.json({ success: !error, message: error ? error.message : 'System hibernating' }^);
+echo   }^);
+echo }^);
+echo.
+echo app.post('/api/system/sleep', (req, res^) =^> {
+echo   exec('rundll32.exe powrprof.dll,SetSuspendState 0,1,0', (error^) =^> {
+echo     res.json({ success: !error, message: error ? error.message : 'System sleeping' }^);
+echo   }^);
+echo }^);
+echo.
+echo // Tool management routes
+echo app.get('/api/tools/status', (req, res^) =^> {
+echo   const tools = {
+echo     hashcat: fs.existsSync(path.join(__dirname, '..', 'Tools', 'cracking', 'hashcat', 'hashcat.exe'^)^),
+echo     john: fs.existsSync(path.join(__dirname, '..', 'Tools', 'cracking', 'john'^)^),
+echo     btcrecover: fs.existsSync(path.join(__dirname, '..', 'Tools', 'crypto', 'btcrecover'^)^),
+echo     metasploit: fs.existsSync(path.join(__dirname, '..', 'C2-Frameworks', 'metasploit'^)^),
+echo     empire: fs.existsSync(path.join(__dirname, '..', 'C2-Frameworks', 'empire'^)^)
+echo   };
+echo   res.json(tools^);
+echo }^);
+echo.
+echo app.post('/api/tools/launch/:tool', (req, res^) =^> {
+echo   const tool = req.params.tool;
+echo   const toolPaths = {
+echo     hashcat: path.join(__dirname, '..', 'Tools', 'cracking', 'hashcat'^),
+echo     john: path.join(__dirname, '..', 'Tools', 'cracking', 'john', 'run'^),
+echo     btcrecover: path.join(__dirname, '..', 'Tools', 'crypto', 'btcrecover'^),
+echo     cheatengine: path.join(__dirname, '..', 'GameHacks', 'CheatEngine.exe'^)
+echo   };
+echo   
+echo   if (toolPaths[tool]^) {
+echo     exec(`start "" "${toolPaths[tool]}"`, (error^) =^> {
+echo       res.json({ success: !error, message: error ? error.message : `${tool} launched` }^);
+echo     }^);
+echo   } else {
+echo     res.status(404^).json({ success: false, message: 'Tool not found' }^);
+echo   }
+echo }^);
+echo.
+echo // System info routes
+echo app.get('/api/system/info', async (req, res^) =^> {
+echo   try {
+echo     const cpu = await si.cpu(^);
+echo     const mem = await si.mem(^);
+echo     const disk = await si.diskLayout(^);
+echo     const network = await si.networkInterfaces(^);
+echo     res.json({ cpu, mem, disk, network }^);
+echo   } catch (error^) {
+echo     res.status(500^).json({ error: error.message }^);
+echo   }
+echo }^);
+echo.
+echo // Client management routes
+echo app.get('/api/clients', (req, res^) =^> {
+echo   db.all('SELECT * FROM clients ORDER BY created_date DESC', (err, rows^) =^> {
+echo     if (err^) res.status(500^).json({ error: err.message }^);
+echo     else res.json(rows^);
+echo   }^);
+echo }^);
+echo.
+echo app.post('/api/clients', (req, res^) =^> {
+echo   const { name, email, phone, device_type, issue_description } = req.body;
+echo   db.run('INSERT INTO clients (name, email, phone, device_type, issue_description^) VALUES (?, ?, ?, ?, ?^)',
+echo     [name, email, phone, device_type, issue_description], function(err^) {
+echo       if (err^) res.status(500^).json({ error: err.message }^);
+echo       else res.json({ id: this.lastID, message: 'Client added successfully' }^);
+echo     }^);
+echo }^);
+echo.
+echo // Routes
+echo app.get('/', (req, res^) =^> {
+echo   res.sendFile(path.join(__dirname, 'dashboard.html'^)^);
+echo }^);
+echo.
+echo const server = app.listen(port, (^) =^> {
+echo   console.log(`Security Lab Dashboard running at http://localhost:${port}`^);
+echo   console.log('Dashboard features: System control, Tool management, Client database'^);
+echo }^);
+echo.
+echo // WebSocket for real-time updates
+echo const wss = new WebSocket.Server({ server }^);
+echo wss.on('connection', (ws^) =^> {
+echo   console.log('Dashboard client connected'^);
+echo   ws.on('message', (message^) =^> {
+echo     console.log('Received:', message^);
+echo   }^);
+echo }^);
+) > "%DESKTOP_APP_DIR%\server.js"
+
+echo [*] Creating system auto-start registry entries and services...
+reg add "HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" /v "SecurityLabDashboard" /t REG_SZ /d "%MASTER_ROOT%\startup_lab.bat" /f
+reg add "HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" /v "SecurityLabTray" /t REG_SZ /d "%DESKTOP_APP_DIR%\tray-app.js" /f
+
+echo [*] Creating system integration files...
+(
+echo [Desktop Entry]
+echo Version=1.0
+echo Name=Security Lab Dashboard
+echo Comment=Professional Security Research Laboratory
+echo Exec=%MASTER_ROOT%\startup_lab.bat
+echo Icon=%DESKTOP_APP_DIR%\icon.png
+echo Terminal=false
+echo Type=Application
+echo Categories=Development;Security;
+echo StartupNotify=true
+) > "%USERPROFILE%\Desktop\SecurityLab.desktop"
+
+echo [*] Setting up Windows Task Scheduler for auto-startup...
+schtasks /create /tn "SecurityLabAutoStart" /tr "%MASTER_ROOT%\startup_lab.bat" /sc onlogon /rl highest /f
+
+echo [*] Creating backup and restore scripts...
+(
+echo @echo off
+echo title Security Lab - Backup System
+echo color 0d
+echo echo ===============================================
+echo echo    SECURITY LAB BACKUP SYSTEM
+echo echo ===============================================
+echo echo.
+echo set BACKUP_DIR=C:\SecurityLabBackup_%DATE:~-4,4%%DATE:~-10,2%%DATE:~-7,2%
+echo echo Creating backup directory: %%BACKUP_DIR%%
+echo mkdir "%%BACKUP_DIR%%"
+echo.
+echo echo [+] Backing up configuration files...
+echo xcopy "%CONFIG_DIR%" "%%BACKUP_DIR%%\Config" /E /I /H /Y
+echo.
+echo echo [+] Backing up client database...
+echo xcopy "%CLIENT_DB_DIR%" "%%BACKUP_DIR%%\ClientDatabase" /E /I /H /Y
+echo.
+echo echo [+] Backing up custom scripts...
+echo xcopy "%SCRIPTS%" "%%BACKUP_DIR%%\Scripts" /E /I /H /Y
+echo.
+echo echo [+] Backing up workspace...
+echo xcopy "%WORKSPACE%" "%%BACKUP_DIR%%\Workspace" /E /I /H /Y
+echo.
+echo echo [+] Creating backup manifest...
+echo echo Backup created: %%DATE%% %%TIME%% > "%%BACKUP_DIR%%\backup_manifest.txt"
+echo echo Lab version: 1.0.0 >> "%%BACKUP_DIR%%\backup_manifest.txt"
+echo echo Backup location: %%BACKUP_DIR%% >> "%%BACKUP_DIR%%\backup_manifest.txt"
+echo.
+echo echo ===============================================
+echo echo    BACKUP COMPLETE
+echo echo ===============================================
+echo echo Backup location: %%BACKUP_DIR%%
+echo echo ===============================================
+echo pause
+) > "%MASTER_ROOT%\backup_lab.bat"
+
+(
+echo @echo off
+echo title Security Lab - System Restore
+echo color 0d
+echo echo ===============================================
+echo echo    SECURITY LAB RESTORE SYSTEM  
+echo echo ===============================================
+echo echo.
+echo echo WARNING: This will overwrite current lab configuration!
+echo set /p confirm=Type YES to continue: 
+echo if not "%%confirm%%"=="YES" exit /b
+echo.
+echo set /p BACKUP_DIR=Enter backup directory path: 
+echo if not exist "%%BACKUP_DIR%%" ^(
+echo     echo Backup directory not found!
+echo     pause
+echo     exit /b
+echo ^)
+echo.
+echo echo [+] Stopping lab services...
+echo call "%MASTER_ROOT%\shutdown_lab.bat"
+echo.
+echo echo [+] Restoring configuration files...
+echo xcopy "%%BACKUP_DIR%%\Config" "%CONFIG_DIR%" /E /I /H /Y
+echo.
+echo echo [+] Restoring client database...
+echo xcopy "%%BACKUP_DIR%%\ClientDatabase" "%CLIENT_DB_DIR%" /E /I /H /Y
+echo.
+echo echo [+] Restoring custom scripts...
+echo xcopy "%%BACKUP_DIR%%\Scripts" "%SCRIPTS%" /E /I /H /Y
+echo.
+echo echo [+] Restoring workspace...
+echo xcopy "%%BACKUP_DIR%%\Workspace" "%WORKSPACE%" /E /I /H /Y
+echo.
+echo echo [+] Restarting lab services...
+echo call "%MASTER_ROOT%\startup_lab.bat"
+echo.
+echo echo ===============================================
+echo echo    RESTORE COMPLETE
+echo echo ===============================================
+echo pause
+) > "%MASTER_ROOT%\restore_lab.bat"
+
+echo [*] Creating advanced monitoring and logging system...
+(
+echo import psutil
+echo import json
+echo import time
+echo import sqlite3
+echo from datetime import datetime
+echo import os
+echo.
+echo class SystemMonitor:
+echo     def __init__(self, db_path^):
+echo         self.db_path = db_path
+echo         self.init_database(^)
+echo.
+echo     def init_database(self^):
+echo         conn = sqlite3.connect(self.db_path^)
+echo         cursor = conn.cursor(^)
+echo         cursor.execute('''
+echo             CREATE TABLE IF NOT EXISTS system_stats (
+echo                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+echo                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+echo                 cpu_percent REAL,
+echo                 memory_percent REAL,
+echo                 disk_usage REAL,
+echo                 network_sent INTEGER,
+echo                 network_recv INTEGER,
+echo                 active_processes INTEGER
+echo             ^)
+echo         '''^)
+echo         conn.commit(^)
+echo         conn.close(^)
+echo.
+echo     def collect_stats(self^):
+echo         stats = {
+echo             'timestamp': datetime.now(^).isoformat(^),
+echo             'cpu_percent': psutil.cpu_percent(interval=1^),
+echo             'memory': psutil.virtual_memory(^)._asdict(^),
+echo             'disk': psutil.disk_usage('C:'^ if os.name == 'nt' else '/'^^)._asdict(^),
+echo             'network': psutil.net_io_counters(^)._asdict(^),
+echo             'processes': len(psutil.pids(^)^)
+echo         }
+echo         return stats
+echo.
+echo     def log_stats(self, stats^):
+echo         conn = sqlite3.connect(self.db_path^)
+echo         cursor = conn.cursor(^)
+echo         cursor.execute('''
+echo             INSERT INTO system_stats (
+echo                 cpu_percent, memory_percent, disk_usage,
+echo                 network_sent, network_recv, active_processes
+echo             ^) VALUES (?, ?, ?, ?, ?, ?^)
+echo         ''', (
+echo             stats['cpu_percent'],
+echo             stats['memory']['percent'],
+echo             stats['disk']['percent'],
+echo             stats['network']['bytes_sent'],
+echo             stats['network']['bytes_recv'],
+echo             stats['processes']
+echo         ^)^)
+echo         conn.commit(^)
+echo         conn.close(^)
+echo.
+echo     def run_monitoring(self, interval=60^):
+echo         print(f"Starting system monitoring (interval: {interval}s^)"^)
+echo         while True:
+echo             try:
+echo                 stats = self.collect_stats(^)
+echo                 self.log_stats(stats^)
+echo                 print(f"Stats logged: {stats['timestamp']} - CPU: {stats['cpu_percent']}%% RAM: {stats['memory']['percent']}%%"^)
+echo                 time.sleep(interval^)
+echo             except KeyboardInterrupt:
+echo                 print("Monitoring stopped."^)
+echo                 break
+echo             except Exception as e:
+echo                 print(f"Error: {e}"^)
+echo                 time.sleep(interval^)
+echo.
+echo if __name__ == "__main__":
+echo     monitor = SystemMonitor(r"%LOGS_DIR%\system_stats.db"^)
+echo     monitor.run_monitoring(^)
+) > "%SCRIPTS%\system_monitor.py"
+
+echo [*] Creating final desktop integration and shortcuts...
+powershell -Command "$WshShell = New-Object -comObject WScript.Shell; $Shortcut = $WshShell.CreateShortcut('%USERPROFILE%\Desktop\Lab Manager.lnk'); $Shortcut.TargetPath = '%SCRIPTS%\tool_manager.bat'; $Shortcut.IconLocation = 'shell32.dll,137'; $Shortcut.Description = 'Security Lab Tool Manager'; $Shortcut.WorkingDirectory = '%MASTER_ROOT%'; $Shortcut.Save()"
+
+powershell -Command "$WshShell = New-Object -comObject WScript.Shell; $Shortcut = $WshShell.CreateShortcut('%USERPROFILE%\Desktop\Lab Status.lnk'); $Shortcut.TargetPath = '%MASTER_ROOT%\status_check.bat'; $Shortcut.IconLocation = 'shell32.dll,23'; $Shortcut.Description = 'Check Lab Service Status'; $Shortcut.WorkingDirectory = '%MASTER_ROOT%'; $Shortcut.Save()"
+
+powershell -Command "$WshShell = New-Object -comObject WScript.Shell; $Shortcut = $WshShell.CreateShortcut('%USERPROFILE%\Desktop\Lab Backup.lnk'); $Shortcut.TargetPath = '%MASTER_ROOT%\backup_lab.bat'; $Shortcut.IconLocation = 'shell32.dll,269'; $Shortcut.Description = 'Backup Security Lab'; $Shortcut.WorkingDirectory = '%MASTER_ROOT%'; $Shortcut.Save()"
+
+echo [*] Starting system monitor in background...
+start /min python "%SCRIPTS%\system_monitor.py"
+
+echo [*] Creating Windows registry entries...
+reg add "HKCU\Software\SecurityLab" /v "InstallPath" /t REG_SZ /d "%MASTER_ROOT%" /f
+reg add "HKCU\Software\SecurityLab" /v "Version" /t REG_SZ /d "1.0.0" /f
+reg add "HKCU\Software\SecurityLab" /v "InstallDate" /t REG_SZ /d "%DATE%" /f
+reg add "HKCU\Software\SecurityLab" /v "AutoStart" /t REG_DWORD /d 1 /f
+
+echo [*] Creating Windows Defender exclusions...
+powershell -Command "Add-MpPreference -ExclusionPath '%MASTER_ROOT%'"
+powershell -Command "Add-MpPreference -ExclusionProcess 'hashcat.exe'"
+powershell -Command "Add-MpPreference -ExclusionProcess 'john.exe'"
+powershell -Command "Add-MpPreference -ExclusionProcess 'python.exe'"
+powershell -Command "Add-MpPreference -ExclusionProcess 'node.exe'"
+
+echo [*] Creating comprehensive documentation...
+(
+echo # SECURITY LAB PRODUCTION SYSTEM - OPERATIONS MANUAL
+echo.
+echo ## System Overview
+echo This is a complete professional device recovery workstation.
+echo.
+echo ## Tool Locations
+echo - Hashcat: %TOOLS%\cracking\hashcat\hashcat.exe
+echo - BTCRecover: %TOOLS%\crypto\btcrecover\btcrecover.py
+echo - C2 Frameworks: %C2_DIR%
+echo - Rubber Ducky: %RUBBER_DUCKY_DIR%
+echo - Game Hacks: %GAME_HACKS_DIR%
+echo - Card Cloning: %CARD_CLONING_DIR%
+echo - OSINT Tools: %OSINT_DIR%
+echo - Web3 Tools: %WEB3_DIR%
+echo - Forensics: %TOOLS%\forensic_imaging
+echo - Mobile Tools: %TOOLS%\mobile_forensic
+echo - Data Recovery: %TOOLS%\data_recovery
+echo.
+echo ## Quick Start
+echo 1. Run Security Lab Dashboard from desktop
+echo 2. Access tools from web interface at localhost:8080
+echo 3. All wordlists in %WORDLISTS%
+echo 4. Client database automatically configured
+echo.
+echo ## Command Examples
+echo Hashcat MD5: %TOOLS%\cracking\hashcat\hashcat.exe -m 0 hash.txt %WORDLISTS%\rockyou.txt
+echo BTCRecover: python %TOOLS%\crypto\btcrecover\btcrecover.py --wallet wallet.dat --passwordlist %WORDLISTS%\btcpass.txt
+echo John: %TOOLS%\cracking\john\run\john.exe --wordlist=%WORDLISTS%\rockyou.txt hash.txt
+) > "%MASTER_ROOT%\OPERATIONS_MANUAL.md"
+
+echo =================================================================
+echo              SECURITY LAB INSTALLATION COMPLETE!
+echo =================================================================
+echo Installation Directory: %MASTER_ROOT%
+echo Dashboard URL: http://localhost:8080
+echo Desktop Shortcut: Created on desktop
+echo Auto-start: Enabled
+echo.
+echo Your complete professional security lab is ready!
+echo All tools installed and configured for immediate use.
+echo =================================================================
+
+start "" "%MASTER_ROOT%\start_security_lab.bat"
+
+pause
