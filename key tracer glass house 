@@ -1,0 +1,1288 @@
+import hashlib
+import hmac
+import secrets
+import json
+import time
+import csv
+import os
+import base64
+from typing import Tuple, Dict, Any, List, Optional
+from dataclasses import dataclass
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import threading
+from urllib.parse import urlparse, parse_qs, unquote
+
+# Secp256k1 curve parameters - REAL values used in Bitcoin/Ethereum
+P = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F
+N = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
+G = (0x79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798, 
+     0x483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8)
+
+@dataclass
+class KeyComponent:
+    """Tracks how each part of a key or signature is created"""
+    name: str
+    value: Any
+    source: str  # What operation created this
+    inputs: List[str]  # What components were used to create this
+    step: int
+    derivation: str  # Mathematical derivation
+
+class CryptographicTracer:
+    """Traces the creation of every cryptographic component with full lineage"""
+    
+    def __init__(self):
+        self.components: Dict[str, KeyComponent] = {}
+        self.step_counter = 0
+        self.operation_log: List[Dict] = []
+    
+    def record_component(self, name: str, value: Any, source: str, inputs: List[str], derivation: str):
+        """Record a cryptographic component with its creation details"""
+        self.step_counter += 1
+        component = KeyComponent(
+            name=name,
+            value=value,
+            source=source,
+            inputs=inputs,
+            step=self.step_counter,
+            derivation=derivation
+        )
+        self.components[name] = component
+        return component
+    
+    def get_component_lineage(self, name: str) -> List[KeyComponent]:
+        """Get the complete creation chain for a component"""
+        lineage = []
+        current = self.components.get(name)
+        
+        while current:
+            lineage.insert(0, current)
+            # Trace back through inputs
+            next_inputs = []
+            for input_name in current.inputs:
+                if input_name in self.components:
+                    next_inputs.append(input_name)
+            
+            if next_inputs:
+                current = self.components[next_inputs[0]]  # Follow first input
+            else:
+                current = None
+        
+        return lineage
+    
+    def save_analysis(self, filename: str):
+        """Save complete cryptographic analysis to JSON"""
+        # Ensure directory exists
+        os.makedirs(os.path.dirname(filename) if os.path.dirname(filename) else '.', exist_ok=True)
+        
+        analysis = {
+            'timestamp': time.time(),
+            'total_components': len(self.components),
+            'components': {name: {
+                'name': comp.name,
+                'value': str(comp.value),
+                'source': comp.source,
+                'inputs': comp.inputs,
+                'step': comp.step,
+                'derivation': comp.derivation
+            } for name, comp in self.components.items()},
+            'operations': self.operation_log
+        }
+        
+        with open(filename, 'w') as f:
+            json.dump(analysis, f, indent=2)
+        
+        # Also save as CSV for easier analysis
+        csv_filename = f"{os.path.splitext(filename)[0]}_components.csv"
+        with open(csv_filename, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['Step', 'Component', 'Value', 'Source', 'Inputs', 'Derivation'])
+            for comp in sorted(self.components.values(), key=lambda x: x.step):
+                writer.writerow([
+                    comp.step,
+                    comp.name,
+                    str(comp.value)[:100] + '...' if len(str(comp.value)) > 100 else str(comp.value),
+                    comp.source,
+                    ', '.join(comp.inputs),
+                    comp.derivation
+                ])
+    
+    def log_operation(self, operation: str, details: Dict):
+        """Log a cryptographic operation"""
+        self.operation_log.append({
+            'step': len(self.operation_log) + 1,
+            'operation': operation,
+            'timestamp': time.time(),
+            'details': details
+        })
+
+class TransparencyLogger:
+    """Logs every step of the cryptographic process for complete transparency"""
+    def __init__(self):
+        self.logs: List[Dict[str, Any]] = []
+
+    def add_log(self, step: str, details: Dict[str, Any]):
+        log_entry = {
+            'step': step,
+            'details': details,
+            'timestamp': len(self.logs)
+        }
+        self.logs.append(log_entry)
+        print(f"STEP {len(self.logs)}: {step}")
+        for key, value in details.items():
+            print(f"  {key}: {value}")
+        print()
+
+class ECDSATransparent:
+    """Complete ECDSA implementation with full transparency and component tracing"""
+    
+    def __init__(self):
+        self.tracer = CryptographicTracer()
+        self.logger = TransparencyLogger()
+        self.private_key = None
+        self.public_key = None
+    
+    def generate_private_key(self) -> int:
+        """Generate and trace private key creation"""
+        priv_key = secrets.randbelow(N)
+        while priv_key == 0:
+            priv_key = secrets.randbelow(N)
+        
+        self.tracer.record_component(
+            name="private_key_d",
+            value=hex(priv_key),
+            source="secrets.randbelow(N)",
+            inputs=["curve_order_N"],
+            derivation="d ∈ [1, N-1] where N is secp256k1 curve order"
+        )
+        
+        self.tracer.record_component(
+            name="curve_order_N",
+            value=hex(N),
+            source="secp256k1_parameters",
+            inputs=[],
+            derivation="N = FFFFFFFF FFFFFFFF FFFFFFFF FFFFFFFE BAAEDCE6 AF48A03B BFD25E8C D0364141"
+        )
+        
+        self.logger.add_log("Private Key Generation", {
+            'private_key': hex(priv_key),
+            'source': 'secrets.randbelow(N)',
+            'range': f'[1, {hex(N-1)}]'
+        })
+        
+        self.private_key = priv_key
+        return priv_key
+    
+    def mod_inv(self, a: int, n: int, context: str = "") -> int:
+        """Extended Euclidean Algorithm with complete tracing"""
+        operation_id = f"mod_inv_{a}_{n}_{context}"
+        
+        self.tracer.log_operation("modular_inverse", {
+            'a': hex(a),
+            'n': hex(n),
+            'context': context,
+            'algorithm': 'Extended Euclidean Algorithm'
+        })
+        
+        self.logger.add_log("Modular Inverse Calculation", {'input_a': hex(a), 'input_n': hex(n)})
+        
+        if a == 0:
+            result = 0
+            self.tracer.record_component(
+                name=operation_id,
+                value=hex(result),
+                source="mod_inv(a=0)",
+                inputs=[f"input_a_{a}", f"input_n_{n}"],
+                derivation="a == 0 → result = 0"
+            )
+            self.logger.add_log("Modular Inverse Result", {'result': hex(result), 'reason': 'a == 0'})
+            return result
+        
+        # Record inputs
+        self.tracer.record_component(
+            name=f"input_a_{a}",
+            value=hex(a),
+            source="function_input",
+            inputs=[],
+            derivation=f"Input value a for modular inverse"
+        )
+        
+        self.tracer.record_component(
+            name=f"input_n_{n}",
+            value=hex(n),
+            source="function_input",
+            inputs=[],
+            derivation=f"Input value n for modular inverse"
+        )
+        
+        lm, hm = 1, 0
+        low, high = a % n, n
+        iteration = 0
+        
+        while low > 1:
+            iteration += 1
+            ratio = high // low
+            nm, new = hm - lm * ratio, high - low * ratio
+            
+            # Trace each iteration
+            self.tracer.record_component(
+                name=f"mod_inv_iter_{iteration}_a{a}",
+                value={
+                    'lm': hex(lm),
+                    'hm': hex(hm),
+                    'low': hex(low),
+                    'high': hex(high),
+                    'ratio': hex(ratio)
+                },
+                source="extended_euclidean_iteration",
+                inputs=[f"mod_inv_iter_{iteration-1}_a{a}" if iteration > 1 else f"input_a_{a}"],
+                derivation=f"Iteration {iteration}: ratio = high//low, new values computed"
+            )
+            
+            self.logger.add_log(f"Modular Inverse Iteration {iteration}", {
+                'lm': hex(lm), 'hm': hex(hm),
+                'low': hex(low), 'high': hex(high),
+                'ratio': hex(ratio),
+                'new_lm': hex(nm), 'new_low': hex(new)
+            })
+            
+            lm, low, hm, high = nm, new, lm, low
+        
+        result = lm % n
+        
+        # Verify the result
+        verification = (a * result) % n
+        self.tracer.record_component(
+            name=operation_id,
+            value=hex(result),
+            source="mod_inv_complete",
+            inputs=[f"mod_inv_iter_{iteration}_a{a}"],
+            derivation=f"a * result mod n = {hex(verification)} (should be 1)"
+        )
+        
+        self.logger.add_log("Modular Inverse Final Result", {
+            'result': hex(result),
+            'verification': f"{hex(a)} * {hex(result)} mod {hex(n)} = {hex((a * result) % n)}"
+        })
+        
+        return result
+    
+    def point_add(self, p1: Tuple[int, int], p2: Tuple[int, int], context: str = "") -> Tuple[int, int]:
+        """Point addition with complete component tracing"""
+        op_id = f"point_add_{p1[0] if p1 else 'None'}_{p2[0] if p2 else 'None'}_{context}"
+        
+        self.tracer.log_operation("point_addition", {
+            'point1': (hex(p1[0]), hex(p1[1])) if p1 else None,
+            'point2': (hex(p2[0]), hex(p2[1])) if p2 else None,
+            'context': context
+        })
+        
+        self.logger.add_log("Point Addition Start", {
+            'p1': (hex(p1[0]), hex(p1[1])) if p1 else None,
+            'p2': (hex(p2[0]), hex(p2[1])) if p2 else None
+        })
+        
+        if p1 is None:
+            result = p2
+            self.tracer.record_component(
+                name=op_id,
+                value=(hex(result[0]), hex(result[1])) if result else None,
+                source="point_add_identity",
+                inputs=["point2_input"],
+                derivation="p1 is None → result = p2"
+            )
+            self.logger.add_log("Point Addition Result", {'result': 'p2 (p1 is None)'})
+            return result
+        
+        if p2 is None:
+            result = p1
+            self.tracer.record_component(
+                name=op_id,
+                value=(hex(result[0]), hex(result[1])) if result else None,
+                source="point_add_identity",
+                inputs=["point1_input"],
+                derivation="p2 is None → result = p1"
+            )
+            self.logger.add_log("Point Addition Result", {'result': 'p1 (p2 is None)'})
+            return result
+        
+        x1, y1 = p1
+        x2, y2 = p2
+        
+        # Record input points
+        self.tracer.record_component(
+            name="point1_input",
+            value=(hex(x1), hex(y1)),
+            source="function_input",
+            inputs=[],
+            derivation="First input point for addition"
+        )
+        
+        self.tracer.record_component(
+            name="point2_input",
+            value=(hex(x2), hex(y2)),
+            source="function_input",
+            inputs=[],
+            derivation="Second input point for addition"
+        )
+        
+        if x1 == x2 and y1 != y2:
+            self.tracer.record_component(
+                name=op_id,
+                value=None,
+                source="point_add_vertical",
+                inputs=["point1_input", "point2_input"],
+                derivation="x1 == x2 and y1 != y2 → points are vertical → result = None"
+            )
+            self.logger.add_log("Point Addition Result", {
+                'result': 'None (points are vertical)',
+                'reason': 'x1 == x2 and y1 != y2'
+            })
+            return None
+        
+        if x1 == x2:
+            # Point doubling
+            slope_denom = (2 * y1) % P
+            slope_num = (3 * x1 * x1) % P
+            m = slope_num * self.mod_inv(slope_denom, P, "point_doubling_slope")
+            
+            self.tracer.record_component(
+                name=f"slope_doubling_{context}",
+                value=hex(m),
+                source="point_doubling_calculation",
+                inputs=["point1_input", f"mod_inv_{slope_denom}_{P}_point_doubling_slope"],
+                derivation="m = (3 * x1²) * inv(2 * y1) mod P"
+            )
+            
+            self.logger.add_log("Point Addition - Doubling", {
+                'slope_m': hex(m),
+                'calculation': '(3 * x1²) * inv(2 * y1) mod P'
+            })
+        else:
+            # Point addition
+            slope_denom = (x1 - x2) % P
+            slope_num = (y1 - y2) % P
+            m = slope_num * self.mod_inv(slope_denom, P, "point_addition_slope")
+            
+            self.tracer.record_component(
+                name=f"slope_addition_{context}",
+                value=hex(m),
+                source="point_addition_calculation",
+                inputs=["point1_input", "point2_input", f"mod_inv_{slope_denom}_{P}_point_addition_slope"],
+                derivation="m = (y1 - y2) * inv(x1 - x2) mod P"
+            )
+            
+            self.logger.add_log("Point Addition - Adding", {
+                'slope_m': hex(m),
+                'calculation': '(y1 - y2) * inv(x1 - x2) mod P'
+            })
+        
+        x3 = (m * m - x1 - x2) % P
+        y3 = (y1 + m * (x3 - x1)) % P
+        result = (x3, -y3 % P)
+        
+        self.tracer.record_component(
+            name=op_id,
+            value=(hex(result[0]), hex(result[1])),
+            source="point_add_result",
+            inputs=[f"slope_{'doubling' if x1 == x2 else 'addition'}_{context}"],
+            derivation=f"x3 = m² - x1 - x2 mod P, y3 = y1 + m(x3 - x1) mod P"
+        )
+        
+        self.logger.add_log("Point Addition Result", {
+            'result': (hex(result[0]), hex(result[1])),
+            'calculation': 'x3 = m² - x1 - x2 mod P, y3 = y1 + m(x3 - x1) mod P'
+        })
+        
+        return result
+    
+    def point_mul(self, point: Tuple[int, int], scalar: int, context: str = "") -> Tuple[int, int]:
+        """Double-and-add algorithm with complete component tracing"""
+        op_id = f"point_mul_{point[0]}_{scalar}_{context}"
+        
+        self.tracer.log_operation("point_multiplication", {
+            'point': (hex(point[0]), hex(point[1])),
+            'scalar': hex(scalar),
+            'context': context,
+            'algorithm': 'Double-and-add'
+        })
+        
+        self.logger.add_log("Point Multiplication Start", {
+            'point': (hex(point[0]), hex(point[1])),
+            'scalar': hex(scalar),
+            'algorithm': 'Double-and-add'
+        })
+        
+        # Record inputs
+        self.tracer.record_component(
+            name="base_point_input",
+            value=(hex(point[0]), hex(point[1])),
+            source="function_input",
+            inputs=[],
+            derivation="Base point for scalar multiplication"
+        )
+        
+        self.tracer.record_component(
+            name="scalar_input",
+            value=hex(scalar),
+            source="function_input",
+            inputs=[],
+            derivation="Scalar value for multiplication"
+        )
+        
+        if scalar == 0:
+            result = None
+            self.tracer.record_component(
+                name=op_id,
+                value=None,
+                source="point_mul_zero",
+                inputs=["scalar_input"],
+                derivation="scalar == 0 → result = None"
+            )
+            self.logger.add_log("Point Multiplication Result", {'result': 'None (scalar == 0)'})
+            return result
+        
+        if scalar == 1:
+            result = point
+            self.tracer.record_component(
+                name=op_id,
+                value=(hex(result[0]), hex(result[1])),
+                source="point_mul_identity",
+                inputs=["base_point_input"],
+                derivation="scalar == 1 → result = point"
+            )
+            self.logger.add_log("Point Multiplication Result", {'result': 'point (scalar == 1)'})
+            return result
+        
+        result = None
+        current = point
+        bit_position = 0
+        temp_scalar = scalar
+        
+        while temp_scalar:
+            if temp_scalar & 1:
+                # Trace the ADD operation
+                add_context = f"bit_{bit_position}_add_{context}"
+                if result is None:
+                    result = current
+                    self.tracer.record_component(
+                        name=f"first_add_{add_context}",
+                        value=(hex(result[0]), hex(result[1])),
+                        source="point_mul_first_add",
+                        inputs=[f"current_point_bit_{bit_position}"],
+                        derivation="First addition: result = current"
+                    )
+                    self.logger.add_log(f"Point Multiplication - Bit {bit_position} is SET", {
+                        'bit_position': bit_position,
+                        'current_point': (hex(current[0]), hex(current[1])),
+                        'operation': 'First addition: result = current'
+                    })
+                else:
+                    result = self.point_add(result, current, add_context)
+                    self.logger.add_log(f"Point Multiplication - Bit {bit_position} is SET", {
+                        'bit_position': bit_position,
+                        'current_point': (hex(current[0]), hex(current[1])),
+                        'operation': 'ADD this point to result'
+                    })
+            else:
+                self.logger.add_log(f"Point Multiplication - Bit {bit_position} is NOT SET", {
+                    'bit_position': bit_position,
+                    'operation': 'Skip addition, only double'
+                })
+            
+            # Trace the DOUBLE operation
+            double_context = f"bit_{bit_position}_double_{context}"
+            current = self.point_add(current, current, double_context)
+            
+            self.tracer.record_component(
+                name=f"current_point_bit_{bit_position}",
+                value=(hex(current[0]), hex(current[1])),
+                source="point_mul_doubling",
+                inputs=[f"point_add_{current[0]}_{current[1]}_{double_context}"],
+                derivation=f"Point doubled at bit position {bit_position}"
+            )
+            
+            self.logger.add_log(f"Point Multiplication - Doubling at bit {bit_position}", {
+                'current_point_before': (hex(current[0]), hex(current[1])),
+                'operation': 'Double the point'
+            })
+            
+            temp_scalar >>= 1
+            bit_position += 1
+        
+        self.tracer.record_component(
+            name=op_id,
+            value=(hex(result[0]), hex(result[1])) if result else None,
+            source="point_mul_complete",
+            inputs=[f"current_point_bit_{bit_position-1}"],
+            derivation=f"Final result after {bit_position} bit operations"
+        )
+        
+        self.logger.add_log("Point Multiplication Final Result", {
+            'result': (hex(result[0]), hex(result[1])) if result else None
+        })
+        
+        return result
+    
+    def generate_public_key(self, priv_key: int) -> Tuple[int, int]:
+        """Generate public key from private key with complete tracing"""
+        self.tracer.log_operation("public_key_generation", {
+            'private_key': hex(priv_key),
+            'operation': 'Q = d * G'
+        })
+        
+        self.logger.add_log("Public Key Generation", {
+            'private_key': hex(priv_key),
+            'operation': 'Q = d * G'
+        })
+        
+        pub_key = self.point_mul(G, priv_key, "public_key_generation")
+        
+        self.tracer.record_component(
+            name="public_key_Q",
+            value=(hex(pub_key[0]), hex(pub_key[1])),
+            source="ecdsa_public_key",
+            inputs=["private_key_d", f"point_mul_{G[0]}_{priv_key}_public_key_generation"],
+            derivation="Q = d * G where G is secp256k1 generator point"
+        )
+        
+        self.logger.add_log("Public Key Result", {
+            'public_key': (hex(pub_key[0]), hex(pub_key[1])),
+            'derivation': 'Q = d * G where G is secp256k1 generator point'
+        })
+        
+        self.public_key = pub_key
+        return pub_key
+    
+    def generate_deterministic_k(self, priv_key: int, message_hash: bytes) -> int:
+        """RFC 6979 deterministic k generation with complete tracing"""
+        self.tracer.log_operation("deterministic_k_generation", {
+            'algorithm': 'RFC 6979',
+            'private_key': hex(priv_key),
+            'message_hash': message_hash.hex()
+        })
+        
+        self.logger.add_log("Deterministic k Generation Start", {
+            'algorithm': 'RFC 6979',
+            'private_key': hex(priv_key),
+            'message_hash': message_hash.hex()
+        })
+        
+        # Record inputs
+        self.tracer.record_component(
+            name="k_gen_private_key",
+            value=hex(priv_key),
+            source="input",
+            inputs=["private_key_d"],
+            derivation="Private key for k generation"
+        )
+        
+        self.tracer.record_component(
+            name="k_gen_message_hash",
+            value=message_hash.hex(),
+            source="input",
+            inputs=[],
+            derivation="Message hash for k generation"
+        )
+        
+        # Convert to bytes
+        priv_bytes = priv_key.to_bytes(32, 'big')
+        
+        # RFC 6979 steps
+        v = b'\x01' * 32
+        k = b'\x00' * 32
+        
+        self.tracer.record_component(
+            name="k_gen_v0",
+            value=v.hex(),
+            source="rfc6979_initialize",
+            inputs=[],
+            derivation="v = 0x01 repeated 32 times"
+        )
+        
+        self.tracer.record_component(
+            name="k_gen_k0",
+            value=k.hex(),
+            source="rfc6979_initialize",
+            inputs=[],
+            derivation="k = 0x00 repeated 32 times"
+        )
+        
+        self.logger.add_log("RFC 6979 - Step 1: Initialize", {
+            'v0': v.hex(),
+            'k0': k.hex()
+        })
+        
+        # Step 2: k = HMAC_K(v || 0x00 || priv_bytes || message_hash)
+        step2_input = v + b'\x00' + priv_bytes + message_hash
+        k = hmac.new(k, step2_input, hashlib.sha256).digest()
+        
+        self.tracer.record_component(
+            name="k_gen_step2_input",
+            value=step2_input.hex(),
+            source="rfc6979_step2_input",
+            inputs=["k_gen_v0", "k_gen_k0", "k_gen_private_key_bytes", "k_gen_message_hash"],
+            derivation="v || 0x00 || priv_bytes || message_hash"
+        )
+        
+        self.tracer.record_component(
+            name="k_gen_k1",
+            value=k.hex(),
+            source="rfc6979_step2_hmac",
+            inputs=["k_gen_step2_input"],
+            derivation="k = HMAC_K(step2_input)"
+        )
+        
+        self.logger.add_log("RFC 6979 - Step 2: First HMAC", {
+            'input': (v + b'\x00' + priv_bytes + message_hash).hex(),
+            'k1': k.hex()
+        })
+        
+        # Step 3: v = HMAC_K(v)
+        v = hmac.new(k, v, hashlib.sha256).digest()
+        
+        self.tracer.record_component(
+            name="k_gen_v1",
+            value=v.hex(),
+            source="rfc6979_step3_hmac",
+            inputs=["k_gen_k1", "k_gen_v0"],
+            derivation="v = HMAC_K(v)"
+        )
+        
+        self.logger.add_log("RFC 6979 - Step 3: Second HMAC", {
+            'input': v.hex(),
+            'v1': v.hex()
+        })
+        
+        # Step 4: k = HMAC_K(v || 0x01 || priv_bytes || message_hash)
+        step4_input = v + b'\x01' + priv_bytes + message_hash
+        k = hmac.new(k, step4_input, hashlib.sha256).digest()
+        
+        self.tracer.record_component(
+            name="k_gen_step4_input",
+            value=step4_input.hex(),
+            source="rfc6979_step4_input",
+            inputs=["k_gen_v1", "k_gen_k1", "k_gen_private_key_bytes", "k_gen_message_hash"],
+            derivation="v || 0x01 || priv_bytes || message_hash"
+        )
+        
+        self.tracer.record_component(
+            name="k_gen_k2",
+            value=k.hex(),
+            source="rfc6979_step4_hmac",
+            inputs=["k_gen_step4_input"],
+            derivation="k = HMAC_K(step4_input)"
+        )
+        
+        self.logger.add_log("RFC 6979 - Step 4: Third HMAC", {
+            'input': (v + b'\x01' + priv_bytes + message_hash).hex(),
+            'k2': k.hex()
+        })
+        
+        # Step 5: v = HMAC_K(v)
+        v = hmac.new(k, v, hashlib.sha256).digest()
+        
+        self.tracer.record_component(
+            name="k_gen_v2",
+            value=v.hex(),
+            source="rfc6979_step5_hmac",
+            inputs=["k_gen_k2", "k_gen_v1"],
+            derivation="v = HMAC_K(v)"
+        )
+        
+        self.logger.add_log("RFC 6979 - Step 5: Fourth HMAC", {
+            'input': v.hex(),
+            'v2': v.hex()
+        })
+        
+        # Convert to integer
+        k_int = int.from_bytes(v, 'big') % N
+        
+        self.tracer.record_component(
+            name="deterministic_k",
+            value=hex(k_int),
+            source="rfc6979_final",
+            inputs=["k_gen_v2"],
+            derivation="k = int(v) mod N"
+        )
+        
+        self.logger.add_log("Deterministic k Final Result", {
+            'k_value': hex(k_int),
+            'verification': f'1 <= {hex(k_int)} < {hex(N)}: {1 <= k_int < N}'
+        )
+        
+        return k_int
+    
+    def ecdsa_sign(self, message: str) -> Tuple[int, int]:
+        """Complete ECDSA signing with full component tracing"""
+        if not self.private_key:
+            self.generate_private_key()
+            self.generate_public_key(self.private_key)
+        
+        self.tracer.log_operation("ecdsa_sign", {
+            'message': message,
+            'private_key': hex(self.private_key)
+        })
+        
+        self.logger.add_log("ECDSA Signing Process Start", {
+            'private_key': hex(self.private_key),
+            'message': message
+        })
+        
+        # Hash the message
+        message_hash = hashlib.sha256(message.encode()).digest()
+        z = int.from_bytes(message_hash, 'big')
+        
+        self.tracer.record_component(
+            name="message_hash_z",
+            value=hex(z),
+            source="sha256_hash",
+            inputs=[],
+            derivation=f"z = SHA256('{message}')"
+        )
+        
+        self.logger.add_log("Message Hashing", {
+            'message': message,
+            'sha256_hash': message_hash.hex(),
+            'integer_z': hex(z)
+        })
+        
+        # Generate deterministic k
+        k = self.generate_deterministic_k(self.private_key, message_hash)
+        
+        # Calculate r = (k * G).x mod N
+        r_point = self.point_mul(G, k, "r_calculation")
+        r = r_point[0] % N
+        
+        self.tracer.record_component(
+            name="signature_r",
+            value=hex(r),
+            source="signature_component",
+            inputs=[f"point_mul_{G[0]}_{k}_r_calculation", "curve_order_N"],
+            derivation="r = (k * G).x mod N"
+        )
+        
+        self.logger.add_log("Calculate r value", {
+            'k*G_point': (hex(r_point[0]), hex(r_point[1])),
+            'r': hex(r),
+            'calculation': 'x-coordinate of (k * G) mod N'
+        })
+        
+        # Calculate s = k⁻¹ * (z + r * priv_key) mod N
+        k_inv = self.mod_inv(k, N, "s_calculation")
+        s_temp = (z + r * self.private_key) % N
+        s = (k_inv * s_temp) % N
+        
+        self.tracer.record_component(
+            name="signature_s",
+            value=hex(s),
+            source="signature_component",
+            inputs=["deterministic_k", f"mod_inv_{k}_{N}_s_calculation", "message_hash_z", "signature_r", "private_key_d"],
+            derivation="s = k⁻¹ * (z + r * d) mod N"
+        )
+        
+        self.logger.add_log("Calculate s value", {
+            'k_inverse': hex(k_inv),
+            'z + r*d': hex(s_temp),
+            's': hex(s),
+            'calculation': 'k⁻¹ * (z + r * d) mod N'
+        })
+        
+        # Ensure low s value
+        if s > N // 2:
+            s_original = s
+            s = N - s
+            self.tracer.record_component(
+                name="signature_s_low",
+                value=hex(s),
+                source="signature_normalization",
+                inputs=["signature_s"],
+                derivation=f"s > N/2 → s = N - s = {hex(N)} - {hex(s_original)}"
+            )
+            
+            self.logger.add_log("Low S Enforcement", {
+                'original_s': hex(s_original),
+                'new_s': hex(s),
+                'reason': 's > N/2, using N - s'
+            })
+        
+        signature = (r, s)
+        
+        self.tracer.log_operation("signature_complete", {
+            'r': hex(r),
+            's': hex(s),
+            'signature': f"(r={hex(r)}, s={hex(s)})"
+        )
+        
+        self.logger.add_log("ECDSA Signature Complete", {
+            'signature_r': hex(r),
+            'signature_s': hex(s),
+            'signature_der': self._signature_to_der(r, s).hex()
+        })
+        
+        return signature
+    
+    def ecdsa_verify(self, pub_key: Tuple[int, int], message: str, signature: Tuple[int, int]) -> bool:
+        """Complete ECDSA verification with full transparency"""
+        self.logger.add_log("ECDSA Verification Start", {
+            'public_key': (hex(pub_key[0]), hex(pub_key[1])),
+            'message': message,
+            'signature_r': hex(signature[0]),
+            'signature_s': hex(signature[1])
+        })
+        
+        # Hash the message
+        message_hash = hashlib.sha256(message.encode()).digest()
+        z = int.from_bytes(message_hash, 'big')
+        
+        self.logger.add_log("Message Hashing for Verification", {
+            'message': message,
+            'sha256_hash': message_hash.hex(),
+            'integer_z': hex(z)
+        })
+        
+        r, s = signature
+        
+        # Verify signature components
+        if not (1 <= r < N and 1 <= s < N):
+            self.logger.add_log("Verification Failed", {
+                'reason': 'Signature components out of range',
+                'r_valid': 1 <= r < N,
+                's_valid': 1 <= s < N
+            })
+            return False
+        
+        # Calculate u1 and u2
+        s_inv = self.mod_inv(s, N)
+        u1 = (z * s_inv) % N
+        u2 = (r * s_inv) % N
+        
+        self.logger.add_log("Calculate u1 and u2", {
+            's_inverse': hex(s_inv),
+            'u1': hex(u1),
+            'u2': hex(u2),
+            'calculation': 'u1 = z * s⁻¹ mod N, u2 = r * s⁻¹ mod N'
+        })
+        
+        # Calculate point = u1*G + u2*PubKey
+        point1 = self.point_mul(G, u1)
+        point2 = self.point_mul(pub_key, u2)
+        point = self.point_add(point1, point2)
+        
+        self.logger.add_log("Calculate Verification Point", {
+            'u1*G': (hex(point1[0]), hex(point1[1])),
+            'u2*PubKey': (hex(point2[0]), hex(point2[1])),
+            'u1*G + u2*PubKey': (hex(point[0]), hex(point[1])) if point else None
+        })
+        
+        # Verify r == point.x mod N
+        verification_result = point is not None and point[0] % N == r
+        
+        self.logger.add_log("Verification Result", {
+            'result': verification_result,
+            'check': f'point.x mod N = {hex(point[0] % N) if point else None} == r = {hex(r)}',
+            'success': verification_result
+        })
+        
+        return verification_result
+    
+    def _signature_to_der(self, r: int, s: int) -> bytes:
+        """Convert signature to DER format"""
+        # This is the actual DER encoding used in Bitcoin
+        r_bytes = r.to_bytes(32, 'big').lstrip(b'\x00')
+        if r_bytes[0] & 0x80:
+            r_bytes = b'\x00' + r_bytes
+        
+        s_bytes = s.to_bytes(32, 'big').lstrip(b'\x00')
+        if s_bytes[0] & 0x80:
+            s_bytes = b'\x00' + s_bytes
+        
+        return b'\x30' + bytes([4 + len(r_bytes) + len(s_bytes)]) + \
+               b'\x02' + bytes([len(r_bytes)]) + r_bytes + \
+               b'\x02' + bytes([len(s_bytes)]) + s_bytes
+
+class ECDSAServer(BaseHTTPRequestHandler):
+    """HTTP server for ECDSA operations with transparency"""
+    
+    def __init__(self, *args, **kwargs):
+        self.ecdsa = ECDSATransparent()
+        super().__init__(*args, **kwargs)
+    
+    def do_GET(self):
+        """Handle GET requests"""
+        if self.path == '/':
+            self.send_response(200)
+            self.send_header('Content-type', 'text/html')
+            self.end_headers()
+            self.wfile.write(b'''
+                <html>
+                <head>
+                    <title>ECDSA Transparency Server</title>
+                    <style>
+                        body { font-family: Arial, sans-serif; margin: 20px; }
+                        h1 { color: #333; }
+                        ul { list-style-type: none; padding: 0; }
+                        li { margin: 10px 0; }
+                        a { color: #0066cc; text-decoration: none; }
+                        a:hover { text-decoration: underline; }
+                        form { margin: 20px 0; }
+                        input[type="text"] { padding: 8px; width: 300px; }
+                        input[type="submit"] { padding: 8px 16px; background: #0066cc; color: white; border: none; cursor: pointer; }
+                    </style>
+                </head>
+                <body>
+                    <h1>ECDSA Transparency Server</h1>
+                    <p>Endpoints:</p>
+                    <ul>
+                        <li><a href="/generate_keys">/generate_keys</a> - Generate new key pair</li>
+                        <li>
+                            <form action="/sign" method="get">
+                                <label for="message">Sign a message:</label>
+                                <input type="text" id="message" name="message" value="Hello, ECDSA!" required>
+                                <input type="submit" value="Sign">
+                            </form>
+                        </li>
+                        <li>
+                            <form action="/verify" method="get">
+                                <label for="v_message">Verify a signature:</label><br>
+                                <input type="text" id="v_message" name="message" placeholder="Message" required><br>
+                                <input type="text" name="r" placeholder="r value" required><br>
+                                <input type="text" name="s" placeholder="s value" required><br>
+                                <input type="text" name="pub_x" placeholder="Public Key X" required><br>
+                                <input type="text" name="pub_y" placeholder="Public Key Y" required><br>
+                                <input type="submit" value="Verify">
+                            </form>
+                        </li>
+                        <li><a href="/logs">/logs</a> - View operation logs</li>
+                    </ul>
+                </body>
+                </html>
+            ''')
+        elif self.path == '/generate_keys':
+            self.generate_keys()
+        elif self.path == '/logs':
+            self.show_logs()
+        elif self.path.startswith('/sign'):
+            self.sign_message()
+        elif self.path.startswith('/verify'):
+            self.verify_signature()
+        elif self.path.startswith('/view_log'):
+            self.view_log()
+        elif self.path.startswith('/download_log'):
+            self.download_log()
+        else:
+            self.send_response(404)
+            self.end_headers()
+            self.wfile.write(b'Not found')
+    
+    def generate_keys(self):
+        """Generate and return a new key pair"""
+        priv_key = self.ecdsa.generate_private_key()
+        pub_key = self.ecdsa.generate_public_key(priv_key)
+        
+        # Save analysis
+        timestamp = int(time.time())
+        os.makedirs('logs', exist_ok=True)
+        self.ecdsa.tracer.save_analysis(f'logs/key_generation_{timestamp}.json')
+        
+        self.send_response(200)
+        self.send_header('Content-type', 'application/json')
+        self.end_headers()
+        response = {
+            'private_key': hex(priv_key),
+            'public_key': {
+                'x': hex(pub_key[0]),
+                'y': hex(pub_key[1])
+            },
+            'analysis_file': f'logs/key_generation_{timestamp}.json'
+        }
+        self.wfile.write(json.dumps(response, indent=2).encode())
+    
+    def sign_message(self):
+        """Sign a message"""
+        parsed = urlparse(self.path)
+        params = parse_qs(parsed.query)
+        
+        if 'message' not in params:
+            self.send_response(400)
+            self.end_headers()
+            self.wfile.write(b'Missing message parameter')
+            return
+        
+        message = unquote(params['message'][0])
+        signature = self.ecdsa.ecdsa_sign(message)
+        
+        # Save analysis
+        timestamp = int(time.time())
+        os.makedirs('logs', exist_ok=True)
+        self.ecdsa.tracer.save_analysis(f'logs/signature_{timestamp}.json')
+        
+        self.send_response(200)
+        self.send_header('Content-type', 'application/json')
+        self.end_headers()
+        response = {
+            'message': message,
+            'signature': {
+                'r': hex(signature[0]),
+                's': hex(signature[1])
+            },
+            'der': self.ecdsa._signature_to_der(signature[0], signature[1]).hex(),
+            'analysis_file': f'logs/signature_{timestamp}.json'
+        }
+        self.wfile.write(json.dumps(response, indent=2).encode())
+    
+    def verify_signature(self):
+        """Verify a signature"""
+        parsed = urlparse(self.path)
+        params = parse_qs(parsed.query)
+        
+        required_params = ['message', 'r', 's', 'pub_x', 'pub_y']
+        if not all(param in params for param in required_params):
+            self.send_response(400)
+            self.end_headers()
+            self.wfile.write(b'Missing required parameters: message, r, s, pub_x, pub_y')
+            return
+        
+        try:
+            message = unquote(params['message'][0])
+            r = int(params['r'][0], 16)
+            s = int(params['s'][0], 16)
+            pub_x = int(params['pub_x'][0], 16)
+            pub_y = int(params['pub_y'][0], 16)
+            
+            pub_key = (pub_x, pub_y)
+            signature = (r, s)
+            
+            is_valid = self.ecdsa.ecdsa_verify(pub_key, message, signature)
+            
+            # Save analysis
+            timestamp = int(time.time())
+            os.makedirs('logs', exist_ok=True)
+            self.ecdsa.tracer.save_analysis(f'logs/verification_{timestamp}.json')
+            
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            response = {
+                'message': message,
+                'signature': {
+                    'r': hex(r),
+                    's': hex(s)
+                },
+                'public_key': {
+                    'x': hex(pub_x),
+                    'y': hex(pub_y)
+                },
+                'valid': is_valid,
+                'analysis_file': f'logs/verification_{timestamp}.json'
+            }
+            self.wfile.write(json.dumps(response, indent=2).encode())
+        except ValueError as e:
+            self.send_response(400)
+            self.end_headers()
+            self.wfile.write(f'Invalid parameter format: {str(e)}'.encode())
+    
+    def show_logs(self):
+        """Show all available logs"""
+        logs_dir = 'logs'
+        if not os.path.exists(logs_dir):
+            os.makedirs(logs_dir)
+        
+        log_files = sorted(os.listdir(logs_dir))
+        
+        self.send_response(200)
+        self.send_header('Content-type', 'text/html')
+        self.end_headers()
+        
+        html = '''
+        <html>
+        <head>
+            <title>ECDSA Transparency Logs</title>
+            <style>
+                body { font-family: Arial, sans-serif; margin: 20px; }
+                table { border-collapse: collapse; width: 100%; }
+                th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+                th { background-color: #f2f2f2; }
+                tr:nth-child(even) { background-color: #f9f9f9; }
+                a { color: #0066cc; text-decoration: none; }
+                a:hover { text-decoration: underline; }
+            </style>
+        </head>
+        <body>
+            <h1>ECDSA Transparency Logs</h1>
+            <table>
+                <tr>
+                    <th>File</th>
+                    <th>Size</th>
+                    <th>Last Modified</th>
+                    <th>Actions</th>
+                </tr>
+        '''
+        
+        for file in log_files:
+            file_path = os.path.join(logs_dir, file)
+            size = os.path.getsize(file_path)
+            mtime = time.ctime(os.path.getmtime(file_path))
+            
+            html += f'''
+                <tr>
+                    <td>{file}</td>
+                    <td>{size} bytes</td>
+                    <td>{mtime}</td>
+                    <td>
+                        <a href="/view_log?file={file}">View</a> | 
+                        <a href="/download_log?file={file}">Download</a>
+                    </td>
+                </tr>
+            '''
+        
+        html += '''
+            </table>
+            <br>
+            <a href="/">Back to Home</a>
+        </body>
+        </html>
+        '''
+        
+        self.wfile.write(html.encode())
+    
+    def view_log(self):
+        """View a specific log file"""
+        parsed = urlparse(self.path)
+        params = parse_qs(parsed.query)
+        
+        if 'file' not in params:
+            self.send_response(400)
+            self.end_headers()
+            self.wfile.write(b'Missing file parameter')
+            return
+        
+        file_name = params['file'][0]
+        file_path = os.path.join('logs', file_name)
+        
+        if not os.path.exists(file_path):
+            self.send_response(404)
+            self.end_headers()
+            self.wfile.write(b'File not found')
+            return
+        
+        with open(file_path, 'r') as f:
+            content = f.read()
+        
+        self.send_response(200)
+        self.send_header('Content-type', 'application/json')
+        self.end_headers()
+        self.wfile.write(content.encode())
+    
+    def download_log(self):
+        """Download a log file"""
+        parsed = urlparse(self.path)
+        params = parse_qs(parsed.query)
+        
+        if 'file' not in params:
+            self.send_response(400)
+            self.end_headers()
+            self.wfile.write(b'Missing file parameter')
+            return
+        
+        file_name = params['file'][0]
+        file_path = os.path.join('logs', file_name)
+        
+        if not os.path.exists(file_path):
+            self.send_response(404)
+            self.end_headers()
+            self.wfile.write(b'File not found')
+            return
+        
+        self.send_response(200)
+        self.send_header('Content-type', 'application/octet-stream')
+        self.send_header('Content-Disposition', f'attachment; filename="{file_name}"')
+        self.end_headers()
+        
+        with open(file_path, 'rb') as f:
+            self.wfile.write(f.read())
+
+def demonstrate_complete_cryptographic_analysis():
+    """
+    COMPLETE ECDSA CRYPTOGRAPHIC ANALYSIS DEMONSTRATION
+    
+    This demonstrates:
+    1. How each component of keys and signatures is created
+    2. The mathematical derivation of each part
+    3. Complete lineage tracing of cryptographic components
+    4. Saving the analysis for later study
+    """
+    
+    print("🔐 COMPLETE ECDSA CRYPTOGRAPHIC COMPONENT ANALYSIS")
+    print("=" * 80)
+    print("This shows EXACTLY how each part of ECDSA keys and signatures are created")
+    print("with complete mathematical derivation and component lineage tracing\n")
+    
+    # Create transparent ECDSA instance
+    ecdsa = ECDSATransparent()
+    
+    # Generate keys with full tracing
+    print("1. GENERATING PRIVATE KEY (d)")
+    print("-" * 40)
+    priv_key = ecdsa.generate_private_key()
+    print(f"   Private Key: {hex(priv_key)}")
+    print(f"   Source: Random generation within [1, N-1]")
+    print(f"   Curve Order N: {hex(N)}")
+    print()
+    
+    print("2. GENERATING PUBLIC KEY (Q = d * G)")
+    print("-" * 40)
+    pub_key = ecdsa.generate_public_key(priv_key)
+    print(f"   Public Key: ({hex(pub_key[0])}, {hex(pub_key[1])})")
+    print(f"   Derivation: Q = d * G where G is secp256k1 generator point")
+    print(f"   Generator G: ({hex(G[0])}, {hex(G[1])})")
+    print()
+    
+    # Sign a message
+    print("3. SIGNING A MESSAGE")
+    print("-" * 40)
+    message = "This is a transparent ECDSA demonstration"
+    print(f"   Message: '{message}'")
+    signature = ecdsa.ecdsa_sign(message)
+    print(f"   Signature: (r={hex(signature[0])}, s={hex(signature[1])})")
+    print()
+    
+    # Verify the signature
+    print("4. VERIFYING THE SIGNATURE")
+    print("-" * 40)
+    is_valid = ecdsa.ecdsa_verify(pub_key, message, signature)
+    print(f"   Verification Result: {'VALID' if is_valid else 'INVALID'}")
+    print()
+    
+    # Save the analysis
+    print("5. SAVING ANALYSIS")
+    print("-" * 40)
+    os.makedirs('logs', exist_ok=True)
+    timestamp = int(time.time())
+    ecdsa.tracer.save_analysis(f'logs/demonstration_{timestamp}.json')
+    print(f"   Analysis saved to: logs/demonstration_{timestamp}.json")
+    print(f"   Components CSV saved to: logs/demonstration_{timestamp}_components.csv")
+    print()
+    
+    print("Total steps logged:", len(ecdsa.logger.logs))
+    print("Total components traced:", len(ecdsa.tracer.components))
+
+def start_server(port=8000):
+    """Start the ECDSA transparency server"""
+    server_address = ('', port)
+    httpd = HTTPServer(server_address, ECDSAServer)
+    print(f"ECDSA Transparency Server running on http://localhost:{port}")
+    print("Endpoints:")
+    print(f"  http://localhost:{port}/generate_keys - Generate new key pair")
+    print(f"  http://localhost:{port}/sign?message=hello - Sign a message")
+    print(f"  http://localhost:{port}/verify?message=hello&r=...&s=... - Verify a signature")
+    print(f"  http://localhost:{port}/logs - View operation logs")
+    httpd.serve_forever()
+
+if __name__ == "__main__":
+    import sys
+    
+    if len(sys.argv) > 1 and sys.argv[1] == 'server':
+        start_server()
+    else:
+        demonstrate_complete_cryptographic_analysis()
