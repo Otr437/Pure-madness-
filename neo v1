@@ -1,0 +1,997 @@
+import { EventEmitter } from 'events';
+import crypto from 'crypto';
+import mongoose, { Document, Schema } from 'mongoose';
+import Stripe from 'stripe';
+import dwolla from 'dwolla-v2';
+import { ethers, Wallet, utils } from 'ethers';
+import { Connection, PublicKey, Keypair, SystemProgram, Transaction as SolanaTransaction, sendAndConfirmTransaction, LAMPORTS_PER_SOL } from '@solana/web3.js';
+import * as bitcoin from 'bitcoinjs-lib';
+import * as bip32 from 'bip32';
+import * as bip39 from 'bip39';
+import { ECPairFactory } from 'ecpair';
+import * as ecc from 'tiny-secp256k1';
+import Plaid from 'plaid';
+import { Client as SquareClient } from 'square';
+import axios from 'axios';
+import Redis from 'ioredis';
+
+// Initialize Bitcoin ECPair
+const ECPair = ECPairFactory(ecc);
+
+// REAL PAYMENT PROVIDERS - ACTUAL PRODUCTION INSTANCES
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
+  apiVersion: '2023-10-16'
+});
+
+const dwollaClient = new dwolla.Client({
+  key: process.env.DWOLLA_KEY!,
+  secret: process.env.DWOLLA_SECRET!,
+  environment: process.env.DWOLLA_ENVIRONMENT as 'production' | 'sandbox'
+});
+
+const plaidClient = new Plaid.Client({
+  clientID: process.env.PLAID_CLIENT_ID!,
+  secret: process.env.PLAID_SECRET!,
+  env: process.env.PLAID_ENV as Plaid.Environment,
+  options: { version: '2020-09-14' }
+});
+
+const squareClient = new SquareClient({
+  environment: process.env.SQUARE_ENVIRONMENT as 'production' | 'sandbox',
+  accessToken: process.env.SQUARE_ACCESS_TOKEN!
+});
+
+// REAL BLOCKCHAIN CONNECTIONS
+const ethProvider = new ethers.providers.JsonRpcProvider(process.env.ETHEREUM_RPC_URL!);
+const solanaConnection = new Connection(process.env.SOLANA_RPC_URL!, 'confirmed');
+const bitcoinNetwork = process.env.BITCOIN_NETWORK === 'testnet' ? bitcoin.networks.testnet : bitcoin.networks.bitcoin;
+
+// REAL CACHE
+const redis = new Redis(process.env.REDIS_URL!);
+
+// =============================================================================
+// REAL BANK ACCOUNT MODELS - ACTUAL MONEY TRACKING
+// =============================================================================
+
+interface IBankUser extends Document {
+  userId: string;
+  email: string;
+  firstName: string;
+  lastName: string;
+  phone: string;
+  ssn: string;
+  dateOfBirth: Date;
+  address: {
+    street: string;
+    city: string;
+    state: string;
+    zipCode: string;
+    country: string;
+  };
+  kycStatus: 'verified' | 'pending' | 'rejected' | 'under_review';
+  stripeCustomerId: string;
+  dwollaCustomerUrl: string;
+  plaidUserId?: string;
+  squareCustomerId?: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const BankUserSchema = new Schema<IBankUser>({
+  userId: { type: String, required: true, unique: true },
+  email: { type: String, required: true, unique: true },
+  firstName: { type: String, required: true },
+  lastName: { type: String, required: true },
+  phone: { type: String, required: true },
+  ssn: { type: String, required: true },
+  dateOfBirth: { type: Date, required: true },
+  address: {
+    street: { type: String, required: true },
+    city: { type: String, required: true },
+    state: { type: String, required: true },
+    zipCode: { type: String, required: true },
+    country: { type: String, default: 'US' }
+  },
+  kycStatus: { type: String, enum: ['verified', 'pending', 'rejected', 'under_review'], default: 'pending' },
+  stripeCustomerId: { type: String, required: true },
+  dwollaCustomerUrl: { type: String, required: true },
+  plaidUserId: String,
+  squareCustomerId: String
+}, { timestamps: true });
+
+interface IBankAccount extends Document {
+  accountId: string;
+  userId: string;
+  accountNumber: string;
+  routingNumber: string;
+  accountType: 'checking' | 'savings' | 'business';
+  
+  // REAL BALANCE TRACKING IN CENTS
+  availableBalance: number;
+  ledgerBalance: number;
+  pendingBalance: number;
+  totalDeposited: number;
+  totalWithdrawn: number;
+  overdraftLimit: number;
+  
+  // REAL INTEGRATION IDs
+  dwollaFundingSourceUrl: string;
+  stripeBankAccountId?: string;
+  plaidItemId?: string;
+  plaidAccountId?: string;
+  
+  status: 'active' | 'closed' | 'suspended' | 'frozen';
+  flags: string[];
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const BankAccountSchema = new Schema<IBankAccount>({
+  accountId: { type: String, required: true, unique: true },
+  userId: { type: String, required: true, index: true },
+  accountNumber: { type: String, required: true, unique: true },
+  routingNumber: { type: String, required: true },
+  accountType: { type: String, enum: ['checking', 'savings', 'business'], required: true },
+  
+  availableBalance: { type: Number, default: 0 },
+  ledgerBalance: { type: Number, default: 0 },
+  pendingBalance: { type: Number, default: 0 },
+  totalDeposited: { type: Number, default: 0 },
+  totalWithdrawn: { type: Number, default: 0 },
+  overdraftLimit: { type: Number, default: 0 },
+  
+  dwollaFundingSourceUrl: { type: String, required: true },
+  stripeBankAccountId: String,
+  plaidItemId: String,
+  plaidAccountId: String,
+  
+  status: { type: String, enum: ['active', 'closed', 'suspended', 'frozen'], default: 'active' },
+  flags: [String]
+}, { timestamps: true });
+
+interface IHDCryptoWallet extends Document {
+  walletId: string;
+  userId: string;
+  accountId: string;
+  masterSeedEncrypted: string;
+  derivationPath: string;
+  network: 'ethereum' | 'bitcoin' | 'solana';
+  hdIndex: number;
+  
+  // REAL WALLET DATA
+  addresses: {
+    index: number;
+    address: string;
+    publicKey: string;
+    privateKeyEncrypted: string;
+    balance: string;
+    lastSynced: Date;
+  }[];
+  
+  // REAL TOKEN BALANCES
+  tokenBalances: Map<string, {
+    balance: string;
+    contractAddress: string;
+    decimals: number;
+    priceUsd?: number;
+    valueUsd?: number;
+  }>;
+  
+  status: 'active' | 'frozen' | 'compromised';
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const HDCryptoWalletSchema = new Schema<IHDCryptoWallet>({
+  walletId: { type: String, required: true, unique: true },
+  userId: { type: String, required: true, index: true },
+  accountId: { type: String, required: true, index: true },
+  masterSeedEncrypted: { type: String, required: true },
+  derivationPath: { type: String, default: "m/44'/60'/0'/0" },
+  network: { type: String, enum: ['ethereum', 'bitcoin', 'solana'], required: true },
+  hdIndex: { type: Number, default: 0 },
+  
+  addresses: [{
+    index: { type: Number, required: true },
+    address: { type: String, required: true },
+    publicKey: { type: String, required: true },
+    privateKeyEncrypted: { type: String, required: true },
+    balance: { type: String, default: "0" },
+    lastSynced: { type: Date, default: Date.now }
+  }],
+  
+  tokenBalances: {
+    type: Map,
+    of: {
+      balance: String,
+      contractAddress: String,
+      decimals: { type: Number, default: 18 },
+      priceUsd: Number,
+      valueUsd: Number
+    }
+  },
+  
+  status: { type: String, enum: ['active', 'frozen', 'compromised'], default: 'active' }
+}, { timestamps: true });
+
+interface IRealTransaction extends Document {
+  transactionId: string;
+  userId: string;
+  accountId: string;
+  type: 'deposit' | 'withdrawal' | 'transfer' | 'fee' | 'interest';
+  method: 'ach' | 'wire' | 'crypto' | 'card' | 'check' | 'internal';
+  category: string;
+  
+  // REAL AMOUNTS
+  amount: number;
+  currency: string;
+  fee: number;
+  netAmount: number;
+  
+  // REAL PROVIDER IDs
+  dwollaTransferUrl?: string;
+  stripePaymentIntentId?: string;
+  stripeTransferId?: string;
+  plaidTransferId?: string;
+  blockchainTxHash?: string;
+  
+  status: 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled' | 'reversed';
+  
+  // REAL BALANCE TRACKING
+  balanceBefore: number;
+  balanceAfter: number;
+  availableBalanceBefore: number;
+  availableBalanceAfter: number;
+  
+  description: string;
+  metadata: Map<string, any>;
+  
+  // REAL TIMESTAMPS
+  createdAt: Date;
+  processedAt?: Date;
+  completedAt?: Date;
+  failedAt?: Date;
+}
+
+const RealTransactionSchema = new Schema<IRealTransaction>({
+  transactionId: { type: String, required: true, unique: true },
+  userId: { type: String, required: true, index: true },
+  accountId: { type: String, required: true, index: true },
+  type: { type: String, enum: ['deposit', 'withdrawal', 'transfer', 'fee', 'interest'], required: true },
+  method: { type: String, enum: ['ach', 'wire', 'crypto', 'card', 'check', 'internal'], required: true },
+  category: { type: String, required: true },
+  
+  amount: { type: Number, required: true },
+  currency: { type: String, default: 'USD' },
+  fee: { type: Number, default: 0 },
+  netAmount: { type: Number, required: true },
+  
+  dwollaTransferUrl: String,
+  stripePaymentIntentId: String,
+  stripeTransferId: String,
+  plaidTransferId: String,
+  blockchainTxHash: String,
+  
+  status: { type: String, enum: ['pending', 'processing', 'completed', 'failed', 'cancelled', 'reversed'], default: 'pending' },
+  
+  balanceBefore: { type: Number, required: true },
+  balanceAfter: { type: Number, required: true },
+  availableBalanceBefore: { type: Number, required: true },
+  availableBalanceAfter: { type: Number, required: true },
+  
+  description: { type: String, required: true },
+  metadata: { type: Map, of: Schema.Types.Mixed },
+  
+  processedAt: Date,
+  completedAt: Date,
+  failedAt: Date
+}, { timestamps: true });
+
+// =============================================================================
+// REAL BANKING SERVICE - ACTUAL MONEY MOVEMENT
+// =============================================================================
+
+export class RealBankingService extends EventEmitter {
+  private User = mongoose.model<IBankUser>('BankUser', BankUserSchema);
+  private BankAccount = mongoose.model<IBankAccount>('BankAccount', BankAccountSchema);
+  private HDWallet = mongoose.model<IHDCryptoWallet>('HDCryptoWallet', HDCryptoWalletSchema);
+  private Transaction = mongoose.model<IRealTransaction>('RealTransaction', RealTransactionSchema);
+
+  constructor() {
+    super();
+    this.setupRealTimeBalanceSync();
+  }
+
+  // =============================================================================
+  // REAL USER ONBOARDING WITH ACTUAL KYC
+  // =============================================================================
+
+  async createRealUser(userData: {
+    email: string;
+    firstName: string;
+    lastName: string;
+    phone: string;
+    ssn: string;
+    dateOfBirth: string;
+    address: {
+      street: string;
+      city: string;
+      state: string;
+      zipCode: string;
+      country: string;
+    };
+  }): Promise<IBankUser> {
+    const userId = crypto.randomUUID();
+
+    // CREATE REAL STRIPE CUSTOMER
+    const stripeCustomer = await stripe.customers.create({
+      email: userData.email,
+      name: `${userData.firstName} ${userData.lastName}`,
+      phone: userData.phone,
+      address: {
+        line1: userData.address.street,
+        city: userData.address.city,
+        state: userData.address.state,
+        postal_code: userData.address.zipCode,
+        country: userData.address.country
+      },
+      metadata: { userId, ssn: userData.ssn, dob: userData.dateOfBirth }
+    });
+
+    // CREATE REAL DWOLLA CUSTOMER (ACTUAL MONEY MOVEMENT)
+    const dwollaCustomer = await dwollaClient.post('customers', {
+      firstName: userData.firstName,
+      lastName: userData.lastName,
+      email: userData.email,
+      type: 'personal',
+      address1: userData.address.street,
+      city: userData.address.city,
+      state: userData.address.state,
+      postalCode: userData.address.zipCode,
+      dateOfBirth: userData.dateOfBirth,
+      ssn: userData.ssn
+    });
+
+    if (!dwollaCustomer.headers.get('location')) {
+      throw new Error('Failed to create Dwolla customer');
+    }
+
+    const user = new this.User({
+      userId,
+      ...userData,
+      dateOfBirth: new Date(userData.dateOfBirth),
+      stripeCustomerId: stripeCustomer.id,
+      dwollaCustomerUrl: dwollaCustomer.headers.get('location')!
+    });
+
+    await user.save();
+    
+    this.emit('realUserCreated', { 
+      userId, 
+      email: userData.email,
+      stripeCustomerId: stripeCustomer.id,
+      dwollaCustomerUrl: dwollaCustomer.headers.get('location')!
+    });
+    
+    return user;
+  }
+
+  // =============================================================================
+  // REAL BANK ACCOUNT CREATION WITH ACTUAL FUNDING SOURCES
+  // =============================================================================
+
+  async createRealBankAccount(userId: string, accountType: 'checking' | 'savings' | 'business'): Promise<IBankAccount> {
+    const user = await this.User.findOne({ userId });
+    if (!user) throw new Error('User not found');
+
+    const accountId = crypto.randomUUID();
+    const accountNumber = this.generateRealAccountNumber();
+    const routingNumber = process.env.BANK_ROUTING_NUMBER!;
+
+    // CREATE REAL DWOLLA FUNDING SOURCE (ACTUAL BANK ACCOUNT)
+    const fundingSource = await dwollaClient.post(`${user.dwollaCustomerUrl}/funding-sources`, {
+      routingNumber: routingNumber,
+      accountNumber: accountNumber,
+      bankAccountType: accountType,
+      name: `${user.firstName} ${user.lastName} ${accountType} Account`,
+      type: 'checking'
+    });
+
+    if (!fundingSource.headers.get('location')) {
+      throw new Error('Failed to create Dwolla funding source');
+    }
+
+    const bankAccount = new this.BankAccount({
+      accountId,
+      userId,
+      accountNumber,
+      routingNumber,
+      accountType,
+      dwollaFundingSourceUrl: fundingSource.headers.get('location')!,
+      availableBalance: 0,
+      ledgerBalance: 0,
+      pendingBalance: 0
+    });
+
+    await bankAccount.save();
+
+    this.emit('realBankAccountCreated', { 
+      userId, 
+      accountId, 
+      accountNumber,
+      routingNumber,
+      dwollaFundingSourceUrl: fundingSource.headers.get('location')!
+    });
+
+    return bankAccount;
+  }
+
+  // =============================================================================
+  // REAL ACH DEPOSIT - ACTUAL MONEY MOVEMENT
+  // =============================================================================
+
+  async processRealACHDeposit(data: {
+    userId: string;
+    accountId: string;
+    amount: number; // cents
+    sourceBankAccount: {
+      routingNumber: string;
+      accountNumber: string;
+      accountHolderName: string;
+      accountType: 'checking' | 'savings';
+    };
+    description: string;
+  }): Promise<IRealTransaction> {
+    const user = await this.User.findOne({ userId: data.userId });
+    if (!user) throw new Error('User not found');
+
+    const account = await this.BankAccount.findOne({ accountId: data.accountId });
+    if (!account) throw new Error('Account not found');
+
+    if (account.status !== 'active') {
+      throw new Error('Account is not active');
+    }
+
+    const transactionId = crypto.randomUUID();
+    const balanceBefore = account.availableBalance;
+    const balanceAfter = balanceBefore + data.amount;
+
+    // CREATE REAL DWOLLA TRANSFER (ACTUAL MONEY MOVEMENT)
+    const transfer = await dwollaClient.post('transfers', {
+      _links: {
+        source: {
+          href: await this.createSourceFundingSource(user.dwollaCustomerUrl, data.sourceBankAccount)
+        },
+        destination: {
+          href: account.dwollaFundingSourceUrl
+        }
+      },
+      amount: {
+        currency: 'USD',
+        value: (data.amount / 100).toFixed(2)
+      }
+    });
+
+    if (!transfer.headers.get('location')) {
+      throw new Error('Failed to create Dwolla transfer');
+    }
+
+    // CREATE REAL TRANSACTION RECORD
+    const transaction = new this.Transaction({
+      transactionId,
+      userId: data.userId,
+      accountId: data.accountId,
+      type: 'deposit',
+      method: 'ach',
+      category: 'external_deposit',
+      amount: data.amount,
+      currency: 'USD',
+      fee: 25, // $0.25 ACH fee
+      netAmount: data.amount - 25,
+      dwollaTransferUrl: transfer.headers.get('location')!,
+      status: 'processing',
+      balanceBefore: account.ledgerBalance,
+      balanceAfter: account.ledgerBalance + data.amount,
+      availableBalanceBefore: balanceBefore,
+      availableBalanceAfter: balanceAfter,
+      description: data.description,
+      metadata: {
+        sourceBank: data.sourceBankAccount.routingNumber,
+        externalAccount: data.sourceBankAccount.accountNumber,
+        achType: 'standard'
+      }
+    });
+
+    await transaction.save();
+
+    // UPDATE ACCOUNT BALANCES
+    account.ledgerBalance += data.amount;
+    account.pendingBalance += data.amount; // ACH takes 1-3 business days
+    account.totalDeposited += data.amount;
+
+    await account.save();
+
+    this.emit('realACHDepositInitiated', {
+      transactionId,
+      userId: data.userId,
+      amount: data.amount,
+      accountNumber: account.accountNumber,
+      dwollaTransferUrl: transfer.headers.get('location')!
+    });
+
+    return transaction;
+  }
+
+  // =============================================================================
+  // REAL ACH WITHDRAWAL - ACTUAL MONEY MOVEMENT
+  // =============================================================================
+
+  async processRealACHWithdrawal(data: {
+    userId: string;
+    accountId: string;
+    amount: number; // cents
+    destinationBankAccount: {
+      routingNumber: string;
+      accountNumber: string;
+      accountHolderName: string;
+      accountType: 'checking' | 'savings';
+    };
+    description: string;
+  }): Promise<IRealTransaction> {
+    const user = await this.User.findOne({ userId: data.userId });
+    if (!user) throw new Error('User not found');
+
+    const account = await this.BankAccount.findOne({ accountId: data.accountId });
+    if (!account) throw new Error('Account not found');
+
+    if (account.status !== 'active') {
+      throw new Error('Account is not active');
+    }
+
+    // REAL FUNDS VERIFICATION - CANNOT WITHDRAW MORE THAN AVAILABLE
+    if (account.availableBalance < data.amount) {
+      throw new Error(`Insufficient funds. Available: $${(account.availableBalance / 100).toFixed(2)}, Requested: $${(data.amount / 100).toFixed(2)}`);
+    }
+
+    const transactionId = crypto.randomUUID();
+    const balanceBefore = account.availableBalance;
+    const balanceAfter = balanceBefore - data.amount;
+
+    // CREATE REAL DWOLLA TRANSFER (ACTUAL MONEY MOVEMENT)
+    const transfer = await dwollaClient.post('transfers', {
+      _links: {
+        source: {
+          href: account.dwollaFundingSourceUrl
+        },
+        destination: {
+          href: await this.createDestinationFundingSource(user.dwollaCustomerUrl, data.destinationBankAccount)
+        }
+      },
+      amount: {
+        currency: 'USD',
+        value: (data.amount / 100).toFixed(2)
+      }
+    });
+
+    if (!transfer.headers.get('location')) {
+      throw new Error('Failed to create Dwolla transfer');
+    }
+
+    // CREATE REAL TRANSACTION RECORD
+    const transaction = new this.Transaction({
+      transactionId,
+      userId: data.userId,
+      accountId: data.accountId,
+      type: 'withdrawal',
+      method: 'ach',
+      category: 'external_withdrawal',
+      amount: data.amount,
+      currency: 'USD',
+      fee: 25, // $0.25 ACH fee
+      netAmount: data.amount - 25,
+      dwollaTransferUrl: transfer.headers.get('location')!,
+      status: 'processing',
+      balanceBefore: account.ledgerBalance,
+      balanceAfter: account.ledgerBalance - data.amount,
+      availableBalanceBefore: balanceBefore,
+      availableBalanceAfter: balanceAfter,
+      description: data.description,
+      metadata: {
+        destinationBank: data.destinationBankAccount.routingNumber,
+        externalAccount: data.destinationBankAccount.accountNumber,
+        achType: 'standard'
+      }
+    });
+
+    await transaction.save();
+
+    // IMMEDIATELY DEDUCT FROM AVAILABLE BALANCE
+    account.availableBalance = balanceAfter;
+    account.ledgerBalance -= data.amount;
+    account.totalWithdrawn += data.amount;
+
+    await account.save();
+
+    this.emit('realACHWithdrawalInitiated', {
+      transactionId,
+      userId: data.userId,
+      amount: data.amount,
+      accountNumber: account.accountNumber,
+      dwollaTransferUrl: transfer.headers.get('location')!
+    });
+
+    return transaction;
+  }
+
+  // =============================================================================
+  // REAL CRYPTO HD WALLET CREATION - ACTUAL BLOCKCHAIN WALLETS
+  // =============================================================================
+
+  async createRealHDCryptoWallet(userId: string, accountId: string, network: 'ethereum' | 'bitcoin' | 'solana'): Promise<IHDCryptoWallet> {
+    const user = await this.User.findOne({ userId });
+    if (!user) throw new Error('User not found');
+
+    const account = await this.BankAccount.findOne({ accountId });
+    if (!account) throw new Error('Account not found');
+
+    const walletId = crypto.randomUUID();
+    
+    // GENERATE REAL MNEMONIC SEED
+    const mnemonic = bip39.generateMnemonic(256);
+    const seed = await bip39.mnemonicToSeed(mnemonic);
+    const masterSeedEncrypted = this.encryptData(mnemonic);
+
+    let addresses: any[] = [];
+    let derivationPath = "";
+
+    // CREATE REAL BLOCKCHAIN-SPECIFIC HD WALLET
+    if (network === 'ethereum') {
+      derivationPath = "m/44'/60'/0'/0";
+      const hdNode = bip32.fromSeed(seed);
+      
+      // Generate first 5 Ethereum addresses
+      for (let i = 0; i < 5; i++) {
+        const derivedNode = hdNode.derivePath(`m/44'/60'/0'/0/${i}`);
+        const wallet = new Wallet(derivedNode.privateKey!);
+        const address = wallet.address;
+        
+        addresses.push({
+          index: i,
+          address: address,
+          publicKey: wallet.publicKey,
+          privateKeyEncrypted: this.encryptData(wallet.privateKey),
+          balance: "0",
+          lastSynced: new Date()
+        });
+      }
+    } 
+    else if (network === 'bitcoin') {
+      derivationPath = "m/44'/0'/0'/0";
+      const hdNode = bip32.fromSeed(seed);
+      
+      for (let i = 0; i < 5; i++) {
+        const derivedNode = hdNode.derivePath(`m/44'/0'/0'/0/${i}`);
+        const keyPair = ECPair.fromPrivateKey(derivedNode.privateKey!);
+        const { address } = bitcoin.payments.p2pkh({ 
+          pubkey: keyPair.publicKey, 
+          network: bitcoinNetwork 
+        });
+        
+        addresses.push({
+          index: i,
+          address: address!,
+          publicKey: keyPair.publicKey.toString('hex'),
+          privateKeyEncrypted: this.encryptData(derivedNode.privateKey!.toString('hex')),
+          balance: "0",
+          lastSynced: new Date()
+        });
+      }
+    }
+    else if (network === 'solana') {
+      derivationPath = "m/44'/501'/0'/0'";
+      const hdNode = bip32.fromSeed(seed);
+      
+      for (let i = 0; i < 5; i++) {
+        const derivedNode = hdNode.derivePath(`m/44'/501'/0'/0'/${i}`);
+        const keypair = Keypair.fromSeed(derivedNode.privateKey!);
+        
+        addresses.push({
+          index: i,
+          address: keypair.publicKey.toString(),
+          publicKey: keypair.publicKey.toString(),
+          privateKeyEncrypted: this.encryptData(Buffer.from(keypair.secretKey).toString('base64')),
+          balance: "0",
+          lastSynced: new Date()
+        });
+      }
+    }
+
+    const hdWallet = new this.HDWallet({
+      walletId,
+      userId,
+      accountId,
+      masterSeedEncrypted,
+      derivationPath,
+      network,
+      addresses,
+      tokenBalances: new Map(),
+      status: 'active'
+    });
+
+    await hdWallet.save();
+
+    this.emit('realHDWalletCreated', {
+      walletId,
+      userId,
+      accountId,
+      network,
+      addresses: addresses.map(addr => addr.address)
+    });
+
+    return hdWallet;
+  }
+
+  // =============================================================================
+  // REAL CRYPTO DEPOSIT TRACKING - ACTUAL BLOCKCHAIN SCANNING
+  // =============================================================================
+
+  async scanRealCryptoDeposits(walletId: string): Promise<any[]> {
+    const wallet = await this.HDWallet.findOne({ walletId });
+    if (!wallet) throw new Error('Wallet not found');
+
+    const newDeposits: any[] = [];
+
+    for (const addressData of wallet.addresses) {
+      let currentBalance = "0";
+
+      if (wallet.network === 'ethereum') {
+        // REAL ETHEREUM BALANCE CHECK
+        const balance = await ethProvider.getBalance(addressData.address);
+        currentBalance = utils.formatEther(balance);
+        
+        // SCAN FOR REAL ERC-20 TOKENS
+        const commonTokens = [
+          '0xdAC17F958D2ee523a2206206994597C13D831ec7', // USDT
+          '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', // USDC
+          '0x6B175474E89094C44Da98b954EedeAC495271d0F'  // DAI
+        ];
+
+        for (const tokenAddress of commonTokens) {
+          const tokenBalance = await this.getERC20TokenBalance(addressData.address, tokenAddress);
+          if (tokenBalance !== "0") {
+            wallet.tokenBalances.set(tokenAddress, {
+              balance: tokenBalance,
+              contractAddress: tokenAddress,
+              decimals: 18
+            });
+          }
+        }
+      }
+      else if (wallet.network === 'bitcoin') {
+        // REAL BITCOIN BALANCE CHECK
+        const balance = await this.getBitcoinBalance(addressData.address);
+        currentBalance = balance.toString();
+      }
+      else if (wallet.network === 'solana') {
+        // REAL SOLANA BALANCE CHECK
+        const balance = await solanaConnection.getBalance(new PublicKey(addressData.address));
+        currentBalance = (balance / LAMPORTS_PER_SOL).toString();
+      }
+
+      // DETECT NEW DEPOSITS BY BALANCE CHANGE
+      if (currentBalance !== addressData.balance && currentBalance !== "0") {
+        const depositAmount = parseFloat(currentBalance) - parseFloat(addressData.balance);
+        
+        if (depositAmount > 0) {
+          newDeposits.push({
+            address: addressData.address,
+            amount: depositAmount,
+            currency: wallet.network === 'solana' ? 'SOL' : wallet.network === 'ethereum' ? 'ETH' : 'BTC',
+            previousBalance: addressData.balance,
+            newBalance: currentBalance
+          });
+
+          // CREATE REAL CRYPTO DEPOSIT TRANSACTION
+          await this.createCryptoDepositTransaction(wallet, addressData, depositAmount, currentBalance);
+        }
+
+        addressData.balance = currentBalance;
+        addressData.lastSynced = new Date();
+      }
+    }
+
+    await wallet.save();
+    return newDeposits;
+  }
+
+  // =============================================================================
+  // REAL CRYPTO WITHDRAWAL - ACTUAL BLOCKCHAIN TRANSACTION
+  // =============================================================================
+
+  async processRealCryptoWithdrawal(data: {
+    walletId: string;
+    fromAddressIndex: number;
+    toAddress: string;
+    amount: string;
+    currency: string;
+    description: string;
+  }): Promise<string> {
+    const wallet = await this.HDWallet.findOne({ walletId });
+    if (!wallet) throw new Error('Wallet not found');
+
+    const addressData = wallet.addresses.find(addr => addr.index === data.fromAddressIndex);
+    if (!addressData) throw new Error('Address not found');
+
+    let txHash: string;
+
+    if (wallet.network === 'ethereum') {
+      // REAL ETHEREUM TRANSACTION
+      const privateKey = this.decryptData(addressData.privateKeyEncrypted);
+      const ethWallet = new Wallet(privateKey, ethProvider);
+
+      if (data.currency === 'ETH') {
+        const tx = await ethWallet.sendTransaction({
+          to: data.toAddress,
+          value: utils.parseEther(data.amount),
+          gasLimit: 21000,
+          gasPrice: await ethProvider.getGasPrice()
+        });
+        txHash = tx.hash;
+      } else {
+        // ERC-20 TOKEN TRANSFER
+        const tokenContract = new ethers.Contract(
+          data.currency, // token contract address
+          ['function transfer(address to, uint256 amount) returns (bool)'],
+          ethWallet
+        );
+        const tx = await tokenContract.transfer(data.toAddress, utils.parseUnits(data.amount, 18));
+        txHash = tx.hash;
+      }
+    }
+    else if (wallet.network === 'bitcoin') {
+      // REAL BITCOIN TRANSACTION
+      txHash = await this.createBitcoinTransaction(
+        this.decryptData(addressData.privateKeyEncrypted),
+        data.toAddress,
+        parseFloat(data.amount)
+      );
+    }
+    else if (wallet.network === 'solana') {
+      // REAL SOLANA TRANSACTION
+      const privateKey = Buffer.from(this.decryptData(addressData.privateKeyEncrypted), 'base64');
+      const keypair = Keypair.fromSecretKey(privateKey);
+
+      const transaction = new SolanaTransaction().add(
+        SystemProgram.transfer({
+          fromPubkey: keypair.publicKey,
+          toPubkey: new PublicKey(data.toAddress),
+          lamports: Math.floor(parseFloat(data.amount) * LAMPORTS_PER_SOL)
+        })
+      );
+
+      txHash = await sendAndConfirmTransaction(solanaConnection, transaction, [keypair]);
+    } else {
+      throw new Error('Unsupported network');
+    }
+
+    // CREATE REAL WITHDRAWAL TRANSACTION RECORD
+    await this.createCryptoWithdrawalTransaction(wallet, addressData, data, txHash);
+
+    this.emit('realCryptoWithdrawalProcessed', {
+      walletId,
+      txHash,
+      fromAddress: addressData.address,
+      toAddress: data.toAddress,
+      amount: data.amount,
+      currency: data.currency
+    });
+
+    return txHash;
+  }
+
+  // =============================================================================
+  // REAL-TIME BALANCE SYNC WITH ACTUAL PROVIDERS
+  // =============================================================================
+
+  private setupRealTimeBalanceSync(): void {
+    // SYNC DWOLLA BALANCES EVERY 5 MINUTES
+    setInterval(async () => {
+      try {
+        await this.syncAllAccountBalances();
+      } catch (error) {
+        console.error('Balance sync error:', error);
+      }
+    }, 300000);
+
+    // SYNC CRYPTO BALANCES EVERY 2 MINUTES
+    setInterval(async () => {
+      try {
+        await this.syncAllCryptoBalances();
+      } catch (error) {
+        console.error('Crypto balance sync error:', error);
+      }
+    }, 120000);
+  }
+
+  private async syncAllAccountBalances(): Promise<void> {
+    const accounts = await this.BankAccount.find({ status: 'active' });
+    
+    for (const account of accounts) {
+      try {
+        // GET REAL BALANCE FROM DWOLLA
+        const fundingSource = await dwollaClient.get(account.dwollaFundingSourceUrl);
+        const realBalance = Math.round(parseFloat(fundingSource.body.balance.value) * 100);
+
+        // UPDATE DATABASE IF DIFFERENT
+        if (account.ledgerBalance !== realBalance) {
+          account.ledgerBalance = realBalance;
+          account.availableBalance = realBalance - account.pendingBalance;
+          await account.save();
+
+          this.emit('realBalanceSynced', {
+            accountId: account.accountId,
+            previousBalance: account.ledgerBalance,
+            newBalance: realBalance
+          });
+        }
+      } catch (error) {
+        console.error(`Failed to sync balance for account ${account.accountId}:`, error);
+      }
+    }
+  }
+
+  private async syncAllCryptoBalances(): Promise<void> {
+    const wallets = await this.HDWallet.find({ status: 'active' });
+    
+    for (const wallet of wallets) {
+      try {
+        await this.scanRealCryptoDeposits(wallet.walletId);
+      } catch (error) {
+        console.error(`Failed to sync crypto wallet ${wallet.walletId}:`, error);
+      }
+    }
+  }
+
+  // =============================================================================
+  // REAL HELPER METHODS - ACTUAL IMPLEMENTATIONS
+  // =============================================================================
+
+  private async createSourceFundingSource(customerUrl: string, bankAccount: any): Promise<string> {
+    const fundingSource = await dwollaClient.post(`${customerUrl}/funding-sources`, {
+      routingNumber: bankAccount.routingNumber,
+      accountNumber: bankAccount.accountNumber,
+      bankAccountType: bankAccount.accountType,
+      name: bankAccount.accountHolderName,
+      type: 'checking'
+    });
+
+    return fundingSource.headers.get('location')!;
+  }
+
+  private async createDestinationFundingSource(customerUrl: string, bankAccount: any): Promise<string> {
+    const fundingSource = await dwollaClient.post(`${customerUrl}/funding-sources`, {
+      routingNumber: bankAccount.routingNumber,
+      accountNumber: bankAccount.accountNumber,
+      bankAccountType: bankAccount.accountType,
+      name: bankAccount.accountHolderName,
+      type: 'checking'
+    });
+
+    return fundingSource.headers.get('location')!;
+  }
+
+  private async getERC20TokenBalance(address: string, tokenAddress: string): Promise<string> {
+    try {
+      const contract = new ethers.Contract(tokenAddress, [
+        'function balanceOf(address) view returns (uint256)',
+        'function decimals() view returns (uint8)'
+      ], ethProvider);
+
+      const balance = await contract.balanceOf(address);
+      const decimals = await contract.decimals();
+      
+      return utils.formatUnits(balance, decimals);
+    } catch (error) {
+      return "0";
+    }
+  }
