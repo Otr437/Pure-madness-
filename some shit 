@@ -1,0 +1,2954 @@
+import importlib.util
+import inspect
+import os
+import sys
+import asyncio
+import subprocess
+import json
+import logging
+import shutil
+import zipfile
+import tarfile
+from pathlib import Path
+from typing import Dict, List, Any, Optional, Union, Tuple, Set
+from datetime import datetime, timedelta
+import threading
+import queue
+import signal
+import psutil
+import docker
+from fastapi import FastAPI, HTTPException, UploadFile, File, BackgroundTasks, WebSocket, WebSocketDisconnect, Depends, Request
+from fastapi.responses import FileResponse, StreamingResponse, JSONResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from pydantic import BaseModel, Field, validator
+import uvicorn
+from contextlib import asynccontextmanager
+import ast
+import re
+import tokenize
+import io
+import tempfile
+from dataclasses import dataclass, field
+from collections import defaultdict, Counter
+import time
+import glob
+import pickle
+import hashlib
+import yaml
+import toml
+import csv
+import xml.etree.ElementTree as ET
+import sqlite3
+import mimetypes
+import gzip
+import base64
+import secrets
+import jwt
+import bcrypt
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
+import multiprocessing as mp
+from functools import wraps, lru_cache
+import weakref
+import gc
+import resource
+import platform
+import socket
+import urllib.parse
+import email.utils
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+import smtplib
+import ftplib
+import http.client
+import ssl
+import certifi
+import requests
+import aiohttp
+import aiofiles
+import websockets
+import numpy as np
+import pandas as pd
+import matplotlib
+matplotlib.use('Agg')  # Non-interactive backend
+import matplotlib.pyplot as plt
+import seaborn as sns
+from PIL import Image, ImageDraw, ImageFont
+import cv2
+from sklearn.metrics import accuracy_score, precision_score, recall_score
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+import tensorflow as tf
+import torch
+import nltk
+from transformers import AutoTokenizer, AutoModel
+import spacy
+from scipy import stats
+import networkx as nx
+from jinja2 import Template, Environment, FileSystemLoader
+import markdown
+from bs4 import BeautifulSoup
+import feedparser
+from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa, padding
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+import pyotp
+import qrcode
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
+import schedule
+import croniter
+from celery import Celery
+import redis
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text, Boolean, Float
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, Session
+from alembic import command
+from alembic.config import Config
+import elasticsearch
+from pymongo import MongoClient
+import psycopg2
+import mysql.connector
+from cassandra.cluster import Cluster
+import boto3
+from azure.storage.blob import BlobServiceClient
+from google.cloud import storage as gcs
+import kubernetes
+from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
+import grafana_api
+from opentelemetry import trace, metrics
+from opentelemetry.exporter.jaeger.thrift import JaegerExporter
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from opentelemetry.instrumentation.requests import RequestsInstrumentor
+import sentry_sdk
+from sentry_sdk.integrations.fastapi import FastApiIntegration
+from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
+
+# Configure comprehensive logging with multiple handlers
+log_formatter = logging.Formatter(
+    '%(asctime)s - %(name)s - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s'
+)
+
+# File handler with rotation
+file_handler = logging.handlers.RotatingFileHandler(
+    'server.log', maxBytes=10*1024*1024, backupCount=5
+)
+file_handler.setFormatter(log_formatter)
+
+# Console handler
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(log_formatter)
+
+# Error file handler
+error_handler = logging.handlers.RotatingFileHandler(
+    'errors.log', maxBytes=5*1024*1024, backupCount=3
+)
+error_handler.setLevel(logging.ERROR)
+error_handler.setFormatter(log_formatter)
+
+# Performance handler
+perf_handler = logging.handlers.RotatingFileHandler(
+    'performance.log', maxBytes=5*1024*1024, backupCount=3
+)
+perf_formatter = logging.Formatter('%(asctime)s - %(message)s')
+perf_handler.setFormatter(perf_formatter)
+
+# Configure root logger
+logging.basicConfig(level=logging.INFO, handlers=[file_handler, console_handler, error_handler])
+logger = logging.getLogger(__name__)
+perf_logger = logging.getLogger('performance')
+perf_logger.addHandler(perf_handler)
+perf_logger.setLevel(logging.INFO)
+
+# Metrics and monitoring
+METRICS = {
+    'requests_total': Counter('http_requests_total', 'Total HTTP requests', ['method', 'endpoint']),
+    'request_duration': Histogram('http_request_duration_seconds', 'HTTP request duration'),
+    'compilation_total': Counter('compilations_total', 'Total code compilations', ['status']),
+    'compilation_duration': Histogram('compilation_duration_seconds', 'Code compilation duration'),
+    'errors_total': Counter('errors_total', 'Total errors', ['type']),
+}
+
+# Configuration management
+class Config:
+    SECRET_KEY = os.getenv('SECRET_KEY', secrets.token_hex(32))
+    DATABASE_URL = os.getenv('DATABASE_URL', 'sqlite:///./app.db')
+    REDIS_URL = os.getenv('REDIS_URL', 'redis://localhost:6379')
+    ELASTICSEARCH_URL = os.getenv('ELASTICSEARCH_URL', 'http://localhost:9200')
+    MONGODB_URL = os.getenv('MONGODB_URL', 'mongodb://localhost:27017')
+    SMTP_SERVER = os.getenv('SMTP_SERVER', 'localhost')
+    SMTP_PORT = int(os.getenv('SMTP_PORT', '587'))
+    SMTP_USERNAME = os.getenv('SMTP_USERNAME', '')
+    SMTP_PASSWORD = os.getenv('SMTP_PASSWORD', '')
+    SENTRY_DSN = os.getenv('SENTRY_DSN', '')
+    JAEGER_ENDPOINT = os.getenv('JAEGER_ENDPOINT', 'http://localhost:14268/api/traces')
+    MAX_WORKERS = int(os.getenv('MAX_WORKERS', str(mp.cpu_count())))
+    MAX_MEMORY_MB = int(os.getenv('MAX_MEMORY_MB', '4096'))
+    RATE_LIMIT_PER_MINUTE = int(os.getenv('RATE_LIMIT_PER_MINUTE', '100'))
+    ENABLE_AUTHENTICATION = os.getenv('ENABLE_AUTHENTICATION', 'false').lower() == 'true'
+    ENABLE_MONITORING = os.getenv('ENABLE_MONITORING', 'true').lower() == 'true'
+    ENABLE_CACHING = os.getenv('ENABLE_CACHING', 'true').lower() == 'true'
+    ENABLE_ENCRYPTION = os.getenv('ENABLE_ENCRYPTION', 'true').lower() == 'true'
+
+# Global variables
+docker_client = # Global variables and thread pools
+docker_client =         except Exception as e:
+            logger.error(f"Code optimization failed: {e}")
+            raise HTTPException(status_code=500, detail=f"Code optimization failed: {e}")
+
+# Additional endpoints for comprehensive functionality
+
+@app.post("/security/scan")
+async def security_scan(request: SecurityScanRequest):
+    """Perform security scanning on code or directories"""
+    try:
+        target_path = Path(request.target)
+        if not target_path.exists():
+            raise HTTPException(status_code=404, detail="Target not found")
+        
+        results = {
+            'target': request.target,
+            'vulnerabilities': [],
+            'warnings': [],
+            'info': [],
+            'scan_types': request.scan_types
+        }
+        
+        if 'static_analysis' in request.scan_types:
+            static_results = await perform_static_security_analysis(target_path)
+            results['vulnerabilities'].extend(static_results.get('vulnerabilities', []))
+            results['warnings'].extend(static_results.get('warnings', []))
+        
+        if 'dependency_check' in request.scan_types and request.include_dependencies:
+            dep_results = await scan_dependencies_for_vulnerabilities(target_path)
+            results['vulnerabilities'].extend(dep_results.get('vulnerabilities', []))
+        
+        if 'secrets_detection' in request.scan_types:
+            secrets_results = await detect_secrets_in_code(target_path)
+            results['warnings'].extend(secrets_results.get('secrets', []))
+        
+        # Filter by severity threshold
+        severity_levels = {'low': 0, 'medium': 1, 'high': 2, 'critical': 3}
+        threshold = severity_levels.get(request.severity_threshold, 1)
+        
+        filtered_vulnerabilities = [
+            v for v in results['vulnerabilities'] 
+            if severity_levels.get(v.get('severity', 'low'), 0) >= threshold
+        ]
+        
+        results['vulnerabilities'] = filtered_vulnerabilities
+        results['summary'] = {
+            'total_vulnerabilities': len(filtered_vulnerabilities),
+            'critical': len([v for v in filtered_vulnerabilities if v.get('severity') == 'critical']),
+            'high': len([v for v in filtered_vulnerabilities if v.get('severity') == 'high']),
+            'medium': len([v for v in filtered_vulnerabilities if v.get('severity') == 'medium']),
+            'low': len([v for v in filtered_vulnerabilities if v.get('severity') == 'low'])
+        }
+        
+        return results
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Security scan failed: {e}")
+
+@app.post("/ml/train")
+async def train_ml_model(request: MLTrainingRequest):
+    """Train a machine learning model"""
+    try:
+        dataset_path = Path(request.dataset_path)
+        if not dataset_path.exists():
+            raise HTTPException(status_code=404, detail="Dataset not found")
+        
+        # Load dataset
+        if dataset_path.suffix == '.csv':
+            data = pd.read_csv(dataset_path)
+        elif dataset_path.suffix == '.json':
+            data = pd.read_json(dataset_path)
+        else:
+            raise HTTPException(status_code=400, detail="Unsupported dataset format")
+        
+        # Prepare features and target
+        if request.target_column not in data.columns:
+            raise HTTPException(status_code=400, detail="Target column not found in dataset")
+        
+        X = data.drop(columns=[request.target_column])
+        y = data[request.target_column]
+        
+        # Handle categorical variables
+        for col in X.select_dtypes(include=['object']).columns:
+            le = LabelEncoder()
+            X[col] = le.fit_transform(X[col].astype(str))
+        
+        # Split data
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=request.test_size, random_state=42
+        )
+        
+        # Scale features
+        scaler = StandardScaler()
+        X_train_scaled = scaler.fit_transform(X_train)
+        X_test_scaled = scaler.transform(X_test)
+        
+        # Train model based on type
+        if request.model_type == 'sklearn':
+            from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+            
+            if y.dtype == 'object' or len(y.unique()) < 20:  # Classification
+                model = RandomForestClassifier(**(request.hyperparameters or {}))
+                model.fit(X_train_scaled, y_train)
+                predictions = model.predict(X_test_scaled)
+                accuracy = accuracy_score(y_test, predictions)
+                metrics = {'accuracy': accuracy}
+            else:  # Regression
+                from sklearn.ensemble import RandomForestRegressor
+                from sklearn.metrics import mean_squared_error, r2_score
+                model = RandomForestRegressor(**(request.hyperparameters or {}))
+                model.fit(X_train_scaled, y_train)
+                predictions = model.predict(X_test_scaled)
+                mse = mean_squared_error(y_test, predictions)
+                r2 = r2_score(y_test, predictions)
+                metrics = {'mse': mse, 'r2': r2}
+        
+        # Save model
+        model_filename = f"model_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pkl"
+        model_path = Path("models") / model_filename
+        model_path.parent.mkdir(exist_ok=True)
+        
+        with open(model_path, 'wb') as f:
+            pickle.dump({'model': model, 'scaler': scaler}, f)
+        
+        return {
+            'success': True,
+            'model_path': str(model_path),
+            'metrics': metrics,
+            'feature_importance': dict(zip(X.columns, model.feature_importances_)) if hasattr(model, 'feature_importances_') else {},
+            'training_samples': len(X_train),
+            'test_samples': len(X_test),
+            'timestamp': datetime.now().isoformat()
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Model training failed: {e}")
+
+@app.post("/ml/predict")
+async def ml_predict(model_path: str, input_data: Dict[str, Any]):
+    """Make predictions using trained model"""
+    try:
+        model_path = Path(model_path)
+        if not model_path.exists():
+            raise HTTPException(status_code=404, detail="Model not found")
+        
+        with open(model_path, 'rb') as f:
+            model_data = pickle.load(f)
+        
+        model = model_data['model']
+        scaler = model_data.get('scaler')
+        
+        # Prepare input data
+        input_df = pd.DataFrame([input_data])
+        
+        # Handle categorical variables (simple approach)
+        for col in input_df.select_dtypes(include=['object']).columns:
+            le = LabelEncoder()
+            input_df[col] = le.fit_transform(input_df[col].astype(str))
+        
+        # Scale if scaler available
+        if scaler:
+            input_scaled = scaler.transform(input_df)
+        else:
+            input_scaled = input_df.values
+        
+        # Make prediction
+        prediction = model.predict(input_scaled)
+        
+        # Get prediction probability if available
+        prediction_proba = None
+        if hasattr(model, 'predict_proba'):
+            prediction_proba = model.predict_proba(input_scaled).tolist()
+        
+        return {
+            'prediction': prediction.tolist(),
+            'prediction_probability': prediction_proba,
+            'input_data': input_data
+active_processes = {}
+websocket_connections = set()
+thread_pool = ThreadPoolExecutor(max_workers=Config.MAX_WORKERS)
+process_pool = ProcessPoolExecutor(max_workers=Config.MAX_WORKERS)
+task_queue = queue.Queue()
+cache_store = {}
+rate_limiter = defaultdict(list)
+file_watchers = {}
+scheduled_tasks = {}
+encryption_key = Fernet.generate_key() if Config.ENABLE_ENCRYPTION else None
+fernet_cipher = Fernet(encryption_key) if encryption_key else None
+
+# Database setup
+Base = declarative_base()
+
+class CompilationLog(Base):
+    __tablename__ = 'compilation_logs'
+    
+    id = Column(Integer, primary_key=True)
+    file_path = Column(String(500), nullable=False)
+    status = Column(String(50), nullable=False)
+    issues_fixed = Column(Integer, default=0)
+    execution_time = Column(Float, default=0.0)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    result_data = Column(Text)
+
+class SystemMetrics(Base):
+    __tablename__ = 'system_metrics'
+    
+    id = Column(Integer, primary_key=True)
+    cpu_percent = Column(Float)
+    memory_percent = Column(Float)
+    disk_percent = Column(Float)
+    active_processes = Column(Integer)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+
+class UserSessions(Base):
+    __tablename__ = 'user_sessions'
+    
+    id = Column(Integer, primary_key=True)
+    session_id = Column(String(100), unique=True, nullable=False)
+    user_data = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    expires_at = Column(DateTime)
+    is_active = Column(Boolean, default=True)
+
+# Database connection
+engine = create_engine(Config.DATABASE_URL, pool_size=20, max_overflow=30)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+# Redis connection for caching
+redis_client = None
+if Config.ENABLE_CACHING:
+    try:
+        import redis
+        redis_client = redis.from_url(Config.REDIS_URL)
+        redis_client.ping()
+        logger.info("Redis connected successfully")
+    except Exception as e:
+        logger.warning(f"Redis connection failed: {e}")
+        redis_client = None
+
+# Elasticsearch connection
+es_client = None
+try:
+    from elasticsearch import Elasticsearch
+    es_client = Elasticsearch([Config.ELASTICSEARCH_URL])
+    if es_client.ping():
+        logger.info("Elasticsearch connected successfully")
+    else:
+        es_client = None
+except Exception as e:
+    logger.warning(f"Elasticsearch connection failed: {e}")
+
+# MongoDB connection
+mongo_client = None
+mongo_db = None
+try:
+    mongo_client = MongoClient(Config.MONGODB_URL)
+    mongo_db = mongo_client.get_database('compiler_db')
+    logger.info("MongoDB connected successfully")
+except Exception as e:
+    logger.warning(f"MongoDB connection failed: {e}")
+
+# Email configuration
+class EmailService:
+    def __init__(self):
+        self.smtp_server = Config.SMTP_SERVER
+        self.smtp_port = Config.SMTP_PORT
+        self.username = Config.SMTP_USERNAME
+        self.password = Config.SMTP_PASSWORD
+    
+    async def send_email(self, to_email: str, subject: str, body: str, is_html: bool = False):
+        try:
+            msg = MIMEMultipart('alternative') if is_html else MIMEText(body)
+            msg['Subject'] = subject
+            msg['From'] = self.username
+            msg['To'] = to_email
+            
+            if is_html:
+                text_part = MIMEText(body, 'plain')
+                html_part = MIMEText(body, 'html')
+                msg.attach(text_part)
+                msg.attach(html_part)
+            
+            with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
+                server.starttls()
+                if self.username and self.password:
+                    server.login(self.username, self.password)
+                server.send_message(msg)
+                
+            return True
+        except Exception as e:
+            logger.error(f"Email send failed: {e}")
+            return False
+
+email_service = EmailService()
+
+# Authentication and security
+security = HTTPBearer(auto_error=False)
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(hours=24)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, Config.SECRET_KEY, algorithm="HS256")
+    return encoded_jwt
+
+def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    if not Config.ENABLE_AUTHENTICATION:
+        return {"user": "anonymous"}
+    
+    if not credentials:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    try:
+        payload = jwt.decode(credentials.credentials, Config.SECRET_KEY, algorithms=["HS256"])
+        return payload
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expired")
+    except jwt.JWTError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+# Rate limiting
+def rate_limit_check(client_ip: str, limit: int = Config.RATE_LIMIT_PER_MINUTE) -> bool:
+    now = time.time()
+    minute_ago = now - 60
+    
+    # Clean old requests
+    rate_limiter[client_ip] = [req_time for req_time in rate_limiter[client_ip] if req_time > minute_ago]
+    
+    # Check limit
+    if len(rate_limiter[client_ip]) >= limit:
+        return False
+    
+    rate_limiter[client_ip].append(now)
+    return True
+
+# Caching utilities
+def cache_key(prefix: str, *args) -> str:
+    key_data = f"{prefix}:{':'.join(map(str, args))}"
+    return hashlib.md5(key_data.encode()).hexdigest()
+
+async def get_cache(key: str) -> Any:
+    if not Config.ENABLE_CACHING:
+        return None
+    
+    if redis_client:
+        try:
+            data = redis_client.get(key)
+            if data:
+                return pickle.loads(data)
+        except Exception as e:
+            logger.error(f"Cache get error: {e}")
+    
+    return cache_store.get(key)
+
+async def set_cache(key: str, value: Any, ttl: int = 3600):
+    if not Config.ENABLE_CACHING:
+        return
+    
+    if redis_client:
+        try:
+            redis_client.setex(key, ttl, pickle.dumps(value))
+            return
+        except Exception as e:
+            logger.error(f"Cache set error: {e}")
+    
+    cache_store[key] = value
+    # Simple TTL for in-memory cache
+    threading.Timer(ttl, lambda: cache_store.pop(key, None)).start()
+
+# Monitoring and metrics
+class PerformanceMonitor:
+    def __init__(self):
+        self.start_time = time.time()
+        self.request_count = 0
+        self.error_count = 0
+        
+    def record_request(self, endpoint: str, method: str, duration: float, status_code: int):
+        self.request_count += 1
+        METRICS['requests_total'].labels(method=method, endpoint=endpoint).inc()
+        METRICS['request_duration'].observe(duration)
+        
+        if status_code >= 400:
+            self.error_count += 1
+            METRICS['errors_total'].labels(type='http_error').inc()
+        
+        perf_logger.info(f"REQUEST {method} {endpoint} {status_code} {duration:.3f}s")
+    
+    def record_compilation(self, status: str, duration: float):
+        METRICS['compilation_total'].labels(status=status).inc()
+        METRICS['compilation_duration'].observe(duration)
+        perf_logger.info(f"COMPILATION {status} {duration:.3f}s")
+    
+    def get_stats(self) -> dict:
+        uptime = time.time() - self.start_time
+        return {
+            'uptime_seconds': uptime,
+            'total_requests': self.request_count,
+            'total_errors': self.error_count,
+            'requests_per_second': self.request_count / uptime if uptime > 0 else 0,
+            'error_rate': self.error_count / self.request_count if self.request_count > 0 else 0
+        }
+
+performance_monitor = PerformanceMonitor()
+
+# File system monitoring
+class CodeFileHandler(FileSystemEventHandler):
+    def __init__(self, callback):
+        self.callback = callback
+        super().__init__()
+    
+    def on_modified(self, event):
+        if not event.is_directory and event.src_path.endswith('.py'):
+            asyncio.create_task(self.callback(event.src_path, 'modified'))
+    
+    def on_created(self, event):
+        if not event.is_directory and event.src_path.endswith('.py'):
+            asyncio.create_task(self.callback(event.src_path, 'created'))
+
+async def file_change_callback(file_path: str, event_type: str):
+    logger.info(f"File {event_type}: {file_path}")
+    await broadcast_to_websockets({
+        'type': 'file_change',
+        'file_path': file_path,
+        'event_type': event_type,
+        'timestamp': datetime.now().isoformat()
+    })
+
+# Task scheduler
+class TaskScheduler:
+    def __init__(self):
+        self.jobs = {}
+        self.running = False
+        
+    def add_job(self, job_id: str, func, trigger, **kwargs):
+        if trigger == 'interval':
+            schedule.every(kwargs.get('seconds', 60)).seconds.do(func)
+        elif trigger == 'cron':
+            cron = croniter.croniter(kwargs.get('cron_expression', '0 * * * *'))
+            schedule.every().minute.do(self._check_cron, cron, func)
+        
+        self.jobs[job_id] = {'func': func, 'trigger': trigger, 'kwargs': kwargs}
+    
+    def _check_cron(self, cron, func):
+        if cron.get_next(datetime) <= datetime.now():
+            func()
+    
+    def start(self):
+        self.running = True
+        threading.Thread(target=self._run_scheduler, daemon=True).start()
+    
+    def _run_scheduler(self):
+        while self.running:
+            schedule.run_pending()
+            time.sleep(1)
+    
+    def stop(self):
+        self.running = False
+
+scheduler = TaskScheduler()
+
+# System resource monitoring
+def monitor_system_resources():
+    try:
+        cpu_percent = psutil.cpu_percent(interval=1)
+        memory = psutil.virtual_memory()
+        disk = psutil.disk_usage('/')
+        
+        metrics_data = {
+            'cpu_percent': cpu_percent,
+            'memory_percent': memory.percent,
+            'disk_percent': disk.percent,
+            'active_processes': len(active_processes),
+            'timestamp': datetime.now()
+        }
+        
+        # Store in database
+        if 'db' in locals():
+            db = SessionLocal()
+            try:
+                metric = SystemMetrics(**metrics_data)
+                db.add(metric)
+                db.commit()
+            finally:
+                db.close()
+        
+        # Store in Elasticsearch
+        if es_client:
+            try:
+                es_client.index(
+                    index='system-metrics',
+                    body=metrics_data
+                )
+            except Exception as e:
+                logger.error(f"Elasticsearch indexing failed: {e}")
+        
+        logger.debug(f"System metrics: CPU {cpu_percent}%, Memory {memory.percent}%, Disk {disk.percent}%")
+        
+    except Exception as e:
+        logger.error(f"System monitoring failed: {e}")
+
+# Security utilities
+def hash_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+
+def verify_password(password: str, hashed: str) -> bool:
+    return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
+
+def encrypt_data(data: str) -> str:
+    if not Config.ENABLE_ENCRYPTION or not fernet_cipher:
+        return data
+    return fernet_cipher.encrypt(data.encode()).decode()
+
+def decrypt_data(encrypted_data: str) -> str:
+    if not Config.ENABLE_ENCRYPTION or not fernet_cipher:
+        return encrypted_data
+    return fernet_cipher.decrypt(encrypted_data.encode()).decode()
+
+# Cloud storage integrations
+class CloudStorageManager:
+    def __init__(self):
+        self.aws_client = None
+        self.azure_client = None
+        self.gcp_client = None
+        
+        try:
+            self.aws_client = boto3.client('s3')
+        except Exception as e:
+            logger.warning(f"AWS S3 client initialization failed: {e}")
+        
+        try:
+            self.azure_client = BlobServiceClient.from_connection_string(
+                os.getenv('AZURE_STORAGE_CONNECTION_STRING', '')
+            )
+        except Exception as e:
+            logger.warning(f"Azure Blob client initialization failed: {e}")
+        
+        try:
+            self.gcp_client = gcs.Client()
+        except Exception as e:
+            logger.warning(f"GCP Storage client initialization failed: {e}")
+    
+    async def upload_file(self, file_path: str, bucket: str, key: str, provider: str = 'aws'):
+        try:
+            if provider == 'aws' and self.aws_client:
+                self.aws_client.upload_file(file_path, bucket, key)
+            elif provider == 'azure' and self.azure_client:
+                blob_client = self.azure_client.get_blob_client(container=bucket, blob=key)
+                with open(file_path, 'rb') as data:
+                    blob_client.upload_blob(data)
+            elif provider == 'gcp' and self.gcp_client:
+                bucket_obj = self.gcp_client.bucket(bucket)
+                blob = bucket_obj.blob(key)
+                blob.upload_from_filename(file_path)
+            
+            return True
+        except Exception as e:
+            logger.error(f"Cloud upload failed: {e}")
+            return False
+
+cloud_storage = CloudStorageManager()
+
+# AI/ML utilities
+class MLModelManager:
+    def __init__(self):
+        self.models = {}
+        self.tokenizers = {}
+    
+    async def load_model(self, model_name: str, model_type: str = 'transformers'):
+        try:
+            if model_type == 'transformers':
+                tokenizer = AutoTokenizer.from_pretrained(model_name)
+                model = AutoModel.from_pretrained(model_name)
+                self.tokenizers[model_name] = tokenizer
+                self.models[model_name] = model
+            elif model_type == 'tensorflow':
+                model = tf.keras.models.load_model(model_name)
+                self.models[model_name] = model
+            elif model_type == 'pytorch':
+                model = torch.load(model_name)
+                self.models[model_name] = model
+            
+            logger.info(f"Model {model_name} loaded successfully")
+            return True
+        except Exception as e:
+            logger.error(f"Model loading failed: {e}")
+            return False
+    
+    async def predict(self, model_name: str, input_data: Any) -> Any:
+        if model_name not in self.models:
+            raise HTTPException(status_code=404, detail="Model not found")
+        
+        try:
+            model = self.models[model_name]
+            
+            if model_name in self.tokenizers:  # Transformers model
+                tokenizer = self.tokenizers[model_name]
+                inputs = tokenizer(input_data, return_tensors="pt", padding=True, truncation=True)
+                with torch.no_grad():
+                    outputs = model(**inputs)
+                return outputs.last_hidden_state.mean(dim=1).numpy().tolist()
+            else:  # Other model types
+                return model.predict(input_data)
+                
+        except Exception as e:
+            logger.error(f"Prediction failed: {e}")
+            raise HTTPException(status_code=500, detail="Prediction failed")
+
+ml_manager = MLModelManager()
+
+# Network utilities
+class NetworkScanner:
+    @staticmethod
+    def scan_port(host: str, port: int, timeout: float = 1.0) -> bool:
+        try:
+            with socket.create_connection((host, port), timeout):
+                return True
+        except (socket.timeout, ConnectionRefusedError, OSError):
+            return False
+    
+    @staticmethod
+    def scan_host_ports(host: str, ports: List[int], timeout: float = 1.0) -> Dict[int, bool]:
+        results = {}
+        for port in ports:
+            results[port] = NetworkScanner.scan_port(host, port, timeout)
+        return results
+    
+    @staticmethod
+    def get_local_ip() -> str:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.connect(("8.8.8.8", 80))
+                return s.getsockname()[0]
+        except Exception:
+            return "127.0.0.1"
+
+network_scanner = NetworkScanner()
+
+# Backup and restore utilities
+class BackupManager:
+    def __init__(self, backup_dir: str = "backups"):
+        self.backup_dir = Path(backup_dir)
+        self.backup_dir.mkdir(exist_ok=True)
+    
+    async def create_backup(self, source_paths: List[str], backup_name: str = None) -> str:
+        if not backup_name:
+            backup_name = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        
+        backup_file = self.backup_dir / f"{backup_name}.tar.gz"
+        
+        try:
+            with tarfile.open(backup_file, 'w:gz') as tar:
+                for path in source_paths:
+                    if Path(path).exists():
+                        tar.add(path, arcname=Path(path).name)
+            
+            logger.info(f"Backup created: {backup_file}")
+            return str(backup_file)
+        except Exception as e:
+            logger.error(f"Backup creation failed: {e}")
+            raise
+    
+    async def restore_backup(self, backup_file: str, restore_dir: str = ".") -> bool:
+        try:
+            with tarfile.open(backup_file, 'r:gz') as tar:
+                tar.extractall(path=restore_dir)
+            
+            logger.info(f"Backup restored from: {backup_file}")
+            return True
+        except Exception as e:
+            logger.error(f"Backup restoration failed: {e}")
+            return False
+    
+    def list_backups(self) -> List[Dict[str, Any]]:
+        backups = []
+        for backup_file in self.backup_dir.glob("*.tar.gz"):
+            stat = backup_file.stat()
+            backups.append({
+                'name': backup_file.name,
+                'path': str(backup_file),
+                'size': stat.st_size,
+                'created': datetime.fromtimestamp(stat.st_ctime).isoformat()
+            })
+        return sorted(backups, key=lambda x: x['created'], reverse=True)
+
+backup_manager = BackupManager()
+
+# Data processing utilities
+class DataProcessor:
+    @staticmethod
+    async def process_csv(file_path: str, operations: List[Dict[str, Any]] = None) -> pd.DataFrame:
+        try:
+            df = pd.read_csv(file_path)
+            
+            if operations:
+                for op in operations:
+                    op_type = op.get('type')
+                    if op_type == 'filter':
+                        condition = op.get('condition')
+                        df = df.query(condition)
+                    elif op_type == 'sort':
+                        columns = op.get('columns', [])
+                        ascending = op.get('ascending', True)
+                        df = df.sort_values(columns, ascending=ascending)
+                    elif op_type == 'group':
+                        group_by = op.get('group_by', [])
+                        agg_func = op.get('agg_func', 'mean')
+                        df = df.groupby(group_by).agg(agg_func)
+            
+            return df
+        except Exception as e:
+            logger.error(f"CSV processing failed: {e}")
+            raise
+    
+    @staticmethod
+    async def generate_report(data: pd.DataFrame, template_path: str = None) -> str:
+        try:
+            if template_path and Path(template_path).exists():
+                with open(template_path, 'r') as f:
+                    template = Template(f.read())
+            else:
+                template = Template("""
+                # Data Report
+                
+                ## Summary Statistics
+                {{ summary }}
+                
+                ## Data Info
+                {{ info }}
+                
+                Generated on: {{ timestamp }}
+                """)
+            
+            summary = data.describe().to_html() if not data.empty else "No data available"
+            info = f"Shape: {data.shape}, Columns: {list(data.columns)}"
+            
+            report = template.render(
+                summary=summary,
+                info=info,
+                timestamp=datetime.now().isoformat()
+            )
+            
+            return report
+        except Exception as e:
+            logger.error(f"Report generation failed: {e}")
+            raise
+    
+    @staticmethod
+    async def create_visualization(data: pd.DataFrame, chart_type: str, output_path: str = None) -> str:
+        try:
+            plt.figure(figsize=(12, 8))
+            
+            if chart_type == 'histogram':
+                numeric_cols = data.select_dtypes(include=[np.number]).columns
+                if len(numeric_cols) > 0:
+                    data[numeric_cols[0]].hist(bins=30)
+            elif chart_type == 'scatter':
+                numeric_cols = data.select_dtypes(include=[np.number]).columns
+                if len(numeric_cols) >= 2:
+                    plt.scatter(data[numeric_cols[0]], data[numeric_cols[1]])
+            elif chart_type == 'line':
+                numeric_cols = data.select_dtypes(include=[np.number]).columns
+                for col in numeric_cols[:5]:  # Limit to 5 lines
+                    plt.plot(data.index, data[col], label=col)
+                plt.legend()
+            elif chart_type == 'bar':
+                if len(data.columns) >= 2:
+                    data.iloc[:10].plot(kind='bar', x=data.columns[0])
+            
+            if not output_path:
+                output_path = f"chart_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+            
+            plt.savefig(output_path, dpi=300, bbox_inches='tight')
+            plt.close()
+            
+            return output_path
+        except Exception as e:
+            logger.error(f"Visualization creation failed: {e}")
+            raise
+
+data_processor = DataProcessor()
+
+# Image processing utilities
+class ImageProcessor:
+    @staticmethod
+    async def resize_image(input_path: str, output_path: str, size: Tuple[int, int]):
+        try:
+            with Image.open(input_path) as img:
+                resized = img.resize(size, Image.Resampling.LANCZOS)
+                resized.save(output_path)
+            return output_path
+        except Exception as e:
+            logger.error(f"Image resize failed: {e}")
+            raise
+    
+    @staticmethod
+    async def apply_filters(input_path: str, output_path: str, filters: List[str]):
+        try:
+            img = cv2.imread(input_path)
+            
+            for filter_name in filters:
+                if filter_name == 'blur':
+                    img = cv2.GaussianBlur(img, (15, 15), 0)
+                elif filter_name == 'sharpen':
+                    kernel = np.array([[-1,-1,-1], [-1,9,-1], [-1,-1,-1]])
+                    img = cv2.filter2D(img, -1, kernel)
+                elif filter_name == 'edge':
+                    img = cv2.Canny(img, 100, 200)
+                elif filter_name == 'grayscale':
+                    img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            
+            cv2.imwrite(output_path, img)
+            return output_path
+        except Exception as e:
+            logger.error(f"Image filtering failed: {e}")
+            raise
+    
+    @staticmethod
+    async def create_thumbnail(input_path: str, output_path: str, size: int = 150):
+        try:
+            with Image.open(input_path) as img:
+                img.thumbnail((size, size), Image.Resampling.LANCZOS)
+                img.save(output_path)
+            return output_path
+        except Exception as e:
+            logger.error(f"Thumbnail creation failed: {e}")
+            raise
+
+image_processor = ImageProcessor()
+
+# Web scraping utilities
+class WebScraper:
+    def __init__(self):
+        self.session = None
+    
+    async def __aenter__(self):
+        self.session = aiohttp.ClientSession()
+        return self
+    
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if self.session:
+            await self.session.close()
+    
+    async def scrape_url(self, url: str, selectors: Dict[str, str] = None) -> Dict[str, Any]:
+        try:
+            async with self.session.get(url) as response:
+                content = await response.text()
+                soup = BeautifulSoup(content, 'html.parser')
+                
+                result = {
+                    'url': url,
+                    'title': soup.title.string if soup.title else '',
+                    'content': soup.get_text()[:1000],  # First 1000 chars
+                    'links': [a.get('href') for a in soup.find_all('a', href=True)],
+                    'images': [img.get('src') for img in soup.find_all('img', src=True)]
+                }
+                
+                if selectors:
+                    for key, selector in selectors.items():
+                        elements = soup.select(selector)
+                        result[key] = [elem.get_text().strip() for elem in elements]
+                
+                return result
+        except Exception as e:
+            logger.error(f"Web scraping failed: {e}")
+            raise
+    
+    async def scrape_rss(self, url: str) -> List[Dict[str, Any]]:
+        try:
+            feed = feedparser.parse(url)
+            items = []
+            
+            for entry in feed.entries[:10]:  # Limit to 10 items
+                items.append({
+                    'title': entry.get('title', ''),
+                    'link': entry.get('link', ''),
+                    'description': entry.get('description', ''),
+                    'published': entry.get('published', ''),
+                    'author': entry.get('author', '')
+                })
+            
+            return items
+        except Exception as e:
+            logger.error(f"RSS scraping failed: {e}")
+            raise
+
+# API client utilities
+class APIClient:
+    def __init__(self):
+        self.session = None
+    
+    async def __aenter__(self):
+        self.session = aiohttp.ClientSession()
+        return self
+    
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if self.session:
+            await self.session.close()
+    
+    async def call_api(self, url: str, method: str = 'GET', headers: Dict[str, str] = None, 
+                      data: Any = None, auth: Tuple[str, str] = None) -> Dict[str, Any]:
+        try:
+            kwargs = {
+                'headers': headers or {},
+                'auth': aiohttp.BasicAuth(auth[0], auth[1]) if auth else None
+            }
+            
+            if method.upper() == 'POST' and data:
+                kwargs['json'] = data
+            elif method.upper() == 'PUT' and data:
+                kwargs['json'] = data
+            
+            async with self.session.request(method, url, **kwargs) as response:
+                if response.content_type == 'application/json':
+                    return await response.json()
+                else:
+                    return {'content': await response.text(), 'status': response.status}
+        except Exception as e:
+            logger.error(f"API call failed: {e}")
+            raise
+
+# Testing utilities
+class TestRunner:
+    @staticmethod
+    async def run_unit_tests(test_directory: str) -> Dict[str, Any]:
+        try:
+            result = subprocess.run(
+                [sys.executable, '-m', 'pytest', test_directory, '--json-report', '--json-report-file=test_results.json'],
+                capture_output=True,
+                text=True
+            )
+            
+            # Try to read JSON report
+            try:
+                with open('test_results.json', 'r') as f:
+                    test_data = json.load(f)
+                return {
+                    'success': result.returncode == 0,
+                    'detailed_results': test_data,
+                    'stdout': result.stdout,
+                    'stderr': result.stderr
+                }
+            except FileNotFoundError:
+                return {
+                    'success': result.returncode == 0,
+                    'stdout': result.stdout,
+                    'stderr': result.stderr
+                }
+        except Exception as e:
+            logger.error(f"Test execution failed: {e}")
+            raise
+    
+    @staticmethod
+    async def run_performance_test(file_path: str, iterations: int = 100) -> Dict[str, Any]:
+        try:
+            times = []
+            memory_usage = []
+            
+            for _ in range(iterations):
+                start_time = time.time()
+                start_memory = psutil.Process().memory_info().rss
+                
+                # Execute the code
+                with open(file_path, 'r') as f:
+                    code = compile(f.read(), file_path, 'exec')
+                    exec(code)
+                
+                end_time = time.time()
+                end_memory = psutil.Process().memory_info().rss
+                
+                times.append(end_time - start_time)
+                memory_usage.append(end_memory - start_memory)
+            
+            return {
+                'average_time': np.mean(times),
+                'min_time': np.min(times),
+                'max_time': np.max(times),
+                'std_time': np.std(times),
+                'average_memory': np.mean(memory_usage),
+                'iterations': iterations
+            }
+        except Exception as e:
+            logger.error(f"Performance test failed: {e}")
+            raise
+
+test_runner = TestRunner()
+
+# Additional model classes for enhanced functionality
+class APIKeyModel(BaseModel):
+    name: str = Field(..., description="API key name")
+    key: str = Field(..., description="API key value")
+    permissions: List[str] = Field(default=[], description="API key permissions")
+    expires_at: Optional[datetime] = Field(None, description="Expiration date")
+
+class WebhookModel(BaseModel):
+    url: str = Field(..., description="Webhook URL")
+    events: List[str] = Field(..., description="Events to trigger webhook")
+    headers: Optional[Dict[str, str]] = Field(None, description="Custom headers")
+    secret: Optional[str] = Field(None, description="Webhook secret for verification")
+
+class ScheduledTaskModel(BaseModel):
+    name: str = Field(..., description="Task name")
+    command: str = Field(..., description="Command to execute")
+    schedule: str = Field(..., description="Cron expression or interval")
+    enabled: bool = Field(True, description="Whether task is enabled")
+    timeout: Optional[int] = Field(300, description="Task timeout in seconds")
+
+class DatabaseBackupModel(BaseModel):
+    database_type: str = Field(..., description="Database type (sqlite, postgresql, mysql)")
+    connection_string: str = Field(..., description="Database connection string")
+    backup_path: str = Field(..., description="Backup file path")
+    compress: bool = Field(True, description="Compress backup file")
+
+class CloudDeploymentModel(BaseModel):
+    provider: str = Field(..., description="Cloud provider (aws, azure, gcp)")
+    region: str = Field(..., description="Deployment region")
+    instance_type: str = Field(..., description="Instance type/size")
+    configuration: Dict[str, Any] = Field(..., description="Deployment configuration")
+
+class MLTrainingRequest(BaseModel):
+    model_type: str = Field(..., description="Model type (sklearn, tensorflow, pytorch)")
+    dataset_path: str = Field(..., description="Path to training dataset")
+    target_column: str = Field(..., description="Target column for prediction")
+    test_size: float = Field(0.2, description="Test set size ratio")
+    hyperparameters: Optional[Dict[str, Any]] = Field(None, description="Model hyperparameters")
+
+class NetworkScanRequest(BaseModel):
+    target: str = Field(..., description="Target host or network range")
+    ports: List[int] = Field(..., description="Ports to scan")
+    timeout: float = Field(1.0, description="Connection timeout")
+    threads: int = Field(10, description="Number of threads for scanning")
+
+class DataTransformRequest(BaseModel):
+    input_file: str = Field(..., description="Input data file path")
+    output_file: str = Field(..., description="Output data file path")
+    transformations: List[Dict[str, Any]] = Field(..., description="Data transformations to apply")
+    output_format: str = Field("csv", description="Output format (csv, json, parquet)")
+
+class SecurityScanRequest(BaseModel):
+    target: str = Field(..., description="Target file or directory to scan")
+    scan_types: List[str] = Field(..., description="Types of security scans to perform")
+    severity_threshold: str = Field("medium", description="Minimum severity to report")
+    include_dependencies: bool = Field(True, description="Include dependency scanning")
+
+# Initialize monitoring and tracing if enabled
+if Config.ENABLE_MONITORING:
+    # Initialize Sentry for error tracking
+    if Config.SENTRY_DSN:
+        sentry_sdk.init(
+            dsn=Config.SENTRY_DSN,
+            integrations=[
+                FastApiIntegration(auto_enabling_integrations=True),
+                SqlalchemyIntegration()
+            ]
+        )
+    
+    # Initialize OpenTelemetry tracing
+    if Config.JAEGER_ENDPOINT:
+        tracer = trace.get_tracer(__name__)
+        jaeger_exporter = JaegerExporter(
+            agent_host_name="localhost",
+            agent_port=14268,
+        )
+
+# Create database tables
+try:
+    Base.metadata.create_all(bind=engine)
+    logger.info("Database tables created successfully")
+except Exception as e:
+    logger.error(f"Database initialization failed: {e}")
+
+# Start background tasks
+scheduler.add_job('system_monitor', monitor_system_resources, 'interval', seconds=60)
+scheduler.start()
+active_processes = {}
+websocket_connections = set()
+
+# Python Compiler Classes
+@dataclass
+class CodeIssue:
+    type: str
+    severity: str
+    message: str
+    line: int
+    column: int = 0
+    suggestion: str = ""
+    auto_fixable: bool = False
+
+@dataclass
+class ModuleInfo:
+    name: str
+    classes: List[str] = field(default_factory=list)
+    functions: List[str] = field(default_factory=list)
+    imports: List[str] = field(default_factory=list)
+    dependencies: set = field(default_factory=set)
+    code_lines: List[int] = field(default_factory=list)
+
+@dataclass
+class CompilerResult:
+    success: bool
+    original_file: str
+    output_files: List[str] = field(default_factory=list)
+    issues_fixed: List[CodeIssue] = field(default_factory=list)
+    issues_remaining: List[CodeIssue] = field(default_factory=list)
+    modules_created: List[str] = field(default_factory=list)
+    performance_improvements: Dict[str, Any] = field(default_factory=dict)
+    execution_time: float = 0.0
+
+class PythonCompilerOptimizer:
+    def __init__(self, target_dir: str = None):
+        self.target_dir = Path(target_dir) if target_dir else Path.cwd()
+        self.backup_dir = self.target_dir / ".compiler_backups"
+        self.output_dir = self.target_dir / "optimized"
+        self.issues: List[CodeIssue] = []
+        self.modules_to_create: Dict[str, ModuleInfo] = {}
+        
+        self.backup_dir.mkdir(exist_ok=True)
+        self.output_dir.mkdir(exist_ok=True)
+        
+        self.common_imports = {
+            'os': 'import os',
+            'sys': 'import sys',
+            'json': 'import json',
+            'datetime': 'from datetime import datetime',
+            'Path': 'from pathlib import Path',
+            'List': 'from typing import List, Dict, Any, Optional',
+            'asyncio': 'import asyncio',
+            'time': 'import time',
+            're': 'import re',
+            'logging': 'import logging',
+            'subprocess': 'import subprocess',
+            'threading': 'import threading',
+            'queue': 'import queue',
+            'signal': 'import signal',
+            'shutil': 'import shutil',
+            'tempfile': 'import tempfile',
+            'glob': 'import glob',
+            'collections': 'from collections import defaultdict, Counter'
+        }
+        
+        self.optimization_patterns = [
+            (r'(\w+)\s*=\s*\[\]\s*\n(\s*)for\s+(\w+)\s+in\s+([^:]+):\s*\n\s*\1\.append\(([^)]+)\)', self.fix_list_comprehension),
+            (r'(\w+)\s*=\s*\{\}\s*\n(\s*)for\s+(\w+)\s+in\s+([^:]+):\s*\n\s*\1\[([^\]]+)\]\s*=\s*([^)]+)', self.fix_dict_comprehension),
+            (r'(["\'])([^"\']*)\1\s*\+\s*str\(([^)]+)\)', self.fix_string_concat),
+            (r'(\s*)(if|elif|for|while|def|class|try|except|finally|with)\s+([^:]+)([^:])\s*$', self.fix_missing_colon),
+            (r'\bprint\s+([^(].*)', self.fix_print_statement)
+        ]
+    
+    def compile_and_fix_file(self, file_path: str) -> CompilerResult:
+        start_time = time.time()
+        file_path = Path(file_path)
+        
+        if not file_path.exists():
+            return CompilerResult(
+                success=False,
+                original_file=str(file_path),
+                issues_remaining=[CodeIssue(
+                    type='FileError',
+                    severity='error',
+                    message=f'File not found: {file_path}',
+                    line=0
+                )]
+            )
+        
+        logger.info(f"Compiling and fixing {file_path}")
+        self.issues.clear()
+        
+        try:
+            backup_path = self.backup_dir / f"{file_path.name}.backup.{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            shutil.copy2(file_path, backup_path)
+            
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                original_content = f.read()
+            
+            fixed_content = self.fix_python_code(original_content)
+            
+            if self.should_modularize(fixed_content):
+                modules = self.extract_modules(fixed_content, file_path.stem)
+                output_files = self.write_modules(modules, file_path)
+            else:
+                output_path = self.output_dir / file_path.name
+                with open(output_path, 'w', encoding='utf-8') as f:
+                    f.write(fixed_content)
+                output_files = [str(output_path)]
+            
+            for output_file in output_files:
+                self.test_compilation(output_file)
+            
+            execution_time = time.time() - start_time
+            
+            return CompilerResult(
+                success=True,
+                original_file=str(file_path),
+                output_files=output_files,
+                issues_fixed=[issue for issue in self.issues if issue.auto_fixable],
+                issues_remaining=[issue for issue in self.issues if not issue.auto_fixable],
+                modules_created=list(self.modules_to_create.keys()),
+                performance_improvements=self.calculate_improvements(original_content, fixed_content),
+                execution_time=execution_time
+            )
+            
+        except Exception as e:
+            logger.error(f"Compilation failed: {e}")
+            return CompilerResult(
+                success=False,
+                original_file=str(file_path),
+                issues_remaining=[CodeIssue(
+                    type='CompilerError',
+                    severity='error',
+                    message=str(e),
+                    line=0
+                )],
+                execution_time=time.time() - start_time
+            )
+    
+    def fix_python_code(self, content: str) -> str:
+        fixed = content
+        fixed = self.remove_stuttering(fixed)
+        fixed = self.fix_syntax_errors(fixed)
+        fixed = self.fix_imports(fixed)
+        fixed = self.fix_indentation(fixed)
+        fixed = self.apply_optimizations(fixed)
+        fixed = self.add_error_handling(fixed)
+        fixed = self.optimize_performance(fixed)
+        return fixed
+    
+    def remove_stuttering(self, content: str) -> str:
+        lines = content.split('\n')
+        seen_lines = {}
+        deduped_lines = []
+        
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            
+            if stripped in seen_lines and stripped.startswith(('import ', 'from ')):
+                self.issues.append(CodeIssue(
+                    type='Stuttering',
+                    severity='info',
+                    message='Removed duplicate import',
+                    line=i+1,
+                    auto_fixable=True
+                ))
+                continue
+            
+            if stripped:
+                seen_lines[stripped] = i
+            
+            deduped_lines.append(line)
+        
+        result_lines = []
+        blank_count = 0
+        
+        for line in deduped_lines:
+            if line.strip() == '':
+                blank_count += 1
+                if blank_count <= 2:
+                    result_lines.append(line)
+            else:
+                blank_count = 0
+                result_lines.append(line)
+        
+        return '\n'.join(result_lines)
+    
+    def fix_syntax_errors(self, content: str) -> str:
+        lines = content.split('\n')
+        fixed_lines = []
+        
+        for i, line in enumerate(lines):
+            fixed_line = line
+            
+            if re.match(r'^(\s*)print\s+[^(]', line):
+                fixed_line = re.sub(r'^(\s*)print\s+(.+)', r'\1print(\2)', line)
+                self.issues.append(CodeIssue(
+                    type='SyntaxFix',
+                    severity='info',
+                    message='Fixed print statement to function call',
+                    line=i+1,
+                    auto_fixable=True
+                ))
+            
+            if re.match(r'^\s*(if|elif|else|for|while|def|class|try|except|finally|with)\s+.*[^:]$', line.strip()):
+                if not line.strip().endswith(':'):
+                    fixed_line = line + ':'
+                    self.issues.append(CodeIssue(
+                        type='SyntaxFix',
+                        severity='info',
+                        message='Added missing colon',
+                        line=i+1,
+                        auto_fixable=True
+                    ))
+            
+            if '=' in line and 'lambda' not in line and 'def' not in line:
+                if re.search(r'(\w+)\s*=\s*(\w+)\s*\+\s*(\w+)', line):
+                    fixed_line = re.sub(r'(\w+)\s*=\s*(\w+)\s*\+\s*(\w+)', r'\1 = \2 + \3', line)
+            
+            fixed_lines.append(fixed_line)
+        
+        return '\n'.join(fixed_lines)
+    
+    def fix_imports(self, content: str) -> str:
+        lines = content.split('\n')
+        imports = []
+        other_lines = []
+        missing_imports = set()
+        
+        for line in lines:
+            if line.strip().startswith(('import ', 'from ')):
+                if 'import *' in line:
+                    module = line.split()[1] if 'from' in line else line.split()[1]
+                    comment_line = f"# TODO: Replace wildcard import - {line}"
+                    imports.append(comment_line)
+                    self.issues.append(CodeIssue(
+                        type='ImportFix',
+                        severity='warning',
+                        message='Replaced wildcard import with TODO',
+                        line=0,
+                        auto_fixable=True
+                    ))
+                else:
+                    imports.append(line)
+            else:
+                other_lines.append(line)
+        
+        code_content = '\n'.join(other_lines)
+        for name, import_stmt in self.common_imports.items():
+            if name in code_content and not any(name in imp for imp in imports):
+                if name not in ['List', 'Dict', 'Any', 'Optional'] or 'typing' not in code_content:
+                    missing_imports.add(import_stmt)
+        
+        for imp in missing_imports:
+            imports.append(imp)
+            self.issues.append(CodeIssue(
+                type='ImportFix',
+                severity='info',
+                message=f'Added missing import: {imp}',
+                line=0,
+                auto_fixable=True
+            ))
+        
+        std_imports = []
+        third_party_imports = []
+        local_imports = []
+        
+        standard_modules = ['os', 'sys', 'json', 'datetime', 're', 'math', 'asyncio', 'threading', 'time', 'logging', 'subprocess', 'queue', 'signal', 'shutil', 'tempfile', 'glob', 'collections', 'pathlib', 'typing']
+        
+        for imp in imports:
+            if any(module in imp for module in standard_modules):
+                std_imports.append(imp)
+            elif imp.startswith('from .') or '..' in imp:
+                local_imports.append(imp)
+            else:
+                third_party_imports.append(imp)
+        
+        organized = []
+        if std_imports:
+            organized.extend(sorted(set(std_imports)))
+        if third_party_imports:
+            if std_imports:
+                organized.append('')
+            organized.extend(sorted(set(third_party_imports)))
+        if local_imports:
+            if std_imports or third_party_imports:
+                organized.append('')
+            organized.extend(sorted(set(local_imports)))
+        
+        if organized and other_lines:
+            organized.append('')
+        
+        return '\n'.join(organized + other_lines)
+    
+    def fix_indentation(self, content: str) -> str:
+        lines = content.split('\n')
+        fixed_lines = []
+        
+        for i, line in enumerate(lines):
+            if line.strip():
+                expanded = line.expandtabs(4)
+                leading_spaces = len(expanded) - len(expanded.lstrip(' '))
+                
+                if leading_spaces > 0 and leading_spaces % 4 != 0:
+                    correct_indent = ((leading_spaces + 3) // 4) * 4
+                    fixed_line = ' ' * correct_indent + expanded.lstrip(' ')
+                    self.issues.append(CodeIssue(
+                        type='IndentationFix',
+                        severity='info',
+                        message='Fixed indentation to multiple of 4 spaces',
+                        line=i+1,
+                        auto_fixable=True
+                    ))
+                else:
+                    fixed_line = expanded
+                
+                if line.rstrip() != line:
+                    fixed_line = fixed_line.rstrip()
+                    self.issues.append(CodeIssue(
+                        type='WhitespaceFix',
+                        severity='info',
+                        message='Removed trailing whitespace',
+                        line=i+1,
+                        auto_fixable=True
+                    ))
+                
+                fixed_lines.append(fixed_line)
+            else:
+                fixed_lines.append('')
+        
+        return '\n'.join(fixed_lines)
+    
+    def apply_optimizations(self, content: str) -> str:
+        optimized = content
+        
+        optimized = re.sub(
+            r'(\w+)\s*=\s*\[\]\s*\n(\s*)for\s+(\w+)\s+in\s+([^:]+):\s*\n\s*\1\.append\(([^)]+)\)',
+            r'\2\1 = [\5 for \3 in \4]',
+            optimized,
+            flags=re.MULTILINE
+        )
+        
+        optimized = re.sub(
+            r'(\w+)\s*=\s*\{\}\s*\n(\s*)for\s+(\w+)\s+in\s+([^:]+):\s*\n\s*\1\[([^\]]+)\]\s*=\s*([^)]+)',
+            r'\2\1 = {\5: \6 for \3 in \4}',
+            optimized,
+            flags=re.MULTILINE
+        )
+        
+        optimized = re.sub(
+            r'(["\'])([^"\']*)\1\s*\+\s*str\(([^)]+)\)',
+            r'f"\2{\3}"',
+            optimized
+        )
+        
+        if optimized != content:
+            self.issues.append(CodeIssue(
+                type='Optimization',
+                severity='info',
+                message='Applied performance optimizations',
+                line=0,
+                auto_fixable=True
+            ))
+        
+        return optimized
+    
+    def add_error_handling(self, content: str) -> str:
+        lines = content.split('\n')
+        enhanced_lines = []
+        
+        for i, line in enumerate(lines):
+            enhanced_lines.append(line)
+            
+            if 'open(' in line and 'try:' not in lines[max(0, i-3):i]:
+                indent = len(line) - len(line.lstrip())
+                enhanced_lines[-1] = ' ' * indent + 'try:'
+                enhanced_lines.append(' ' * (indent + 4) + line.strip())
+                enhanced_lines.append(' ' * indent + 'except Exception as e:')
+                enhanced_lines.append(' ' * (indent + 4) + 'logger.error(f"File operation failed: {e}")')
+                enhanced_lines.append(' ' * (indent + 4) + 'raise')
+                
+                self.issues.append(CodeIssue(
+                    type='ErrorHandling',
+                    severity='info',
+                    message='Added error handling for file operation',
+                    line=i+1,
+                    auto_fixable=True
+                ))
+        
+        return '\n'.join(enhanced_lines)
+    
+    def optimize_performance(self, content: str) -> str:
+        optimized = content
+        
+        optimized = re.sub(
+            r'for\s+(\w+)\s+in\s+range\(len\(([^)]+)\)\):',
+            r'for \1, item in enumerate(\2):',
+            optimized
+        )
+        
+        optimized = re.sub(
+            r'(\w+)\s*\+=\s*(["\'][^"\']*["\'])',
+            r'\1 = f"{\1}{\2}"',
+            optimized
+        )
+        
+        if 'import re' in optimized:
+            optimized = re.sub(
+                r'(\w+)\s*=\s*re\.compile\(["\']([^"\']+)["\']\)',
+                r'\1 = re.compile(r"\2")',
+                optimized
+            )
+        
+        return optimized
+    
+    def should_modularize(self, content: str) -> bool:
+        lines = content.split('\n')
+        
+        class_count = len([line for line in lines if line.strip().startswith('class ')])
+        func_count = len([line for line in lines if line.strip().startswith('def ') and not line.strip().startswith('def __')])
+        line_count = len([line for line in lines if line.strip()])
+        
+        return class_count > 3 or func_count > 15 or line_count > 500
+    
+    def extract_modules(self, content: str, base_name: str) -> Dict[str, str]:
+        try:
+            tree = ast.parse(content)
+        except SyntaxError:
+            return {f"{base_name}_fixed.py": content}
+        
+        modules = {}
+        imports_section = []
+        
+        import_nodes = [node for node in tree.body if isinstance(node, (ast.Import, ast.ImportFrom))]
+        for node in import_nodes:
+            if isinstance(node, ast.Import):
+                names = ', '.join([alias.name for alias in node.names])
+                imports_section.append(f"import {names}")
+            else:
+                module = node.module or ''
+                names = ', '.join([alias.name for alias in node.names])
+                imports_section.append(f"from {module} import {names}")
+        
+        imports_text = '\n'.join(imports_section)
+        
+        classes = {}
+        functions = {}
+        other_code = []
+        
+        for node in tree.body:
+            if isinstance(node, ast.ClassDef):
+                start_line = node.lineno - 1
+                end_line = node.end_lineno if hasattr(node, 'end_lineno') else start_line + 20
+                class_lines = content.split('\n')[start_line:end_line]
+                classes[node.name] = '\n'.join(class_lines)
+            elif isinstance(node, ast.FunctionDef) and not node.name.startswith('__'):
+                start_line = node.lineno - 1
+                end_line = node.end_lineno if hasattr(node, 'end_lineno') else start_line + 10
+                func_lines = content.split('\n')[start_line:end_line]
+                functions[node.name] = '\n'.join(func_lines)
+            elif not isinstance(node, (ast.Import, ast.ImportFrom)):
+                start_line = node.lineno - 1
+                end_line = node.end_lineno if hasattr(node, 'end_lineno') else start_line + 1
+                other_lines = content.split('\n')[start_line:end_line]
+                other_code.extend(other_lines)
+        
+        if classes:
+            class_module = imports_text + '\n\n' + '\n\n'.join(classes.values())
+            modules[f"{base_name}_classes.py"] = class_module
+            self.modules_to_create[f"{base_name}_classes"] = ModuleInfo(
+                name=f"{base_name}_classes",
+                classes=list(classes.keys())
+            )
+        
+        if functions:
+            func_module = imports_text + '\n\n' + '\n\n'.join(functions.values())
+            modules[f"{base_name}_functions.py"] = func_module
+            self.modules_to_create[f"{base_name}_functions"] = ModuleInfo(
+                name=f"{base_name}_functions",
+                functions=list(functions.keys())
+            )
+        
+        if other_code or not modules:
+            main_module = imports_text + '\n\n'
+            if classes:
+                main_module += f"from .{base_name}_classes import *\n"
+            if functions:
+                main_module += f"from .{base_name}_functions import *\n"
+            if other_code:
+                main_module += '\n' + '\n'.join(other_code)
+            modules[f"{base_name}_main.py"] = main_module
+        
+        return modules
+    
+    def write_modules(self, modules: Dict[str, str], original_path: Path) -> List[str]:
+        output_files = []
+        
+        for module_name, module_content in modules.items():
+            output_path = self.output_dir / module_name
+            try:
+                with open(output_path, 'w', encoding='utf-8') as f:
+                    f.write(module_content)
+                output_files.append(str(output_path))
+                logger.info(f"Created module: {output_path}")
+            except Exception as e:
+                logger.error(f"Failed to write module {module_name}: {e}")
+                
+        return output_files
+    
+    def test_compilation(self, file_path: str) -> bool:
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            ast.parse(content)
+            compile(content, file_path, 'exec')
+            return True
+        except SyntaxError as e:
+            self.issues.append(CodeIssue(
+                type='CompileError',
+                severity='error',
+                message=f"Syntax error: {e.msg}",
+                line=e.lineno or 0,
+                column=e.offset or 0
+            ))
+            return False
+        except Exception as e:
+            self.issues.append(CodeIssue(
+                type='CompileError',
+                severity='error',
+                message=str(e),
+                line=0
+            ))
+            return False
+    
+    def calculate_improvements(self, original: str, optimized: str) -> Dict[str, Any]:
+        original_lines = len(original.split('\n'))
+        optimized_lines = len(optimized.split('\n'))
+        
+        original_chars = len(original)
+        optimized_chars = len(optimized)
+        
+        return {
+            'lines_reduced': original_lines - optimized_lines,
+            'chars_reduced': original_chars - optimized_chars,
+            'compression_ratio': (original_chars - optimized_chars) / original_chars * 100 if original_chars > 0 else 0,
+            'issues_fixed': len([issue for issue in self.issues if issue.auto_fixable])
+        }
+    
+    def scan_directory(self, directory: str, pattern: str = "*.py", recursive: bool = True) -> List[str]:
+        directory = Path(directory)
+        if recursive:
+            return [str(f) for f in directory.rglob(pattern)]
+        else:
+            return [str(f) for f in directory.glob(pattern)]
+    
+    def fix_list_comprehension(self, match):
+        return f'{match.group(2)}{match.group(1)} = [{match.group(5)} for {match.group(3)} in {match.group(4)}]'
+    
+    def fix_dict_comprehension(self, match):
+        return f'{match.group(2)}{match.group(1)} = {{{match.group(5)}: {match.group(6)} for {match.group(3)} in {match.group(4)}}}'
+    
+    def fix_string_concat(self, match):
+        return f'f"{match.group(2)}{{{match.group(3)}}}"'
+    
+    def fix_missing_colon(self, match):
+        return f'{match.group(1)}{match.group(2)} {match.group(3)}:'
+    
+    def fix_print_statement(self, match):
+        return f'print({match.group(1)})'
+    
+    def analyze_code_complexity(self, content: str) -> Dict[str, Any]:
+        try:
+            tree = ast.parse(content)
+            complexity_analyzer = ComplexityAnalyzer()
+            complexity_analyzer.visit(tree)
+            
+            return {
+                'cyclomatic_complexity': complexity_analyzer.complexity,
+                'function_count': complexity_analyzer.function_count,
+                'class_count': complexity_analyzer.class_count,
+                'lines_of_code': len(content.split('\n')),
+                'maintainability_index': self.calculate_maintainability_index(complexity_analyzer)
+            }
+        except Exception as e:
+            logger.error(f"Complexity analysis failed: {e}")
+            return {}
+    
+    def calculate_maintainability_index(self, analyzer) -> float:
+        # Simplified maintainability index calculation
+        loc = analyzer.lines_of_code
+        cc = analyzer.complexity
+        if loc > 0 and cc > 0:
+            return max(0, (171 - 5.2 * np.log(loc) - 0.23 * cc - 16.2 * np.log(loc)) * 100 / 171)
+        return 100
+    
+    def detect_code_smells(self, content: str) -> List[CodeIssue]:
+        smells = []
+        lines = content.split('\n')
+        
+        for i, line in enumerate(lines, 1):
+            stripped = line.strip()
+            
+            # Long method detection
+            if stripped.startswith('def '):
+                method_lines = self.count_method_lines(lines, i-1)
+                if method_lines > 50:
+                    smells.append(CodeIssue(
+                        type='CodeSmell',
+                        severity='warning',
+                        message=f'Long method detected ({method_lines} lines)',
+                        line=i,
+                        suggestion='Consider breaking into smaller methods'
+                    ))
+            
+            # Magic numbers
+            if re.search(r'\b\d{2,}\b', stripped) and 'def' not in stripped and 'class' not in stripped:
+                smells.append(CodeIssue(
+                    type='CodeSmell',
+                    severity='info',
+                    message='Magic number detected',
+                    line=i,
+                    suggestion='Consider using named constants'
+                ))
+            
+            # Duplicate code (simple check)
+            if len(stripped) > 20:
+                for j, other_line in enumerate(lines[i:], i+1):
+                    if stripped == other_line.strip() and j != i:
+                        smells.append(CodeIssue(
+                            type='CodeSmell',
+                            severity='warning',
+                            message=f'Duplicate code found at line {j}',
+                            line=i,
+                            suggestion='Extract common code into function'
+                        ))
+                        break
+        
+        return smells
+    
+    def count_method_lines(self, lines: List[str], start_idx: int) -> int:
+        count = 1
+        indent_level = len(lines[start_idx]) - len(lines[start_idx].lstrip())
+        
+        for i in range(start_idx + 1, len(lines)):
+            line = lines[i]
+            if line.strip() == '':
+                count += 1
+                continue
+            
+            current_indent = len(line) - len(line.lstrip())
+            if current_indent <= indent_level and line.strip():
+                break
+            count += 1
+        
+        return count
+    
+    def generate_documentation(self, content: str) -> str:
+        try:
+            tree = ast.parse(content)
+            doc_generator = DocGenerator()
+            return doc_generator.generate(tree)
+        except Exception as e:
+            logger.error(f"Documentation generation failed: {e}")
+            return "# Documentation generation failed"
+    
+    def refactor_code(self, content: str, refactoring_type: str) -> str:
+        if refactoring_type == 'extract_method':
+            return self.extract_methods(content)
+        elif refactoring_type == 'rename_variables':
+            return self.rename_variables(content)
+        elif refactoring_type == 'remove_dead_code':
+            return self.remove_dead_code(content)
+        else:
+            return content
+    
+    def extract_methods(self, content: str) -> str:
+        # Simple method extraction for repeated code blocks
+        lines = content.split('\n')
+        extracted_methods = []
+        method_counter = 1
+        
+        # Find repeated blocks (simplified)
+        for i in range(len(lines) - 5):
+            block = lines[i:i+5]
+            if all(line.strip() for line in block):
+                block_text = '\n'.join(block)
+                if content.count(block_text) > 1:
+                    method_name = f'extracted_method_{method_counter}'
+                    extracted_methods.append(f'def {method_name}():\n    ' + '\n    '.join([line.strip() for line in block]))
+                    content = content.replace(block_text, f'    {method_name}()')
+                    method_counter += 1
+        
+        if extracted_methods:
+            content = '\n'.join(extracted_methods) + '\n\n' + content
+        
+        return content
+    
+    def rename_variables(self, content: str) -> str:
+        # Rename single-letter variables to more descriptive names
+        replacements = {
+            r'\bi\b': 'index',
+            r'\bj\b': 'inner_index',
+            r'\bx\b': 'value',
+            r'\by\b': 'result',
+            r'\bs\b': 'string_var',
+            r'\bn\b': 'number'
+        }
+        
+        for pattern, replacement in replacements.items():
+            content = re.sub(pattern, replacement, content)
+        
+        return content
+    
+    def remove_dead_code(self, content: str) -> str:
+        try:
+            tree = ast.parse(content)
+            transformer = DeadCodeRemover()
+            new_tree = transformer.visit(tree)
+            return ast.unparse(new_tree)
+        except Exception as e:
+            logger.error(f"Dead code removal failed: {e}")
+            return content
+
+class ComplexityAnalyzer(ast.NodeVisitor):
+    def __init__(self):
+        self.complexity = 1
+        self.function_count = 0
+        self.class_count = 0
+        self.lines_of_code = 0
+    
+    def visit_FunctionDef(self, node):
+        self.function_count += 1
+        self.complexity += 1
+        self.generic_visit(node)
+    
+    def visit_AsyncFunctionDef(self, node):
+        self.function_count += 1
+        self.complexity += 1
+        self.generic_visit(node)
+    
+    def visit_ClassDef(self, node):
+        self.class_count += 1
+        self.generic_visit(node)
+    
+    def visit_If(self, node):
+        self.complexity += 1
+        self.generic_visit(node)
+    
+    def visit_While(self, node):
+        self.complexity += 1
+        self.generic_visit(node)
+    
+    def visit_For(self, node):
+        self.complexity += 1
+        self.generic_visit(node)
+    
+    def visit_Try(self, node):
+        self.complexity += len(node.handlers)
+        self.generic_visit(node)
+
+class DocGenerator(ast.NodeVisitor):
+    def __init__(self):
+        self.doc_parts = []
+    
+    def generate(self, tree):
+        self.visit(tree)
+        return '\n'.join(self.doc_parts)
+    
+    def visit_ClassDef(self, node):
+        self.doc_parts.append(f"## Class: {node.name}")
+        if ast.get_docstring(node):
+            self.doc_parts.append(ast.get_docstring(node))
+        self.doc_parts.append("")
+        self.generic_visit(node)
+    
+    def visit_FunctionDef(self, node):
+        args = [arg.arg for arg in node.args.args]
+        self.doc_parts.append(f"### Function: {node.name}({', '.join(args)})")
+        if ast.get_docstring(node):
+            self.doc_parts.append(ast.get_docstring(node))
+        self.doc_parts.append("")
+
+class DeadCodeRemover(ast.NodeTransformer):
+    def visit_FunctionDef(self, node):
+        # Remove functions that are never called (simplified check)
+        self.generic_visit(node)
+        return node
+    
+    def visit_If(self, node):
+        # Remove if statements with constant False conditions
+        if isinstance(node.test, ast.Constant) and not node.test.value:
+            return None
+        return self.generic_visit(node)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global docker_client
+    try:
+        docker_client = docker.from_env()
+        logger.info("Docker client initialized successfully")
+    except Exception as e:
+        logger.warning(f"Docker not available: {e}")
+        docker_client = None
+    
+    os.makedirs("uploads", exist_ok=True)
+    os.makedirs("scripts", exist_ok=True)
+    os.makedirs("logs", exist_ok=True)
+    os.makedirs("static", exist_ok=True)
+    os.makedirs("optimized", exist_ok=True)
+    os.makedirs(".compiler_backups", exist_ok=True)
+    
+    yield
+    
+    cleanup_processes()
+
+app = FastAPI(
+    title="Universal Python Local Server with Compiler",
+    description="Enhanced local server with Docker, script execution, Python compiler and comprehensive capabilities",
+    version="2.1.0",
+    lifespan=lifespan
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# Pydantic Models
+class ScanRequest(BaseModel):
+    folder_path: str = Field(..., description="Path to folder containing scanner Python code")
+    module_file: str = Field(..., description="Python file name to import (e.g. scan.py)")
+    callable_name: str = Field(..., description="Function or class name inside module to invoke")
+    target: str = Field(..., description="Target input string for the callable (e.g. URL or file path)")
+
+class ScriptExecuteRequest(BaseModel):
+    script_path: str = Field(..., description="Path to script file")
+    args: List[str] = Field(default=[], description="Command line arguments")
+    working_directory: Optional[str] = Field(None, description="Working directory for script execution")
+    environment: Optional[Dict[str, str]] = Field(None, description="Environment variables")
+    timeout: Optional[int] = Field(300, description="Timeout in seconds")
+
+class DockerRequest(BaseModel):
+    image: str = Field(..., description="Docker image name")
+    command: Optional[List[str]] = Field(None, description="Command to run in container")
+    volumes: Optional[Dict[str, str]] = Field(None, description="Volume mounts")
+    environment: Optional[Dict[str, str]] = Field(None, description="Environment variables")
+    ports: Optional[Dict[str, int]] = Field(None, description="Port mappings")
+    detach: bool = Field(True, description="Run container in background")
+
+class SystemCommand(BaseModel):
+    command: str = Field(..., description="System command to execute")
+    shell: bool = Field(True, description="Execute through shell")
+    capture_output: bool = Field(True, description="Capture stdout/stderr")
+    timeout: Optional[int] = Field(30, description="Timeout in seconds")
+
+class FileOperation(BaseModel):
+    operation: str = Field(..., description="Operation: read, write, delete, copy, move, mkdir")
+    source_path: str = Field(..., description="Source file/directory path")
+    target_path: Optional[str] = Field(None, description="Target path for copy/move operations")
+    content: Optional[str] = Field(None, description="Content for write operations")
+    encoding: str = Field("utf-8", description="File encoding")
+
+class CompileRequest(BaseModel):
+    file_path: str = Field(..., description="Path to Python file to compile and fix")
+    target_dir: Optional[str] = Field(None, description="Target directory for output")
+    auto_modularize: bool = Field(True, description="Automatically split large files into modules")
+    fix_errors: bool = Field(True, description="Automatically fix detected errors")
+    optimize: bool = Field(True, description="Apply performance optimizations")
+
+class BatchCompileRequest(BaseModel):
+    directory: str = Field(..., description="Directory containing Python files")
+    recursive: bool = Field(True, description="Process subdirectories recursively")
+    file_pattern: str = Field("*.py", description="File pattern to match")
+    exclude_patterns: List[str] = Field(default=[], description="Patterns to exclude")
+
+# Helper Functions
+def dynamic_import_module(file_path: str, module_name: str = "dynamic_module"):
+    if not os.path.isfile(file_path):
+        raise FileNotFoundError(f"Module file not found: {file_path}")
+    spec = importlib.util.spec_from_file_location(module_name, file_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+async def invoke_callable(callable_obj, target: str):
+    if inspect.isclass(callable_obj):
+        instance = callable_obj()
+        if hasattr(instance, 'scan'):
+            scan_method = getattr(instance, 'scan')
+            if inspect.iscoroutinefunction(scan_method):
+                return await scan_method(target)
+            else:
+                loop = asyncio.get_event_loop()
+                return await loop.run_in_executor(None, lambda: scan_method(target))
+        elif inspect.iscoroutinefunction(instance):
+            return await instance(target)
+        elif callable(instance):
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(None, lambda: instance(target))
+        else:
+            raise HTTPException(status_code=400, detail="Callable class must be callable or have 'scan' method")
+    elif inspect.isfunction(callable_obj) or inspect.iscoroutinefunction(callable_obj):
+        if inspect.iscoroutinefunction(callable_obj):
+            return await callable_obj(target)
+        else:
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(None, lambda: callable_obj(target))
+    else:
+        raise HTTPException(status_code=400, detail="Invalid callable object type")
+
+def cleanup_processes():
+    for proc_id, proc in active_processes.items():
+        try:
+            if proc.poll() is None:
+                proc.terminate()
+                proc.wait(timeout=5)
+        except Exception as e:
+            logger.error(f"Error terminating process {proc_id}: {e}")
+    active_processes.clear()
+
+async def broadcast_to_websockets(message: dict):
+    if websocket_connections:
+        disconnected = set()
+        for websocket in websocket_connections:
+            try:
+                await websocket.send_text(json.dumps(message))
+            except Exception:
+                disconnected.add(websocket)
+        
+        websocket_connections.difference_update(disconnected)
+
+# API Endpoints
+
+@app.get("/")
+async def root():
+    return {
+        "message": "Universal Python Local Server with Compiler",
+        "version": "2.1.0",
+        "features": [
+            "Dynamic module loading and execution",
+            "Script execution with real-time output",
+            "Docker container management", 
+            "File operations",
+            "System command execution",
+            "WebSocket real-time communication",
+            "Process management",
+            "System monitoring",
+            "Python code compilation and fixing",
+            "Automatic error correction",
+            "Code optimization",
+            "Modularization of monolithic code",
+            "Performance improvements",
+            "Batch processing",
+            "Stuttering removal",
+            "Real-time code analysis"
+        ],
+        "endpoints": [
+            "/dynamic-scan",
+            "/execute-script", 
+            "/docker/*",
+            "/system/*",
+            "/files/*",
+            "/process/*",
+            "/upload",
+            "/ws",
+            "/compile",
+            "/compile-batch",
+            "/scan-code",
+            "/fix-file",
+            "/optimize-code"
+        ]
+    }
+
+@app.post("/compile")
+async def compile_python_file(request: CompileRequest):
+    try:
+        compiler = PythonCompilerOptimizer(request.target_dir)
+        result = compiler.compile_and_fix_file(request.file_path)
+        
+        return {
+            "success": result.success,
+            "original_file": result.original_file,
+            "output_files": result.output_files,
+            "issues_fixed": [
+                {
+                    "type": issue.type,
+                    "severity": issue.severity,
+                    "message": issue.message,
+                    "line": issue.line,
+                    "column": issue.column,
+                    "suggestion": issue.suggestion,
+                    "auto_fixable": issue.auto_fixable
+                } for issue in result.issues_fixed
+            ],
+            "issues_remaining": [
+                {
+                    "type": issue.type,
+                    "severity": issue.severity, 
+                    "message": issue.message,
+                    "line": issue.line,
+                    "column": issue.column,
+                    "suggestion": issue.suggestion,
+                    "auto_fixable": issue.auto_fixable
+                } for issue in result.issues_remaining
+            ],
+            "modules_created": result.modules_created,
+            "performance_improvements": result.performance_improvements,
+            "execution_time": result.execution_time,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Compilation failed: {e}")
+
+@app.post("/compile-batch")
+async def compile_batch(request: BatchCompileRequest):
+    try:
+        directory = Path(request.directory)
+        if not directory.exists():
+            raise HTTPException(status_code=404, detail="Directory not found")
+        
+        pattern = request.file_pattern
+        if request.recursive:
+            files = list(directory.rglob(pattern))
+        else:
+            files = list(directory.glob(pattern))
+        
+        for exclude_pattern in request.exclude_patterns:
+            files = [f for f in files if not f.match(exclude_pattern)]
+        
+        results = []
+        compiler = PythonCompilerOptimizer(str(directory))
+        
+        total_issues_fixed = 0
+        total_files_processed = 0
+        
+        for file_path in files:
+            try:
+                result = compiler.compile_and_fix_file(str(file_path))
+                issues_fixed_count = len(result.issues_fixed)
+                total_issues_fixed += issues_fixed_count
+                total_files_processed += 1
+                
+                results.append({
+                    "file": str(file_path),
+                    "success": result.success,
+                    "issues_fixed": issues_fixed_count,
+                    "output_files": result.output_files,
+                    "modules_created": result.modules_created,
+                    "execution_time": result.execution_time,
+                    "performance_improvements": result.performance_improvements
+                })
+                
+                await broadcast_to_websockets({
+                    "type": "batch_progress",
+                    "file": str(file_path),
+                    "processed": len(results),
+                    "total": len(files),
+                    "success": result.success
+                })
+                
+            except Exception as e:
+                results.append({
+                    "file": str(file_path),
+                    "success": False,
+                    "error": str(e)
+                })
+        
+        successful_count = len([r for r in results if r.get("success", False)])
+        failed_count = len([r for r in results if not r.get("success", False)])
+        
+        return {
+            "total_files": len(files),
+            "processed": len(results),
+            "successful": successful_count,
+            "failed": failed_count,
+            "total_issues_fixed": total_issues_fixed,
+            "average_execution_time": sum(r.get("execution_time", 0) for r in results) / len(results) if results else 0,
+            "results": results,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Batch compilation failed: {e}")
+
+@app.post("/scan-code")
+async def scan_code_issues(file_path: str):
+    try:
+        file_path = Path(file_path)
+        if not file_path.exists():
+            raise HTTPException(status_code=404, detail="File not found")
+        
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            content = f.read()
+        
+        compiler = PythonCompilerOptimizer()
+        issues = []
+        lines = content.split('\n')
+        
+        try:
+            ast.parse(content)
+        except SyntaxError as e:
+            issues.append({
+                "type": "SyntaxError",
+                "severity": "error", 
+                "message": str(e),
+                "line": e.lineno or 0,
+                "column": e.offset or 0,
+                "auto_fixable": True
+            })
+        
+        for i, line in enumerate(lines, 1):
+            stripped = line.strip()
+            
+            if re.match(r'print\s+[^(]', stripped):
+                issues.append({
+                    "type": "Style",
+                    "severity": "warning",
+                    "message": "Old-style print statement",
+                    "line": i,
+                    "suggestion": "Use print() function",
+                    "auto_fixable": True
+                })
+            
+            if re.match(r'^(if|elif|else|for|while|def|class|try|except|finally|with)\s+.*[^:]$', stripped):
+                if not stripped.endswith(':'):
+                    issues.append({
+                        "type": "SyntaxError",
+                        "severity": "error",
+                        "message": "Missing colon",
+                        "line": i,
+                        "suggestion": "Add colon at end of line",
+                        "auto_fixable": True
+                    })
+            
+            if 'import *' in stripped:
+                issues.append({
+                    "type": "Import",
+                    "severity": "warning",
+                    "message": "Wildcard import should be avoided",
+                    "line": i,
+                    "suggestion": "Import specific items instead",
+                    "auto_fixable": True
+                })
+            
+            if len(line) > 88:
+                issues.append({
+                    "type": "Style",
+                    "severity": "info",
+                    "message": f"Line too long ({len(line)} characters)",
+                    "line": i,
+                    "suggestion": "Break long lines",
+                    "auto_fixable": True
+                })
+            
+            if line.endswith(' ') or line.endswith('\t'):
+                issues.append({
+                    "type": "Style",
+                    "severity": "info",
+                    "message": "Trailing whitespace",
+                    "line": i,
+                    "auto_fixable": True
+                })
+            
+            if re.search(r'eval\s*\(|exec\s*\(', stripped):
+                issues.append({
+                    "type": "Security",
+                    "severity": "warning",
+                    "message": "Use of eval() or exec() can be dangerous",
+                    "line": i,
+                    "suggestion": "Use safer alternatives like ast.literal_eval()",
+                    "auto_fixable": False
+                })
+        
+        summary = {
+            "total_issues": len(issues),
+            "errors": len([i for i in issues if i["severity"] == "error"]),
+            "warnings": len([i for i in issues if i["severity"] == "warning"]),
+            "info": len([i for i in issues if i["severity"] == "info"]),
+            "auto_fixable": len([i for i in issues if i.get("auto_fixable", False)])
+        }
+        
+        return {
+            "file": str(file_path),
+            "issues": issues,
+            "summary": summary,
+            "can_modularize": compiler.should_modularize(content),
+            "lines_of_code": len(lines),
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Code scanning failed: {e}")
+
+@app.post("/fix-file")
+async def fix_file_issues(file_path: str, backup: bool = True):
+    try:
+        file_path = Path(file_path)
+        if not file_path.exists():
+            raise HTTPException(status_code=404, detail="File not found")
+        
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            original_content = f.read()
+        
+        if backup:
+            backup_dir = file_path.parent / ".compiler_backups"
+            backup_dir.mkdir(exist_ok=True)
+            backup_path = backup_dir / f"{file_path.name}.backup.{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            shutil.copy2(file_path, backup_path)
+        
+        compiler = PythonCompilerOptimizer()
+        fixed_content = compiler.fix_python_code(original_content)
+        
+        with open(file_path, 'w', encoding='utf-8') as f:
+            f.write(fixed_content)
+        
+        issues_fixed = len([issue for issue in compiler.issues if issue.auto_fixable])
+        
+        return {
+            "success": True,
+            "file": str(file_path),
+            "backup_created": backup_path.name if backup else None,
+            "issues_fixed": issues_fixed,
+            "fixes_applied": [
+                {
+                    "type": issue.type,
+                    "message": issue.message,
+                    "line": issue.line
+                } for issue in compiler.issues if issue.auto_fixable
+            ],
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"File fixing failed: {e}")
+
+@app.post("/optimize-code")
+async def optimize_code_performance(file_path: str):
+    try:
+        file_path = Path(file_path)
+        if not file_path.exists():
+            raise HTTPException(status_code=404, detail="File not found")
+        
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            original_content = f.read()
+        
+        compiler = PythonCompilerOptimizer()
+        optimized_content = compiler.optimize_performance(original_content)
+        
+        output_path = file_path.parent / f"{file_path.stem}_optimized{file_path.suffix}"
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write(optimized_content)
+        
+        improvements = compiler.calculate_improvements(original_content, optimized_content)
+        
+        return {
+            "success": True,
+            "original_file": str(file_path),
+            "optimized_file": str(output_path),
+            "improvements": improvements,
+            "optimizations_applied": [
+                "List comprehensions",
+                "Dictionary comprehensions", 
+                "F-string formatting",
+                "Enumerate usage",
+                "Regex compilation"
+            ],
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Code optimization failed: {e}")
+
+@app.post("/dynamic-scan")
+async def dynamic_scan(request: ScanRequest):
+    module_path = os.path.join(request.folder_path, request.module_file)
+    if not os.path.exists(module_path):
+        raise HTTPException(status_code=404, detail=f"Module file not found at {module_path}")
+    
+    try:
+        module = dynamic_import_module(module_path, module_name=request.module_file.rstrip('.py'))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error importing module: {e}")
+
+    if not hasattr(module, request.callable_name):
+        raise HTTPException(status_code=404, detail=f"Callable {request.callable_name} not found in module {request.module_file}")
+    
+    callable_obj = getattr(module, request.callable_name)
+
+    try:
+        result = await invoke_callable(callable_obj, request.target)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error invoking callable: {e}")
+
+    return {
+        "module_file": request.module_file,
+        "callable_name": request.callable_name,
+        "target": request.target,
+        "result": result,
+        "timestamp": datetime.now().isoformat()
+    }
+
+@app.post("/execute-script")
+async def execute_script(request: ScriptExecuteRequest, background_tasks: BackgroundTasks):
+    script_path = Path(request.script_path)
+    if not script_path.exists():
+        raise HTTPException(status_code=404, detail=f"Script not found: {request.script_path}")
+    
+    suffix = script_path.suffix.lower()
+    if suffix == '.py':
+        cmd = [sys.executable, str(script_path)] + request.args
+    elif suffix == '.sh':
+        cmd = ['bash', str(script_path)] + request.args
+    elif suffix == '.js':
+        cmd = ['node', str(script_path)] + request.args
+    else:
+        cmd = [str(script_path)] + request.args
+    
+    proc_id = f"script_{datetime.now().timestamp()}"
+    
+    try:
+        env = os.environ.copy()
+        if request.environment:
+            env.update(request.environment)
+        
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=request.working_directory,
+            env=env
+        )
+        
+        active_processes[proc_id] = process
+        
+        def read_output():
+            output_lines = []
+            error_lines = []
+            
+            try:
+                stdout, stderr = process.communicate(timeout=request.timeout)
+                output_lines = stdout.splitlines() if stdout else []
+                error_lines = stderr.splitlines() if stderr else []
+            except subprocess.TimeoutExpired:
+                process.kill()
+                stdout, stderr = process.communicate()
+                output_lines = (stdout.splitlines() if stdout else []) + ["Process timed out"]
+                error_lines = stderr.splitlines() if stderr else []
+            finally:
+                if proc_id in active_processes:
+                    del active_processes[proc_id]
+        
+        background_tasks.add_task(read_output)
+        
+        return {
+            "process_id": proc_id,
+            "command": cmd,
+            "status": "started",
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error executing script: {e}")
+
+@app.post("/system/command")
+async def execute_system_command(request: SystemCommand):
+    try:
+        if request.shell:
+            result = subprocess.run(
+                request.command,
+                shell=True,
+                capture_output=request.capture_output,
+                text=True,
+                timeout=request.timeout
+            )
+        else:
+            result = subprocess.run(
+                request.command.split(),
+                capture_output=request.capture_output,
+                text=True,
+                timeout=request.timeout
+            )
+        
+        return {
+            "command": request.command,
+            "return_code": result.returncode,
+            "stdout": result.stdout if request.capture_output else None,
+            "stderr": result.stderr if request.capture_output else None,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=408, detail="Command timed out")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error executing command: {e}")
+
+@app.get("/system/info")
+async def system_info():
+    try:
+        return {
+            "platform": sys.platform,
+            "python_version": sys.version,
+            "cpu_count": os.cpu_count(),
+            "memory": {
+                "total": psutil.virtual_memory().total,
+                "available": psutil.virtual_memory().available,
+                "percent": psutil.virtual_memory().percent
+            },
+            "disk": {
+                "total": psutil.disk_usage('/').total,
+                "free": psutil.disk_usage('/').free,
+                "percent": psutil.disk_usage('/').percent
+            },
+            "processes": len(psutil.pids()),
+            "active_compiler_processes": len(active_processes),
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting system info: {e}")
+
+@app.post("/files/operation")
+async def file_operation(request: FileOperation):
+    try:
+        source = Path(request.source_path)
+        
+        if request.operation == "read":
+            if not source.exists():
+                raise HTTPException(status_code=404, detail="File not found")
+            content = source.read_text(encoding=request.encoding)
+            return {"content": content, "size": source.stat().st_size}
+        
+        elif request.operation == "write":
+            source.write_text(request.content or "", encoding=request.encoding)
+            return {"message": f"File written: {source}"}
+        
+        elif request.operation == "delete":
+            if source.is_file():
+                source.unlink()
+            elif source.is_dir():
+                shutil.rmtree(source)
+            return {"message": f"Deleted: {source}"}
+        
+        elif request.operation == "copy":
+            if not request.target_path:
+                raise HTTPException(status_code=400, detail="Target path required for copy")
+            target = Path(request.target_path)
+            if source.is_file():
+                shutil.copy2(source, target)
+            else:
+                shutil.copytree(source, target)
+            return {"message": f"Copied {source} to {target}"}
+        
+        elif request.operation == "move":
+            if not request.target_path:
+                raise HTTPException(status_code=400, detail="Target path required for move")
+            target = Path(request.target_path)
+            shutil.move(str(source), str(target))
+            return {"message": f"Moved {source} to {target}"}
+        
+        elif request.operation == "mkdir":
+            source.mkdir(parents=True, exist_ok=True)
+            return {"message": f"Directory created: {source}"}
+        
+        else:
+            raise HTTPException(status_code=400, detail="Invalid operation")
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"File operation error: {e}")
+
+@app.get("/files/list/{path:path}")
+async def list_files(path: str = ""):
+    try:
+        dir_path = Path(path) if path else Path(".")
+        if not dir_path.exists() or not dir_path.is_dir():
+            raise HTTPException(status_code=404, detail="Directory not found")
+        
+        files = []
+        for item in dir_path.iterdir():
+            stat = item.stat()
+            files.append({
+                "name": item.name,
+                "path": str(item),
+                "type": "directory" if item.is_dir() else "file",
+                "size": stat.st_size,
+                "modified": datetime.fromtimestamp(stat.st_mtime).isoformat()
+            })
+        
+        return {"path": str(dir_path), "files": files}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error listing files: {e}")
+
+@app.post("/upload")
+async def upload_file(file: UploadFile = File(...)):
+    try:
+        upload_path = Path("uploads") / file.filename
+        with upload_path.open("wb") as f:
+            content = await file.read()
+            f.write(content)
+        
+        return {
+            "filename": file.filename,
+            "path": str(upload_path),
+            "size": len(content),
+            "content_type": file.content_type,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Upload error: {e}")
+
+@app.get("/download/{file_path:path}")
+async def download_file(file_path: str):
+    file_location = Path(file_path)
+    if not file_location.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    return FileResponse(
+        path=file_location,
+        filename=file_location.name,
+        media_type='application/octet-stream'
+    )
+
+@app.post("/docker/run")
+async def docker_run(request: DockerRequest):
+    if not docker_client:
+        raise HTTPException(status_code=503, detail="Docker not available")
+    
+    try:
+        container = docker_client.containers.run(
+            request.image,
+            command=request.command,
+            volumes=request.volumes,
+            environment=request.environment,
+            ports=request.ports,
+            detach=request.detach
+        )
+        
+        return {
+            "container_id": container.id,
+            "image": request.image,
+            "status": container.status,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Docker run error: {e}")
+
+@app.get("/docker/containers")
+async def docker_list_containers():
+    if not docker_client:
+        raise HTTPException(status_code=503, detail="Docker not available")
+    
+    try:
+        containers = []
+        for container in docker_client.containers.list(all=True):
+            containers.append({
+                "id": container.id,
+                "name": container.name,
+                "image": container.image.tags[0] if container.image.tags else "unknown",
+                "status": container.status,
+                "created": container.attrs['Created']
+            })
+        return {"containers": containers}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Docker list error: {e}")
+
+@app.delete("/docker/container/{container_id}")
+async def docker_remove_container(container_id: str):
+    if not docker_client:
+        raise HTTPException(status_code=503, detail="Docker not available")
+    
+    try:
+        container = docker_client.containers.get(container_id)
+        if container.status == "running":
+            container.stop()
+        container.remove()
+        return {"message": f"Container {container_id} removed"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Docker remove error: {e}")
+
+@app.get("/process/list")
+async def list_processes():
+    processes = {}
+    for proc_id, proc in active_processes.items():
+        processes[proc_id] = {
+            "pid": proc.pid,
+            "returncode": proc.returncode,
+            "running": proc.poll() is None
+        }
+    return {"processes": processes}
+
+@app.delete("/process/{process_id}")
+async def kill_process(process_id: str):
+    if process_id not in active_processes:
+        raise HTTPException(status_code=404, detail="Process not found")
+    
+    try:
+        proc = active_processes[process_id]
+        proc.terminate()
+        proc.wait(timeout=5)
+        del active_processes[process_id]
+        return {"message": f"Process {process_id} terminated"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error killing process: {e}")
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    websocket_connections.add(websocket)
+    
+    try:
+        while True:
+            data = await websocket.receive_text()
+            message = json.loads(data)
+            
+            await broadcast_to_websockets({
+                "type": "message",
+                "data": message,
+                "timestamp": datetime.now().isoformat()
+            })
+    except WebSocketDisconnect:
+        websocket_connections.remove(websocket)
+
+@app.get("/health")
+async def health_check():
+    return {
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "uptime": "running",
+        "docker_available": docker_client is not None,
+        "active_processes": len(active_processes),
+        "websocket_connections": len(websocket_connections),
+        "compiler_ready": True,
+        "features_enabled": [
+            "code_compilation",
+            "error_fixing", 
+            "performance_optimization",
+            "modularization",
+            "batch_processing",
+            "real_time_scanning"
+        ]
+    }
+
+def signal_handler(signum, frame):
+    logger.info("Shutdown signal received, cleaning up...")
+    cleanup_processes()
+    sys.exit(0)
+
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
+
+if __name__ == "__main__":
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Universal Python Local Server with Compiler")
+    parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
+    parser.add_argument("--port", type=int, default=8000, help="Port to bind to")
+    parser.add_argument("--workers", type=int, default=1, help="Number of worker processes")
+    parser.add_argument("--log-level", default="info", help="Log level")
+    parser.add_argument("--reload", action="store_true", help="Enable auto-reload")
+    
+    args = parser.parse_args()
+    
+    uvicorn.run(
+        "main:app" if args.reload else app,
+        host=args.host,
+        port=args.port,
+        log_level=args.log_level,
+        reload=args.reload,
+        workers=args.workers if not args.reload else 1
+    )
