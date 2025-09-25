@@ -1,0 +1,1608 @@
+package com.realbank.service;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.mongodb.client.MongoClient;
+import com.mongodb.client.MongoClients;
+import com.mongodb.client.MongoDatabase;
+import com.mongodb.client.MongoCollection;
+import com.stripe.Stripe;
+import com.stripe.model.Customer;
+import com.stripe.model.PaymentIntent;
+import com.stripe.model.Transfer;
+import com.stripe.param.CustomerCreateParams;
+import com.stripe.param.PaymentIntentCreateParams;
+import com.stripe.param.TransferCreateParams;
+import com.plaid.client.ApiClient;
+import com.plaid.client.model.*;
+import com.plaid.client.request.PlaidApi;
+import com.squareup.square.SquareClient;
+import com.squareup.square.Environment;
+import com.squareup.square.models.CreateCustomerRequest;
+import com.squareup.square.models.CreateCustomerResponse;
+import org.bitcoinj.core.*;
+import org.bitcoinj.crypto.DeterministicKey;
+import org.bitcoinj.crypto.HDKeyDerivation;
+import org.bitcoinj.crypto.MnemonicCode;
+import org.bitcoinj.params.MainNetParams;
+import org.bitcoinj.params.TestNet3Params;
+import org.bitcoinj.script.Script;
+import org.bitcoinj.wallet.DeterministicSeed;
+import org.web3j.crypto.Credentials;
+import org.web3j.crypto.MnemonicUtils;
+import org.web3j.crypto.WalletUtils;
+import org.web3j.protocol.Web3j;
+import org.web3j.protocol.http.HttpService;
+import org.web3j.protocol.core.DefaultBlockParameterName;
+import org.web3j.protocol.core.methods.response.EthGetBalance;
+import org.web3j.tx.Transfer;
+import org.web3j.utils.Convert;
+import redis.clients.jedis.JedisPool;
+import redis.clients.jedis.Jedis;
+import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.security.crypto.encrypt.Encryptors;
+import org.springframework.security.crypto.encrypt.TextEncryptor;
+import org.bson.Document;
+import org.bson.types.ObjectId;
+
+import javax.crypto.Cipher;
+import javax.crypto.KeyGenerator;
+import javax.crypto.SecretKey;
+import javax.crypto.spec.SecretKeySpec;
+import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+import java.security.SecureRandom;
+import java.security.MessageDigest;
+import java.io.IOException;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.net.URI;
+import javax.annotation.PostConstruct;
+import javax.annotation.PreDestroy;
+import lombok.extern.slf4j.Slf4j;
+import lombok.Data;
+import lombok.Builder;
+import lombok.AllArgsConstructor;
+import lombok.NoArgsConstructor;
+
+/**
+ * REAL BANKING SERVICE - PRODUCTION GRADE IMPLEMENTATION
+ * 
+ * This service handles ACTUAL money movement through:
+ * - Real Stripe payments and transfers
+ * - Real Dwolla ACH processing
+ * - Real blockchain transactions (Bitcoin, Ethereum, Solana)
+ * - Real Plaid bank account linking
+ * - Real Square payment processing
+ * - Real KYC/AML compliance
+ * 
+ * WARNING: This handles REAL MONEY - use with extreme caution!
+ */
+@Slf4j
+@Service
+public class RealBankingService {
+
+    // REAL PAYMENT PROVIDER CONFIGURATIONS
+    @Value("${stripe.secret.key}")
+    private String stripeSecretKey;
+    
+    @Value("${dwolla.key}")
+    private String dwollaKey;
+    
+    @Value("${dwolla.secret}")
+    private String dwollaSecret;
+    
+    @Value("${dwolla.environment}")
+    private String dwollaEnvironment;
+    
+    @Value("${plaid.client.id}")
+    private String plaidClientId;
+    
+    @Value("${plaid.secret}")
+    private String plaidSecret;
+    
+    @Value("${plaid.environment}")
+    private String plaidEnvironment;
+    
+    @Value("${square.access.token}")
+    private String squareAccessToken;
+    
+    @Value("${square.environment}")
+    private String squareEnvironment;
+    
+    // REAL BLOCKCHAIN CONFIGURATIONS
+    @Value("${ethereum.rpc.url}")
+    private String ethereumRpcUrl;
+    
+    @Value("${bitcoin.network}")
+    private String bitcoinNetwork;
+    
+    @Value("${solana.rpc.url}")
+    private String solanaRpcUrl;
+    
+    // REAL DATABASE AND CACHE
+    @Value("${mongodb.uri}")
+    private String mongoUri;
+    
+    @Value("${redis.url}")
+    private String redisUrl;
+    
+    @Value("${bank.routing.number}")
+    private String bankRoutingNumber;
+    
+    @Value("${encryption.key}")
+    private String encryptionKey;
+
+    // SERVICE INSTANCES - REAL INTEGRATIONS
+    private PlaidApi plaidClient;
+    private SquareClient squareClient;
+    private Web3j web3j;
+    private NetworkParameters bitcoinParams;
+    private MongoDatabase mongoDatabase;
+    private JedisPool jedisPool;
+    private TextEncryptor textEncryptor;
+    private HttpClient httpClient;
+    private ObjectMapper objectMapper;
+    private ApplicationEventPublisher eventPublisher;
+    private ScheduledExecutorService scheduler;
+    
+    // REAL-TIME MONITORING
+    private final Map<String, BigDecimal> accountBalanceCache = new ConcurrentHashMap<>();
+    private final Map<String, LocalDateTime> lastSyncTime = new ConcurrentHashMap<>();
+    
+    // SECURITY AND COMPLIANCE
+    private final Set<String> frozenAccounts = Collections.synchronizedSet(new HashSet<>());
+    private final Map<String, Integer> failedAttempts = new ConcurrentHashMap<>();
+    private final Map<String, List<TransactionRecord>> suspiciousActivity = new ConcurrentHashMap<>();
+
+    @PostConstruct
+    public void initialize() {
+        log.info("Initializing Real Banking Service...");
+        
+        // Initialize Stripe
+        Stripe.apiKey = stripeSecretKey;
+        
+        // Initialize Plaid
+        HashMap<String, String> apiKeys = new HashMap<>();
+        apiKeys.put("client_id", plaidClientId);
+        apiKeys.put("secret", plaidSecret);
+        ApiClient apiClient = new ApiClient(apiKeys);
+        apiClient.setPlaidAdapter(getPlaidEnvironment());
+        plaidClient = apiClient.createService(PlaidApi.class);
+        
+        // Initialize Square
+        squareClient = new SquareClient.Builder()
+            .environment(squareEnvironment.equals("production") ? Environment.PRODUCTION : Environment.SANDBOX)
+            .accessToken(squareAccessToken)
+            .build();
+        
+        // Initialize Web3j for Ethereum
+        web3j = Web3j.build(new HttpService(ethereumRpcUrl));
+        
+        // Initialize Bitcoin network
+        bitcoinParams = bitcoinNetwork.equals("mainnet") ? MainNetParams.get() : TestNet3Params.get();
+        
+        // Initialize MongoDB
+        MongoClient mongoClient = MongoClients.create(mongoUri);
+        mongoDatabase = mongoClient.getDatabase("realbank");
+        
+        // Initialize Redis
+        jedisPool = new JedisPool(redisUrl);
+        
+        // Initialize encryption
+        textEncryptor = Encryptors.text(encryptionKey, "deadbeef");
+        
+        // Initialize HTTP client
+        httpClient = HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(30))
+            .build();
+        
+        objectMapper = new ObjectMapper();
+        scheduler = Executors.newScheduledThreadPool(10);
+        
+        // Start real-time monitoring
+        startRealTimeMonitoring();
+        
+        log.info("Real Banking Service initialized successfully");
+    }
+    
+    @PreDestroy
+    public void shutdown() {
+        if (scheduler != null) {
+            scheduler.shutdown();
+        }
+        if (jedisPool != null) {
+            jedisPool.close();
+        }
+        if (web3j != null) {
+            web3j.shutdown();
+        }
+    }
+
+    // =============================================================================
+    // REAL USER MODELS WITH ENHANCED SECURITY
+    // =============================================================================
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class BankUser {
+        private String userId;
+        private String email;
+        private String firstName;
+        private String lastName;
+        private String phone;
+        private String ssnEncrypted; // Always encrypted
+        private LocalDateTime dateOfBirth;
+        private Address address;
+        private KycStatus kycStatus;
+        private String stripeCustomerId;
+        private String dwollaCustomerUrl;
+        private String plaidUserId;
+        private String squareCustomerId;
+        private SecurityProfile securityProfile;
+        private LocalDateTime createdAt;
+        private LocalDateTime updatedAt;
+    }
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class BankAccount {
+        private String accountId;
+        private String userId;
+        private String accountNumber;
+        private String routingNumber;
+        private AccountType accountType;
+        
+        // REAL BALANCE TRACKING IN CENTS
+        private Long availableBalance;
+        private Long ledgerBalance;
+        private Long pendingBalance;
+        private Long totalDeposited;
+        private Long totalWithdrawn;
+        private Long overdraftLimit;
+        private Long dailyWithdrawalLimit;
+        private Long monthlyTransactionLimit;
+        
+        // REAL INTEGRATION IDs
+        private String dwollaFundingSourceUrl;
+        private String stripeBankAccountId;
+        private String plaidItemId;
+        private String plaidAccountId;
+        private String fdicInsuranceNumber;
+        
+        private AccountStatus status;
+        private Set<String> flags;
+        private RiskProfile riskProfile;
+        private LocalDateTime createdAt;
+        private LocalDateTime updatedAt;
+    }
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class HDCryptoWallet {
+        private String walletId;
+        private String userId;
+        private String accountId;
+        private String masterSeedEncrypted;
+        private String derivationPath;
+        private CryptoNetwork network;
+        private Integer hdIndex;
+        
+        // REAL WALLET ADDRESSES
+        private List<WalletAddress> addresses;
+        
+        // REAL TOKEN BALANCES
+        private Map<String, TokenBalance> tokenBalances;
+        
+        private WalletStatus status;
+        private SecurityConfig securityConfig;
+        private LocalDateTime createdAt;
+        private LocalDateTime updatedAt;
+    }
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class TransactionRecord {
+        private String transactionId;
+        private String userId;
+        private String accountId;
+        private TransactionType type;
+        private PaymentMethod method;
+        private String category;
+        
+        // REAL AMOUNTS IN CENTS
+        private Long amount;
+        private String currency;
+        private Long fee;
+        private Long netAmount;
+        
+        // REAL PROVIDER IDs
+        private String dwollaTransferUrl;
+        private String stripePaymentIntentId;
+        private String stripeTransferId;
+        private String plaidTransferId;
+        private String blockchainTxHash;
+        private String squarePaymentId;
+        
+        private TransactionStatus status;
+        
+        // REAL BALANCE TRACKING
+        private Long balanceBefore;
+        private Long balanceAfter;
+        private Long availableBalanceBefore;
+        private Long availableBalanceAfter;
+        
+        private String description;
+        private Map<String, Object> metadata;
+        private RiskAssessment riskAssessment;
+        private ComplianceFlags complianceFlags;
+        
+        // REAL TIMESTAMPS
+        private LocalDateTime createdAt;
+        private LocalDateTime processedAt;
+        private LocalDateTime completedAt;
+        private LocalDateTime failedAt;
+    }
+
+    // =============================================================================
+    // ENHANCED ENUMS AND SUPPORTING CLASSES
+    // =============================================================================
+
+    public enum KycStatus {
+        VERIFIED, PENDING, REJECTED, UNDER_REVIEW, EXPIRED, SUSPICIOUS
+    }
+
+    public enum AccountType {
+        CHECKING, SAVINGS, BUSINESS, PREMIUM, STUDENT, SENIOR
+    }
+
+    public enum AccountStatus {
+        ACTIVE, CLOSED, SUSPENDED, FROZEN, DORMANT, RESTRICTED
+    }
+
+    public enum CryptoNetwork {
+        ETHEREUM, BITCOIN, SOLANA, POLYGON, BINANCE_SMART_CHAIN, AVALANCHE
+    }
+
+    public enum WalletStatus {
+        ACTIVE, FROZEN, COMPROMISED, MAINTENANCE, ARCHIVED
+    }
+
+    public enum TransactionType {
+        DEPOSIT, WITHDRAWAL, TRANSFER, FEE, INTEREST, CASHBACK, REFUND, CHARGEBACK
+    }
+
+    public enum PaymentMethod {
+        ACH, WIRE, CRYPTO, CARD, CHECK, INTERNAL, PAYPAL, VENMO, ZELLE
+    }
+
+    public enum TransactionStatus {
+        PENDING, PROCESSING, COMPLETED, FAILED, CANCELLED, REVERSED, DISPUTED, SETTLED
+    }
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class Address {
+        private String street;
+        private String city;
+        private String state;
+        private String zipCode;
+        private String country;
+        private String apartment;
+        private boolean verified;
+    }
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class SecurityProfile {
+        private boolean twoFactorEnabled;
+        private String phoneVerified;
+        private String emailVerified;
+        private List<String> trustedDevices;
+        private LocalDateTime lastLogin;
+        private String lastLoginIp;
+        private Integer failedLoginAttempts;
+        private LocalDateTime accountLockedUntil;
+    }
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class WalletAddress {
+        private Integer index;
+        private String address;
+        private String publicKey;
+        private String privateKeyEncrypted;
+        private String balance;
+        private LocalDateTime lastSynced;
+        private List<String> transactions;
+        private boolean isUsed;
+    }
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class TokenBalance {
+        private String balance;
+        private String contractAddress;
+        private Integer decimals;
+        private BigDecimal priceUsd;
+        private BigDecimal valueUsd;
+        private String tokenName;
+        private String tokenSymbol;
+    }
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class RiskProfile {
+        private RiskLevel level;
+        private BigDecimal suspiciousTransactionThreshold;
+        private Integer maxDailyTransactions;
+        private List<String> restrictedCountries;
+        private boolean requiresManualApproval;
+    }
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class SecurityConfig {
+        private boolean requiresHardwareKey;
+        private Integer multiSigThreshold;
+        private List<String> authorizedSigners;
+        private Long transactionLimit;
+        private boolean whitelistOnly;
+    }
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class RiskAssessment {
+        private RiskLevel level;
+        private BigDecimal riskScore;
+        private List<String> riskFactors;
+        private boolean requiresReview;
+        private String assessedBy;
+        private LocalDateTime assessedAt;
+    }
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class ComplianceFlags {
+        private boolean amlScreened;
+        private boolean sanctionsChecked;
+        private boolean pepScreened;
+        private List<String> matchedLists;
+        private String complianceOfficer;
+        private LocalDateTime screenedAt;
+    }
+
+    public enum RiskLevel {
+        LOW, MEDIUM, HIGH, CRITICAL
+    }
+
+    // =============================================================================
+    // REAL USER CREATION WITH ENHANCED KYC/AML
+    // =============================================================================
+
+    public CompletableFuture<BankUser> createRealUserWithKyc(UserCreationRequest request) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                log.info("Creating real user with KYC for email: {}", request.getEmail());
+                
+                // Enhanced KYC screening
+                ComplianceFlags complianceFlags = performEnhancedKycScreening(request);
+                if (!complianceFlags.isAmlScreened() || 
+                    complianceFlags.getMatchedLists().contains("SANCTIONS")) {
+                    throw new ComplianceException("User failed KYC screening");
+                }
+                
+                String userId = UUID.randomUUID().toString();
+                
+                // Create REAL Stripe customer with enhanced data
+                CustomerCreateParams stripeParams = CustomerCreateParams.builder()
+                    .setEmail(request.getEmail())
+                    .setName(request.getFirstName() + " " + request.getLastName())
+                    .setPhone(request.getPhone())
+                    .setAddress(CustomerCreateParams.Address.builder()
+                        .setLine1(request.getAddress().getStreet())
+                        .setCity(request.getAddress().getCity())
+                        .setState(request.getAddress().getState())
+                        .setPostalCode(request.getAddress().getZipCode())
+                        .setCountry(request.getAddress().getCountry())
+                        .build())
+                    .putMetadata("userId", userId)
+                    .putMetadata("ssnHash", hashSsn(request.getSsn()))
+                    .putMetadata("kycLevel", "enhanced")
+                    .build();
+                
+                Customer stripeCustomer = Customer.create(stripeParams);
+                
+                // Create REAL Dwolla customer with business verification
+                String dwollaCustomerUrl = createDwollaCustomer(request, userId);
+                
+                // Create Square customer for card processing
+                CreateCustomerRequest squareRequest = new CreateCustomerRequest.Builder()
+                    .givenName(request.getFirstName())
+                    .familyName(request.getLastName())
+                    .emailAddress(request.getEmail())
+                    .phoneNumber(request.getPhone())
+                    .build();
+                
+                CreateCustomerResponse squareResponse = squareClient.getCustomersApi()
+                    .createCustomer(squareRequest);
+                
+                String squareCustomerId = squareResponse.getCustomer().getId();
+                
+                SecurityProfile securityProfile = SecurityProfile.builder()
+                    .twoFactorEnabled(false)
+                    .phoneVerified(request.getPhone())
+                    .emailVerified(request.getEmail())
+                    .trustedDevices(new ArrayList<>())
+                    .failedLoginAttempts(0)
+                    .build();
+                
+                BankUser user = BankUser.builder()
+                    .userId(userId)
+                    .email(request.getEmail())
+                    .firstName(request.getFirstName())
+                    .lastName(request.getLastName())
+                    .phone(request.getPhone())
+                    .ssnEncrypted(textEncryptor.encrypt(request.getSsn()))
+                    .dateOfBirth(request.getDateOfBirth())
+                    .address(request.getAddress())
+                    .kycStatus(determineKycStatus(complianceFlags))
+                    .stripeCustomerId(stripeCustomer.getId())
+                    .dwollaCustomerUrl(dwollaCustomerUrl)
+                    .squareCustomerId(squareCustomerId)
+                    .securityProfile(securityProfile)
+                    .createdAt(LocalDateTime.now())
+                    .updatedAt(LocalDateTime.now())
+                    .build();
+                
+                // Save to MongoDB
+                saveUserToDatabase(user);
+                
+                // Cache user data
+                cacheUserData(user);
+                
+                // Send verification emails/SMS
+                initiateUserVerification(user);
+                
+                // Publish event
+                publishEvent("USER_CREATED", Map.of(
+                    "userId", userId,
+                    "email", request.getEmail(),
+                    "kycStatus", user.getKycStatus().toString()
+                ));
+                
+                log.info("Successfully created real user: {}", userId);
+                return user;
+                
+            } catch (Exception e) {
+                log.error("Failed to create real user", e);
+                throw new RuntimeException("User creation failed", e);
+            }
+        });
+    }
+
+    // =============================================================================
+    // REAL BANK ACCOUNT CREATION WITH FDIC INSURANCE
+    // =============================================================================
+
+    public CompletableFuture<BankAccount> createRealBankAccountWithInsurance(
+            String userId, AccountType accountType, Long overdraftLimit) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                log.info("Creating real bank account for user: {}", userId);
+                
+                BankUser user = getUserFromDatabase(userId);
+                if (user == null) {
+                    throw new IllegalArgumentException("User not found");
+                }
+                
+                if (user.getKycStatus() != KycStatus.VERIFIED) {
+                    throw new ComplianceException("User must complete KYC verification first");
+                }
+                
+                String accountId = UUID.randomUUID().toString();
+                String accountNumber = generateRealAccountNumber();
+                
+                // Create REAL Dwolla funding source
+                String dwollaFundingSourceUrl = createDwollaFundingSource(
+                    user.getDwollaCustomerUrl(), accountNumber, accountType);
+                
+                // Generate FDIC insurance number
+                String fdicInsuranceNumber = generateFdicInsuranceNumber();
+                
+                // Set account limits based on type and risk profile
+                AccountLimits limits = calculateAccountLimits(accountType, user);
+                
+                RiskProfile riskProfile = RiskProfile.builder()
+                    .level(assessRiskLevel(user))
+                    .suspiciousTransactionThreshold(new BigDecimal("10000.00"))
+                    .maxDailyTransactions(50)
+                    .restrictedCountries(Arrays.asList("IR", "KP", "SY"))
+                    .requiresManualApproval(false)
+                    .build();
+                
+                BankAccount account = BankAccount.builder()
+                    .accountId(accountId)
+                    .userId(userId)
+                    .accountNumber(accountNumber)
+                    .routingNumber(bankRoutingNumber)
+                    .accountType(accountType)
+                    .availableBalance(0L)
+                    .ledgerBalance(0L)
+                    .pendingBalance(0L)
+                    .totalDeposited(0L)
+                    .totalWithdrawn(0L)
+                    .overdraftLimit(overdraftLimit)
+                    .dailyWithdrawalLimit(limits.getDailyWithdrawalLimit())
+                    .monthlyTransactionLimit(limits.getMonthlyTransactionLimit())
+                    .dwollaFundingSourceUrl(dwollaFundingSourceUrl)
+                    .fdicInsuranceNumber(fdicInsuranceNumber)
+                    .status(AccountStatus.ACTIVE)
+                    .flags(new HashSet<>())
+                    .riskProfile(riskProfile)
+                    .createdAt(LocalDateTime.now())
+                    .updatedAt(LocalDateTime.now())
+                    .build();
+                
+                // Save to database
+                saveWalletToDatabase(wallet);
+                
+                // Initialize blockchain monitoring
+                initializeBlockchainMonitoring(wallet);
+                
+                // Setup security alerts
+                setupWalletSecurityAlerts(wallet);
+                
+                // Publish event
+                publishEvent("CRYPTO_WALLET_CREATED", Map.of(
+                    "walletId", walletId,
+                    "userId", userId,
+                    "network", network.toString(),
+                    "multiSig", multiSigThreshold > 1
+                ));
+                
+                log.info("Successfully created HD crypto wallet: {}", walletId);
+                return wallet;
+                
+            } catch (Exception e) {
+                log.error("Failed to create HD crypto wallet", e);
+                throw new RuntimeException("Crypto wallet creation failed", e);
+            }
+        });
+    }
+
+    // =============================================================================
+    // REAL CRYPTO TRANSACTION PROCESSING WITH DeFi INTEGRATION
+    // =============================================================================
+
+    public CompletableFuture<String> processRealCryptoTransaction(CryptoTransactionRequest request) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                log.info("Processing crypto transaction: {}", request.getTransactionId());
+                
+                HDCryptoWallet wallet = getWalletFromDatabase(request.getWalletId());
+                if (wallet == null) {
+                    throw new IllegalArgumentException("Wallet not found");
+                }
+                
+                // Enhanced security validation
+                validateCryptoTransaction(request, wallet);
+                
+                // Multi-signature validation if required
+                if (wallet.getSecurityConfig().getMultiSigThreshold() > 1) {
+                    validateMultiSignatureApproval(request, wallet);
+                }
+                
+                String txHash;
+                
+                switch (wallet.getNetwork()) {
+                    case ETHEREUM:
+                        txHash = processEthereumTransaction(request, wallet);
+                        break;
+                    case BITCOIN:
+                        txHash = processBitcoinTransaction(request, wallet);
+                        break;
+                    case SOLANA:
+                        txHash = processSolanaTransaction(request, wallet);
+                        break;
+                    case POLYGON:
+                        txHash = processPolygonTransaction(request, wallet);
+                        break;
+                    case BINANCE_SMART_CHAIN:
+                        txHash = processBSCTransaction(request, wallet);
+                        break;
+                    case AVALANCHE:
+                        txHash = processAvalancheTransaction(request, wallet);
+                        break;
+                    default:
+                        throw new UnsupportedOperationException("Network not supported: " + wallet.getNetwork());
+                }
+                
+                // Create transaction record
+                TransactionRecord transaction = createCryptoTransactionRecord(request, wallet, txHash);
+                saveTransactionToDatabase(transaction);
+                
+                // Update wallet balance
+                scheduleWalletBalanceUpdate(wallet.getWalletId());
+                
+                // Monitor transaction confirmation
+                monitorTransactionConfirmation(txHash, wallet.getNetwork());
+                
+                // Publish event
+                publishEvent("CRYPTO_TRANSACTION_SENT", Map.of(
+                    "walletId", request.getWalletId(),
+                    "txHash", txHash,
+                    "amount", request.getAmount(),
+                    "network", wallet.getNetwork().toString()
+                ));
+                
+                log.info("Successfully processed crypto transaction: {}", txHash);
+                return txHash;
+                
+            } catch (Exception e) {
+                log.error("Failed to process crypto transaction", e);
+                throw new RuntimeException("Crypto transaction failed", e);
+            }
+        });
+    }
+
+    // =============================================================================
+    // ADVANCED DEFI INTEGRATION WITH YIELD FARMING
+    // =============================================================================
+
+    public CompletableFuture<String> stakeCryptoForYield(YieldStakingRequest request) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                log.info("Processing yield staking request: {}", request.getWalletId());
+                
+                HDCryptoWallet wallet = getWalletFromDatabase(request.getWalletId());
+                validateStakingRequest(request, wallet);
+                
+                String stakingTxHash;
+                
+                switch (request.getProtocol()) {
+                    case COMPOUND:
+                        stakingTxHash = stakeInCompound(request, wallet);
+                        break;
+                    case AAVE:
+                        stakingTxHash = stakeInAave(request, wallet);
+                        break;
+                    case UNISWAP:
+                        stakingTxHash = provideLiquidityToUniswap(request, wallet);
+                        break;
+                    case CURVE:
+                        stakingTxHash = stakeInCurve(request, wallet);
+                        break;
+                    default:
+                        throw new UnsupportedOperationException("DeFi protocol not supported");
+                }
+                
+                // Track staking position
+                YieldPosition position = YieldPosition.builder()
+                    .positionId(UUID.randomUUID().toString())
+                    .walletId(request.getWalletId())
+                    .protocol(request.getProtocol())
+                    .tokenAddress(request.getTokenAddress())
+                    .stakedAmount(request.getAmount())
+                    .expectedYield(request.getExpectedApy())
+                    .stakingTxHash(stakingTxHash)
+                    .status(YieldPositionStatus.ACTIVE)
+                    .createdAt(LocalDateTime.now())
+                    .build();
+                
+                saveYieldPositionToDatabase(position);
+                
+                // Schedule yield monitoring
+                scheduleYieldMonitoring(position);
+                
+                publishEvent("YIELD_STAKING_INITIATED", Map.of(
+                    "positionId", position.getPositionId(),
+                    "protocol", request.getProtocol().toString(),
+                    "amount", request.getAmount()
+                ));
+                
+                return stakingTxHash;
+                
+            } catch (Exception e) {
+                log.error("Failed to process yield staking", e);
+                throw new RuntimeException("Yield staking failed", e);
+            }
+        });
+    }
+
+    // =============================================================================
+    // REAL-TIME FRAUD DETECTION AND PREVENTION
+    // =============================================================================
+
+    public RiskAssessment performRealTimeFraudDetection(TransactionRequest request) {
+        try {
+            log.debug("Performing fraud detection for transaction: {}", request.getTransactionId());
+            
+            List<String> riskFactors = new ArrayList<>();
+            BigDecimal riskScore = BigDecimal.ZERO;
+            
+            // Velocity checks
+            List<TransactionRecord> recentTransactions = getRecentTransactions(
+                request.getUserId(), Duration.ofHours(24));
+            
+            BigDecimal totalAmount24h = recentTransactions.stream()
+                .map(t -> new BigDecimal(t.getAmount()))
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+            
+            if (totalAmount24h.compareTo(new BigDecimal("50000")) > 0) { // $500
+                riskFactors.add("HIGH_VELOCITY_24H");
+                riskScore = riskScore.add(new BigDecimal("25"));
+            }
+            
+            // Geographic anomaly detection
+            String currentIp = request.getSourceIp();
+            String lastKnownLocation = getLastKnownLocation(request.getUserId());
+            if (isGeographicAnomaly(currentIp, lastKnownLocation)) {
+                riskFactors.add("GEOGRAPHIC_ANOMALY");
+                riskScore = riskScore.add(new BigDecimal("30"));
+            }
+            
+            // Time-based analysis
+            LocalDateTime now = LocalDateTime.now();
+            if (now.getHour() < 6 || now.getHour() > 22) {
+                riskFactors.add("OFF_HOURS_TRANSACTION");
+                riskScore = riskScore.add(new BigDecimal("10"));
+            }
+            
+            // Amount analysis
+            if (request.getAmount() > 100000L) { // $1000
+                riskFactors.add("LARGE_AMOUNT");
+                riskScore = riskScore.add(new BigDecimal("20"));
+            }
+            
+            // Device fingerprinting
+            if (!isKnownDevice(request.getUserId(), request.getDeviceFingerprint())) {
+                riskFactors.add("UNKNOWN_DEVICE");
+                riskScore = riskScore.add(new BigDecimal("15"));
+            }
+            
+            // ML-based fraud scoring
+            BigDecimal mlScore = callFraudDetectionML(request);
+            riskScore = riskScore.add(mlScore);
+            
+            RiskLevel level = determineRiskLevel(riskScore);
+            
+            return RiskAssessment.builder()
+                .level(level)
+                .riskScore(riskScore)
+                .riskFactors(riskFactors)
+                .requiresReview(level == RiskLevel.HIGH || level == RiskLevel.CRITICAL)
+                .assessedBy("AUTOMATED_SYSTEM")
+                .assessedAt(LocalDateTime.now())
+                .build();
+                
+        } catch (Exception e) {
+            log.error("Fraud detection failed", e);
+            // Default to high risk if detection fails
+            return RiskAssessment.builder()
+                .level(RiskLevel.HIGH)
+                .riskScore(new BigDecimal("100"))
+                .riskFactors(Arrays.asList("DETECTION_SYSTEM_ERROR"))
+                .requiresReview(true)
+                .assessedBy("AUTOMATED_SYSTEM")
+                .assessedAt(LocalDateTime.now())
+                .build();
+        }
+    }
+
+    // =============================================================================
+    // REAL-TIME BALANCE SYNCHRONIZATION WITH ALL PROVIDERS
+    // =============================================================================
+
+    @Scheduled(fixedRate = 300000) // Every 5 minutes
+    public void synchronizeAllBalances() {
+        try {
+            log.debug("Starting real-time balance synchronization");
+            
+            // Sync traditional bank account balances
+            List<BankAccount> accounts = getActiveAccounts();
+            for (BankAccount account : accounts) {
+                CompletableFuture.runAsync(() -> syncBankAccountBalance(account));
+            }
+            
+            // Sync crypto wallet balances
+            List<HDCryptoWallet> wallets = getActiveWallets();
+            for (HDCryptoWallet wallet : wallets) {
+                CompletableFuture.runAsync(() -> syncCryptoWalletBalance(wallet));
+            }
+            
+            // Sync DeFi positions
+            List<YieldPosition> positions = getActiveYieldPositions();
+            for (YieldPosition position : positions) {
+                CompletableFuture.runAsync(() -> syncYieldPosition(position));
+            }
+            
+            log.debug("Balance synchronization completed");
+            
+        } catch (Exception e) {
+            log.error("Balance synchronization failed", e);
+        }
+    }
+
+    private void syncBankAccountBalance(BankAccount account) {
+        try {
+            // Get real balance from Dwolla
+            Map<String, Object> dwollaBalance = getDwollaBalance(account.getDwollaFundingSourceUrl());
+            Long realBalance = ((BigDecimal) dwollaBalance.get("balance")).multiply(new BigDecimal("100")).longValue();
+            
+            // Get Stripe balance if available
+            Long stripeBalance = 0L;
+            if (account.getStripeBankAccountId() != null) {
+                stripeBalance = getStripeBalance(account.getStripeBankAccountId());
+            }
+            
+            // Update cached balance
+            Long previousBalance = account.getLedgerBalance();
+            account.setLedgerBalance(realBalance);
+            account.setAvailableBalance(realBalance - account.getPendingBalance());
+            account.setUpdatedAt(LocalDateTime.now());
+            
+            updateAccountInDatabase(account);
+            
+            // Cache for quick access
+            accountBalanceCache.put(account.getAccountId(), new BigDecimal(realBalance));
+            lastSyncTime.put(account.getAccountId(), LocalDateTime.now());
+            
+            // Publish balance change event
+            if (!previousBalance.equals(realBalance)) {
+                publishEvent("BALANCE_UPDATED", Map.of(
+                    "accountId", account.getAccountId(),
+                    "previousBalance", previousBalance,
+                    "newBalance", realBalance,
+                    "source", "DWOLLA_SYNC"
+                ));
+            }
+            
+        } catch (Exception e) {
+            log.error("Failed to sync balance for account: {}", account.getAccountId(), e);
+        }
+    }
+
+    private void syncCryptoWalletBalance(HDCryptoWallet wallet) {
+        try {
+            for (WalletAddress address : wallet.getAddresses()) {
+                String previousBalance = address.getBalance();
+                String currentBalance = "0";
+                
+                switch (wallet.getNetwork()) {
+                    case ETHEREUM:
+                        currentBalance = getEthereumBalance(address.getAddress());
+                        // Update ERC-20 token balances
+                        updateERC20TokenBalances(wallet, address);
+                        break;
+                    case BITCOIN:
+                        currentBalance = getBitcoinBalance(address.getAddress());
+                        break;
+                    case SOLANA:
+                        currentBalance = getSolanaBalance(address.getAddress());
+                        // Update SPL token balances
+                        updateSPLTokenBalances(wallet, address);
+                        break;
+                    case POLYGON:
+                        currentBalance = getPolygonBalance(address.getAddress());
+                        break;
+                    case BINANCE_SMART_CHAIN:
+                        currentBalance = getBSCBalance(address.getAddress());
+                        break;
+                    case AVALANCHE:
+                        currentBalance = getAvalancheBalance(address.getAddress());
+                        break;
+                }
+                
+                address.setBalance(currentBalance);
+                address.setLastSynced(LocalDateTime.now());
+                
+                // Detect new deposits
+                if (new BigDecimal(currentBalance).compareTo(new BigDecimal(previousBalance)) > 0) {
+                    BigDecimal depositAmount = new BigDecimal(currentBalance).subtract(new BigDecimal(previousBalance));
+                    handleCryptoDeposit(wallet, address, depositAmount);
+                }
+            }
+            
+            wallet.setUpdatedAt(LocalDateTime.now());
+            updateWalletInDatabase(wallet);
+            
+        } catch (Exception e) {
+            log.error("Failed to sync crypto wallet: {}", wallet.getWalletId(), e);
+        }
+    }
+
+    // =============================================================================
+    // COMPLIANCE AND REGULATORY REPORTING
+    // =============================================================================
+
+    public CompletableFuture<ComplianceReport> generateComplianceReport(
+            String userId, LocalDateTime fromDate, LocalDateTime toDate) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                log.info("Generating compliance report for user: {}", userId);
+                
+                BankUser user = getUserFromDatabase(userId);
+                List<BankAccount> accounts = getUserAccounts(userId);
+                List<TransactionRecord> transactions = getTransactionsByDateRange(userId, fromDate, toDate);
+                
+                // CTR (Currency Transaction Report) analysis
+                List<TransactionRecord> ctrTransactions = transactions.stream()
+                    .filter(t -> t.getAmount() > 1000000L) // $10,000
+                    .collect(Collectors.toList());
+                
+                // SAR (Suspicious Activity Report) analysis
+                List<TransactionRecord> suspiciousTransactions = transactions.stream()
+                    .filter(t -> t.getRiskAssessment() != null && 
+                               t.getRiskAssessment().getLevel() == RiskLevel.HIGH)
+                    .collect(Collectors.toList());
+                
+                // BSA (Bank Secrecy Act) reporting
+                BSAReport bsaReport = generateBSAReport(user, transactions);
+                
+                // OFAC sanctions screening
+                OFACScreeningResult ofacResult = performOFACScreening(user);
+                
+                // AML risk scoring
+                AMLRiskScore amlScore = calculateAMLRiskScore(user, transactions);
+                
+                ComplianceReport report = ComplianceReport.builder()
+                    .reportId(UUID.randomUUID().toString())
+                    .userId(userId)
+                    .reportingPeriod(new DateRange(fromDate, toDate))
+                    .ctrTransactions(ctrTransactions)
+                    .suspiciousTransactions(suspiciousTransactions)
+                    .bsaReport(bsaReport)
+                    .ofacScreeningResult(ofacResult)
+                    .amlRiskScore(amlScore)
+                    .generatedAt(LocalDateTime.now())
+                    .generatedBy("AUTOMATED_SYSTEM")
+                    .build();
+                
+                saveComplianceReportToDatabase(report);
+                
+                // Auto-file required reports
+                if (!ctrTransactions.isEmpty()) {
+                    fileCTRReport(report);
+                }
+                
+                if (!suspiciousTransactions.isEmpty()) {
+                    fileSARReport(report);
+                }
+                
+                publishEvent("COMPLIANCE_REPORT_GENERATED", Map.of(
+                    "reportId", report.getReportId(),
+                    "userId", userId,
+                    "ctrCount", ctrTransactions.size(),
+                    "sarCount", suspiciousTransactions.size()
+                ));
+                
+                return report;
+                
+            } catch (Exception e) {
+                log.error("Failed to generate compliance report", e);
+                throw new RuntimeException("Compliance report generation failed", e);
+            }
+        });
+    }
+
+    // =============================================================================
+    // ADVANCED SECURITY FEATURES
+    // =============================================================================
+
+    public void enableAdvancedSecurity(String userId, AdvancedSecurityConfig config) {
+        try {
+            log.info("Enabling advanced security for user: {}", userId);
+            
+            BankUser user = getUserFromDatabase(userId);
+            if (user == null) {
+                throw new IllegalArgumentException("User not found");
+            }
+            
+            SecurityProfile securityProfile = user.getSecurityProfile();
+            
+            // Hardware security key integration
+            if (config.isEnableHardwareKey()) {
+                registerHardwareSecurityKey(user, config.getHardwareKeyId());
+                securityProfile.setTwoFactorEnabled(true);
+            }
+            
+            // Biometric authentication
+            if (config.isEnableBiometric()) {
+                setupBiometricAuthentication(user, config.getBiometricData());
+            }
+            
+            // Device whitelisting
+            if (config.getWhitelistedDevices() != null) {
+                securityProfile.setTrustedDevices(config.getWhitelistedDevices());
+            }
+            
+            // Transaction velocity limits
+            if (config.getVelocityLimits() != null) {
+                setupVelocityLimits(userId, config.getVelocityLimits());
+            }
+            
+            // Geofencing
+            if (config.getAuthorizedLocations() != null) {
+                setupGeofencing(userId, config.getAuthorizedLocations());
+            }
+            
+            user.setSecurityProfile(securityProfile);
+            user.setUpdatedAt(LocalDateTime.now());
+            updateUserInDatabase(user);
+            
+            publishEvent("ADVANCED_SECURITY_ENABLED", Map.of(
+                "userId", userId,
+                "features", Arrays.asList(
+                    config.isEnableHardwareKey() ? "HARDWARE_KEY" : null,
+                    config.isEnableBiometric() ? "BIOMETRIC" : null,
+                    config.getWhitelistedDevices() != null ? "DEVICE_WHITELIST" : null
+                ).stream().filter(Objects::nonNull).collect(Collectors.toList())
+            ));
+            
+        } catch (Exception e) {
+            log.error("Failed to enable advanced security", e);
+            throw new RuntimeException("Advanced security setup failed", e);
+        }
+    }
+
+    // =============================================================================
+    // REAL-TIME MONITORING AND ALERTING
+    // =============================================================================
+
+    private void startRealTimeMonitoring() {
+        // Account monitoring
+        scheduler.scheduleAtFixedRate(() -> {
+            try {
+                monitorAccountActivity();
+            } catch (Exception e) {
+                log.error("Account monitoring failed", e);
+            }
+        }, 0, 60, TimeUnit.SECONDS);
+        
+        // Transaction monitoring
+        scheduler.scheduleAtFixedRate(() -> {
+            try {
+                monitorTransactionStatus();
+            } catch (Exception e) {
+                log.error("Transaction monitoring failed", e);
+            }
+        }, 0, 30, TimeUnit.SECONDS);
+        
+        // Security monitoring
+        scheduler.scheduleAtFixedRate(() -> {
+            try {
+                monitorSecurityThreats();
+            } catch (Exception e) {
+                log.error("Security monitoring failed", e);
+            }
+        }, 0, 10, TimeUnit.SECONDS);
+        
+        // Compliance monitoring
+        scheduler.scheduleAtFixedRate(() -> {
+            try {
+                monitorComplianceAlerts();
+            } catch (Exception e) {
+                log.error("Compliance monitoring failed", e);
+            }
+        }, 0, 300, TimeUnit.SECONDS);
+    }
+
+    private void monitorAccountActivity() {
+        // Monitor for unusual account activity
+        List<BankAccount> accounts = getActiveAccounts();
+        for (BankAccount account : accounts) {
+            List<TransactionRecord> recentTransactions = getRecentTransactions(
+                account.getUserId(), Duration.ofMinutes(10));
+            
+            // Check for rapid successive transactions
+            if (recentTransactions.size() > 10) {
+                createSecurityAlert(SecurityAlertType.RAPID_TRANSACTIONS, account.getUserId(),
+                    Map.of("transactionCount", recentTransactions.size(), "accountId", account.getAccountId()));
+            }
+            
+            // Check for large amounts
+            BigDecimal totalAmount = recentTransactions.stream()
+                .map(t -> new BigDecimal(t.getAmount()))
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+            
+            if (totalAmount.compareTo(new BigDecimal("500000")) > 0) { // $5000
+                createSecurityAlert(SecurityAlertType.LARGE_AMOUNT_ACTIVITY, account.getUserId(),
+                    Map.of("totalAmount", totalAmount, "accountId", account.getAccountId()));
+            }
+        }
+    }
+
+    // =============================================================================
+    // HELPER METHODS AND UTILITIES
+    // =============================================================================
+
+    private String generateRealAccountNumber() {
+        SecureRandom random = new SecureRandom();
+        StringBuilder accountNumber = new StringBuilder();
+        
+        // Generate 12-digit account number
+        for (int i = 0; i < 12; i++) {
+            accountNumber.append(random.nextInt(10));
+        }
+        
+        // Add check digit using Luhn algorithm
+        int checkDigit = calculateLuhnCheckDigit(accountNumber.toString());
+        accountNumber.append(checkDigit);
+        
+        return accountNumber.toString();
+    }
+
+    private int calculateLuhnCheckDigit(String number) {
+        int sum = 0;
+        boolean alternate = false;
+        
+        for (int i = number.length() - 1; i >= 0; i--) {
+            int digit = Character.getNumericValue(number.charAt(i));
+            
+            if (alternate) {
+                digit *= 2;
+                if (digit > 9) {
+                    digit = (digit % 10) + 1;
+                }
+            }
+            
+            sum += digit;
+            alternate = !alternate;
+        }
+        
+        return (10 - (sum % 10)) % 10;
+    }
+
+    private String hashSsn(String ssn) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest((ssn + "SALT_" + encryptionKey).getBytes());
+            return Base64.getEncoder().encodeToString(hash);
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to hash SSN", e);
+        }
+    }
+
+    private void publishEvent(String eventType, Map<String, Object> eventData) {
+        try {
+            BankingEvent event = BankingEvent.builder()
+                .eventId(UUID.randomUUID().toString())
+                .eventType(eventType)
+                .eventData(eventData)
+                .timestamp(LocalDateTime.now())
+                .build();
+            
+            // Publish to message queue or event bus
+            if (eventPublisher != null) {
+                eventPublisher.publishEvent(event);
+            }
+            
+            // Store in database for audit trail
+            saveEventToDatabase(event);
+            
+        } catch (Exception e) {
+            log.error("Failed to publish event: {}", eventType, e);
+        }
+    }
+
+    // =============================================================================
+    // DATA ACCESS METHODS (MongoDB Integration)
+    // =============================================================================
+
+    private void saveUserToDatabase(BankUser user) {
+        try {
+            MongoCollection<Document> collection = mongoDatabase.getCollection("bank_users");
+            Document doc = convertUserToDocument(user);
+            collection.insertOne(doc);
+        } catch (Exception e) {
+            log.error("Failed to save user to database", e);
+            throw new RuntimeException("Database save failed", e);
+        }
+    }
+
+    private BankUser getUserFromDatabase(String userId) {
+        try {
+            MongoCollection<Document> collection = mongoDatabase.getCollection("bank_users");
+            Document doc = collection.find(new Document("userId", userId)).first();
+            return doc != null ? convertDocumentToUser(doc) : null;
+        } catch (Exception e) {
+            log.error("Failed to get user from database", e);
+            return null;
+        }
+    }
+
+    // Additional utility methods would continue here...
+    
+    // =============================================================================
+    // EXCEPTION CLASSES
+    // =============================================================================
+
+    public static class ComplianceException extends RuntimeException {
+        public ComplianceException(String message) {
+            super(message);
+        }
+    }
+
+    public static class FraudException extends RuntimeException {
+        public FraudException(String message) {
+            super(message);
+        }
+    }
+
+    public static class InsufficientFundsException extends RuntimeException {
+        public InsufficientFundsException(String message) {
+            super(message);
+        }
+    }
+
+    // =============================================================================
+    // REQUEST/RESPONSE CLASSES
+    // =============================================================================
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class UserCreationRequest {
+        private String email;
+        private String firstName;
+        private String lastName;
+        private String phone;
+        private String ssn;
+        private LocalDateTime dateOfBirth;
+        private Address address;
+    }
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class ACHTransferRequest {
+        private String transactionId;
+        private String userId;
+        private String accountId;
+        private TransactionType type;
+        private Long amount;
+        private String category;
+        private String description;
+        private ACHSpeed speed;
+        private String sourceIp;
+        private String deviceFingerprint;
+        private Map<String, Object> metadata;
+    }
+
+    public enum ACHSpeed {
+        STANDARD, SAME_DAY, INSTANT
+    }
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class CryptoTransactionRequest {
+        private String transactionId;
+        private String walletId;
+        private Integer fromAddressIndex;
+        private String toAddress;
+        private String amount;
+        private String currency;
+        private String description;
+        private Map<String, String> multiSigApprovals;
+    }
+
+    // Additional classes and methods would continue...
+}
+                saveAccountToDatabase(account);
+                
+                // Initialize account monitoring
+                initializeAccountMonitoring(account);
+                
+                // Send welcome package
+                sendAccountWelcomePackage(user, account);
+                
+                // Publish event
+                publishEvent("BANK_ACCOUNT_CREATED", Map.of(
+                    "userId", userId,
+                    "accountId", accountId,
+                    "accountType", accountType.toString(),
+                    "fdicInsured", true
+                ));
+                
+                log.info("Successfully created real bank account: {}", accountId);
+                return account;
+                
+            } catch (Exception e) {
+                log.error("Failed to create real bank account", e);
+                throw new RuntimeException("Bank account creation failed", e);
+            }
+        });
+    }
+
+    // =============================================================================
+    // REAL ACH PROCESSING WITH SAME-DAY OPTIONS
+    // =============================================================================
+
+    public CompletableFuture<TransactionRecord> processRealACHTransfer(ACHTransferRequest request) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                log.info("Processing real ACH transfer: {}", request.getTransactionId());
+                
+                // Enhanced fraud detection
+                RiskAssessment riskAssessment = assessTransactionRisk(request);
+                if (riskAssessment.getLevel() == RiskLevel.CRITICAL) {
+                    throw new FraudException("Transaction blocked due to high risk");
+                }
+                
+                BankAccount account = getAccountFromDatabase(request.getAccountId());
+                if (account == null) {
+                    throw new IllegalArgumentException("Account not found");
+                }
+                
+                // Check account status and limits
+                validateAccountForTransaction(account, request);
+                
+                // Check sufficient funds for withdrawals
+                if (request.getType() == TransactionType.WITHDRAWAL) {
+                    if (account.getAvailableBalance() < request.getAmount()) {
+                        throw new InsufficientFundsException("Insufficient funds available");
+                    }
+                }
+                
+                String transactionId = UUID.randomUUID().toString();
+                
+                // Create REAL Dwolla transfer
+                String dwollaTransferUrl = createDwollaTransfer(request, account);
+                
+                // Calculate fees based on transfer speed
+                Long fee = calculateACHFee(request.getAmount(), request.getSpeed());
+                
+                TransactionRecord transaction = TransactionRecord.builder()
+                    .transactionId(transactionId)
+                    .userId(account.getUserId())
+                    .accountId(request.getAccountId())
+                    .type(request.getType())
+                    .method(PaymentMethod.ACH)
+                    .category(request.getCategory())
+                    .amount(request.getAmount())
+                    .currency("USD")
+                    .fee(fee)
+                    .netAmount(request.getAmount() - fee)
+                    .dwollaTransferUrl(dwollaTransferUrl)
+                    .status(TransactionStatus.PROCESSING)
+                    .balanceBefore(account.getLedgerBalance())
+                    .balanceAfter(calculateNewBalance(account, request))
+                    .availableBalanceBefore(account.getAvailableBalance())
+                    .availableBalanceAfter(calculateNewAvailableBalance(account, request))
+                    .description(request.getDescription())
+                    .metadata(request.getMetadata())
+                    .riskAssessment(riskAssessment)
+                    .complianceFlags(performTransactionCompliance(request))
+                    .createdAt(LocalDateTime.now())
+                    .processedAt(LocalDateTime.now())
+                    .build();
+                
+                // Update account balances
+                updateAccountBalances(account, request, transaction);
+                
+                // Save transaction
+                saveTransactionToDatabase(transaction);
+                
+                // Schedule status monitoring
+                scheduleTransactionMonitoring(transaction);
+                
+                // Send notifications
+                sendTransactionNotifications(transaction);
+                
+                // Publish event
+                publishEvent("ACH_TRANSFER_INITIATED", Map.of(
+                    "transactionId", transactionId,
+                    "amount", request.getAmount(),
+                    "type", request.getType().toString()
+                ));
+                
+                log.info("Successfully initiated ACH transfer: {}", transactionId);
+                return transaction;
+                
+            } catch (Exception e) {
+                log.error("Failed to process ACH transfer", e);
+                throw new RuntimeException("ACH transfer failed", e);
+            }
+        });
+    }
+
+    // =============================================================================
+    // ENHANCED HD CRYPTO WALLET WITH MULTI-SIGNATURE SUPPORT
+    // =============================================================================
+
+    public CompletableFuture<HDCryptoWallet> createHDCryptoWalletWithMultiSig(
+            String userId, String accountId, CryptoNetwork network, 
+            Integer multiSigThreshold, List<String> authorizedSigners) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                log.info("Creating HD crypto wallet for user: {} on network: {}", userId, network);
+                
+                BankUser user = getUserFromDatabase(userId);
+                BankAccount account = getAccountFromDatabase(accountId);
+                
+                if (user == null || account == null) {
+                    throw new IllegalArgumentException("User or account not found");
+                }
+                
+                String walletId = UUID.randomUUID().toString();
+                
+                // Generate REAL cryptographic seed
+                SecureRandom secureRandom = new SecureRandom();
+                byte[] entropy = new byte[32]; // 256 bits
+                secureRandom.nextBytes(entropy);
+                
+                List<String> mnemonic = MnemonicCode.INSTANCE.toMnemonic(entropy);
+                String mnemonicString = String.join(" ", mnemonic);
+                String masterSeedEncrypted = textEncryptor.encrypt(mnemonicString);
+                
+                String derivationPath = getDerivationPath(network);
+                
+                // Generate initial addresses
+                List<WalletAddress> addresses = generateInitialAddresses(
+                    mnemonicString, network, derivationPath, 10);
+                
+                SecurityConfig securityConfig = SecurityConfig.builder()
+                    .requiresHardwareKey(multiSigThreshold > 1)
+                    .multiSigThreshold(multiSigThreshold)
+                    .authorizedSigners(new ArrayList<>(authorizedSigners))
+                    .transactionLimit(500000L) // $5000 in cents
+                    .whitelistOnly(false)
+                    .build();
+                
+                HDCryptoWallet wallet = HDCryptoWallet.builder()
+                    .walletId(walletId)
+                    .userId(userId)
+                    .accountId(accountId)
+                    .masterSeedEncrypted(masterSeedEncrypted)
+                    .derivationPath(derivationPath)
+                    .network(network)
+                    .hdIndex(0)
+                    .addresses(addresses)
+                    .tokenBalances(new HashMap<>())
+                    .status(WalletStatus.ACTIVE)
+                    .securityConfig(securityConfig)
+                    .createdAt(LocalDateTime.now())
+                    .updatedAt(LocalDateTime.now())
+                    .build();
+                
+                // Save to database
