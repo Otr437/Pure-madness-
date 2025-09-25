@@ -1,4 +1,4 @@
- import { EventEmitter } from 'events';
+import { EventEmitter } from 'events';
 import crypto from 'crypto';
 import mongoose, { Document, Schema } from 'mongoose';
 import Stripe from 'stripe';
