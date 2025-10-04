@@ -1,0 +1,1399 @@
+#!/usr/bin/env node
+
+ * Real-time monitoring and instant sweeping to cold storage
+ * Your wallets, your keys, your control
+ */
+
+const { ethers } = require('ethers');
+const { FlashbotsBundleProvider } = require('@flashbots/ethers-provider-bundle');
+const EventEmitter = require('events');
+const { Pool } = require('pg');
+const Redis = require('ioredis');
+const winston = require('winston');
+const axios = require('axios');
+const crypto = require('crypto');
+const cron = require('node-cron');
+const express = require('express');
+const basicAuth = require('express-basic-auth');
+const helmet = require('helmet');
+require('dotenv').config();
+
+// Chain configurations with real endpoints
+const CHAINS = {
+  1: { 
+    name: 'Ethereum', 
+    symbol: 'ETH', 
+    rpc: process.env.ETH_RPC, 
+    ws: process.env.ETH_WS, 
+    eip1559: true, 
+    flashbots: true,
+    blockTime: 12,
+    tokens: { 
+      USDC: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', 
+      USDT: '0xdAC17F958D2ee523a2206206994597C13D831ec7',
+      DAI: '0x6B175474E89094C44Da98b954EedeAC495271d0F'
+    }
+  },
+  56: { 
+    name: 'BSC', 
+    symbol: 'BNB', 
+    rpc: process.env.BSC_RPC, 
+    ws: process.env.BSC_WS, 
+    eip1559: false, 
+    flashbots: false,
+    blockTime: 3,
+    tokens: { 
+      USDT: '0x55d398326f99059fF775485246999027B3197955', 
+      BUSD: '0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56',
+      USDC: '0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d'
+    }
+  },
+  137: { 
+    name: 'Polygon', 
+    symbol: 'MATIC', 
+    rpc: process.env.POLYGON_RPC, 
+    ws: process.env.POLYGON_WS, 
+    eip1559: true, 
+    flashbots: false,
+    blockTime: 2,
+    tokens: { 
+      USDC: '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174',
+      USDT: '0xc2132D05D31c914a87C6611C10748AEb04B58e8F'
+    }
+  },
+  42161: { 
+    name: 'Arbitrum', 
+    symbol: 'ETH', 
+    rpc: process.env.ARB_RPC, 
+    ws: process.env.ARB_WS, 
+    eip1559: true, 
+    flashbots: false,
+    blockTime: 1,
+    tokens: {
+      USDC: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831',
+      USDT: '0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9'
+    }
+  },
+  10: { 
+    name: 'Optimism', 
+    symbol: 'ETH', 
+    rpc: process.env.OP_RPC, 
+    ws: process.env.OP_WS, 
+    eip1559: true, 
+    flashbots: false,
+    blockTime: 2,
+    tokens: {
+      USDC: '0x7F5c764cBc14f9669B88837ca1490cCa17c31607',
+      USDT: '0x94b008aA00579c1307B0EF2c499aD98a8ce58e58'
+    }
+  }
+};
+
+const ERC20_ABI = [
+  'function balanceOf(address) view returns (uint256)', 
+  'function decimals() view returns (uint8)', 
+  'function symbol() view returns (string)', 
+  'function transfer(address to, uint256 amount) returns (bool)'
+];
+
+// Production Logger
+class Logger {
+  constructor() {
+    this.logger = winston.createLogger({
+      level: process.env.LOG_LEVEL || 'info',
+      format: winston.format.combine(
+        winston.format.timestamp(),
+        winston.format.json()
+      ),
+      transports: [
+        new winston.transports.Console({ 
+          format: winston.format.combine(
+            winston.format.colorize(), 
+            winston.format.simple()
+          ) 
+        }),
+        new winston.transports.File({ filename: 'sweeper-error.log', level: 'error' }),
+        new winston.transports.File({ filename: 'sweeper.log' })
+      ]
+    });
+    this.sweepHistory = new Map();
+  }
+  
+  info(msg, meta = {}) { this.logger.info(msg, meta); }
+  warn(msg, meta = {}) { this.logger.warn(msg, meta); }
+  error(msg, meta = {}) { this.logger.error(msg, meta); }
+  
+  mask(addr) { 
+    return addr ? `${addr.slice(0,6)}...${addr.slice(-4)}` : 'N/A'; 
+  }
+  
+  logSweep(wallet, chain, tx, amt) {
+    const key = `${wallet}_${chain}`;
+    if (!this.sweepHistory.has(key)) this.sweepHistory.set(key, []);
+    this.sweepHistory.get(key).push({ 
+      time: Date.now(), 
+      tx, 
+      amt,
+      chain 
+    });
+  }
+  
+  getSweepCount(wallet, chain, window = 60000) {
+    const key = `${wallet}_${chain}`;
+    const history = this.sweepHistory.get(key) || [];
+    return history.filter(h => Date.now() - h.time < window).length;
+  }
+  
+  getSweepHistory(wallet, chain) {
+    const key = `${wallet}_${chain}`;
+    return this.sweepHistory.get(key) || [];
+  }
+  
+  cleanup() {
+    const oneHourAgo = Date.now() - 3600000;
+    for (const [k, h] of this.sweepHistory.entries()) {
+      const filtered = h.filter(s => s.time > oneHourAgo);
+      if (filtered.length === 0) this.sweepHistory.delete(k);
+      else this.sweepHistory.set(k, filtered);
+    }
+  }
+}
+
+// Database for sweep logging
+class Database {
+  constructor() {
+    this.enabled = process.env.ENABLE_DATABASE === 'true';
+    this.pool = null;
+  }
+  
+  async init() {
+    if (!this.enabled) return;
+    
+    this.pool = new Pool({
+      host: process.env.DB_HOST,
+      database: process.env.DB_NAME,
+      user: process.env.DB_USER,
+      password: process.env.DB_PASSWORD,
+      max: 10,
+      idleTimeoutMillis: 30000
+    });
+    
+    await this.pool.query(`
+      CREATE TABLE IF NOT EXISTS sweeps (
+        id SERIAL PRIMARY KEY, 
+        wallet VARCHAR(42) NOT NULL, 
+        chain_id INT NOT NULL, 
+        tx_hash VARCHAR(66) NOT NULL UNIQUE, 
+        amount VARCHAR(78) NOT NULL, 
+        token VARCHAR(50) NOT NULL, 
+        usd_value DECIMAL(20,2),
+        created_at TIMESTAMP DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_wallet_chain ON sweeps(wallet, chain_id);
+      CREATE INDEX IF NOT EXISTS idx_created ON sweeps(created_at DESC);
+    `).catch(() => {});
+  }
+  
+  async log(wallet, chain, tx, amt, token, usdValue = null) {
+    if (!this.pool) return;
+    try { 
+      await this.pool.query(
+        'INSERT INTO sweeps (wallet, chain_id, tx_hash, amount, token, usd_value) VALUES ($1,$2,$3,$4,$5,$6)', 
+        [wallet, chain, tx, amt, token, usdValue]
+      ); 
+    } catch(e) {
+      if (!e.message.includes('duplicate key')) {
+        console.error('DB log error:', e.message);
+      }
+    }
+  }
+  
+  async getRecentSweeps(limit = 50) {
+    if (!this.pool) return [];
+    try {
+      const result = await this.pool.query(
+        'SELECT * FROM sweeps ORDER BY created_at DESC LIMIT $1',
+        [limit]
+      );
+      return result.rows;
+    } catch {
+      return [];
+    }
+  }
+  
+  async close() { 
+    if (this.pool) await this.pool.end(); 
+  }
+}
+
+// Redis cache for deduplication
+class Cache {
+  constructor() {
+    this.enabled = process.env.ENABLE_REDIS === 'true';
+    this.client = null;
+  }
+  
+  async init() {
+    if (!this.enabled) return;
+    this.client = new Redis({ 
+      host: process.env.REDIS_HOST || 'localhost', 
+      port: process.env.REDIS_PORT || 6379,
+      retryStrategy: (times) => Math.min(times * 50, 2000)
+    });
+  }
+  
+  async get(k) { 
+    if (!this.client) return null; 
+    try { 
+      return await this.client.get(k); 
+    } catch { 
+      return null; 
+    } 
+  }
+  
+  async set(k, v, ttl = 300) { 
+    if (!this.client) return; 
+    try { 
+      await this.client.setex(k, ttl, v); 
+    } catch {} 
+  }
+  
+  async close() { 
+    if (this.client) this.client.disconnect(); 
+  }
+}
+
+// Thread-safe nonce management
+class NonceManager {
+  constructor() { 
+    this.nonces = new Map(); 
+    this.locks = new Map(); 
+  }
+  
+  async get(provider, addr) {
+    addr = addr.toLowerCase();
+    
+    if (!this.locks.has(addr)) {
+      this.locks.set(addr, Promise.resolve());
+    }
+    
+    await this.locks.get(addr);
+    
+    const getNoncePromise = (async () => {
+      try {
+        const pending = await provider.getTransactionCount(addr, 'pending');
+        const latest = await provider.getTransactionCount(addr, 'latest');
+        const cached = this.nonces.get(addr);
+        
+        const nonce = Math.max(pending, latest, cached || 0);
+        this.nonces.set(addr, nonce + 1);
+        return nonce;
+      } catch (e) {
+        throw e;
+      }
+    })();
+    
+    this.locks.set(addr, getNoncePromise.catch(() => {}));
+    return getNoncePromise;
+  }
+  
+  reset(addr) { 
+    this.nonces.delete(addr.toLowerCase()); 
+  }
+}
+
+// Real-time price feeds
+class PriceOracle {
+  constructor() { 
+    this.cache = new Map(); 
+  }
+  
+  async getPrice(symbol) {
+    const now = Date.now();
+    const cached = this.cache.get(symbol);
+    if (cached && (now - cached.ts < 30000)) return cached.price;
+    
+    try {
+      const response = await axios.get(
+        `https://api.binance.com/api/v3/ticker/price?symbol=${symbol}USDT`, 
+        { timeout: 5000 }
+      );
+      const price = parseFloat(response.data.price);
+      this.cache.set(symbol, { price, ts: now });
+      return price;
+    } catch { 
+      return cached ? cached.price : 0; 
+    }
+  }
+  
+  async getUSDValue(amount, symbol) {
+    const price = await this.getPrice(symbol);
+    return amount * price;
+  }
+}
+
+// Webhook notifications
+class Webhook {
+  constructor() {
+    this.enabled = process.env.ENABLE_WEBHOOKS === 'true';
+    this.url = process.env.WEBHOOK_URL;
+    this.secret = process.env.WEBHOOK_SECRET;
+  }
+  
+  async send(event, data) {
+    if (!this.enabled || !this.url) return;
+    
+    try {
+      const payload = { 
+        event, 
+        data, 
+        timestamp: new Date().toISOString() 
+      };
+      
+      const headers = { 'Content-Type': 'application/json' };
+      
+      if (this.secret) {
+        const signature = crypto
+          .createHmac('sha256', this.secret)
+          .update(JSON.stringify(payload))
+          .digest('hex');
+        headers['X-Signature'] = signature;
+      }
+      
+      await axios.post(this.url, payload, { headers, timeout: 5000 });
+    } catch (e) {
+      console.error('Webhook error:', e.message);
+    }
+  }
+}
+
+// Security controls
+class SecurityManager {
+  constructor() {
+    this.paused = false;
+    this.pauseReason = null;
+    this.blacklist = new Set();
+    this.maxSweepsPerMin = parseInt(process.env.MAX_SWEEPS_PER_MIN || '10');
+  }
+  
+  pause(reason) { 
+    this.paused = true; 
+    this.pauseReason = reason; 
+  }
+  
+  resume() { 
+    this.paused = false; 
+    this.pauseReason = null; 
+  }
+  
+  isPaused() { 
+    return this.paused; 
+  }
+  
+  blacklistAddress(addr) { 
+    this.blacklist.add(addr.toLowerCase()); 
+  }
+  
+  isBlacklisted(addr) { 
+    return this.blacklist.has(addr.toLowerCase()); 
+  }
+  
+  validatePrivateKey(key) {
+    try { 
+      new ethers.Wallet(key); 
+      return true; 
+    } catch { 
+      return false; 
+    }
+  }
+  
+  isValidAddress(addr) {
+    try { 
+      ethers.getAddress(addr); 
+      return true; 
+    } catch { 
+      return false; 
+    }
+  }
+}
+
+// Chain-specific sweeper with real mempool monitoring
+class ChainSweeper extends EventEmitter {
+  constructor(chainId, config, wallets, logger, db, cache, nonce, oracle, webhook, security) {
+    super();
+    this.chainId = chainId;
+    this.config = config;
+    this.wallets = wallets;
+    this.logger = logger;
+    this.db = db;
+    this.cache = cache;
+    this.nonce = nonce;
+    this.oracle = oracle;
+    this.webhook = webhook;
+    this.security = security;
+    this.provider = null;
+    this.wsProvider = null;
+    this.flashbots = null;
+    this.pending = new Set();
+    this.seen = new Set();
+    this.listening = false;
+    this.reconnects = 0;
+    this.maxReconnects = 5;
+    this.addresses = new Set(wallets.map(w => w.address.toLowerCase()));
+  }
+
+  async init() {
+    try {
+      this.provider = new ethers.JsonRpcProvider(this.config.rpc);
+      const network = await this.provider.getNetwork();
+      const block = await this.provider.getBlockNumber();
+      
+      this.logger.info(`Connected to ${this.config.name}`, { 
+        chainId: Number(network.chainId), 
+        block 
+      });
+      
+      if (this.config.flashbots && process.env.USE_FLASHBOTS === 'true') {
+        await this.initFlashbots();
+      }
+      
+      return true;
+    } catch (e) {
+      this.logger.error(`Failed to initialize ${this.config.name}: ${e.message}`);
+      return false;
+    }
+  }
+
+  async initFlashbots() {
+    try {
+      const authSigner = ethers.Wallet.createRandom();
+      this.flashbots = await FlashbotsBundleProvider.create(
+        this.provider, 
+        authSigner, 
+        process.env.FLASHBOTS_RELAY || 'https://relay.flashbots.net',
+        'mainnet'
+      );
+      this.logger.info(`Flashbots enabled for ${this.config.name}`);
+    } catch (e) {
+      this.logger.warn(`Flashbots initialization failed: ${e.message}`);
+    }
+  }
+
+  async start() {
+    if (this.listening) return;
+    
+    try {
+      this.wsProvider = new ethers.WebSocketProvider(this.config.ws);
+      
+      this.wsProvider.on('pending', (txHash) => {
+        this.handlePending(txHash).catch(e => {
+          this.logger.error(`Pending handler error: ${e.message}`);
+        });
+      });
+      
+      this.wsProvider.on('error', (error) => {
+        this.logger.error(`WebSocket error on ${this.config.name}: ${error.message}`);
+        this.reconnect();
+      });
+      
+      this.wsProvider.websocket.on('close', () => {
+        this.logger.warn(`WebSocket closed for ${this.config.name}`);
+        this.reconnect();
+      });
+      
+      this.listening = true;
+      this.logger.warn(`🔍 Monitoring ${this.config.name} mempool`);
+      
+      this.startBlockWatch();
+      
+    } catch (e) {
+      this.logger.error(`Failed to start ${this.config.name}: ${e.message}`);
+      throw e;
+    }
+  }
+
+  async startBlockWatch() {
+    let lastBlock = await this.provider.getBlockNumber();
+    
+    const checkBlocks = async () => {
+      if (!this.listening) return;
+      
+      try {
+        const currentBlock = await this.provider.getBlockNumber();
+        
+        if (currentBlock > lastBlock) {
+          for (let blockNum = lastBlock + 1; blockNum <= currentBlock; blockNum++) {
+            await this.checkBlock(blockNum);
+          }
+          lastBlock = currentBlock;
+        }
+      } catch (e) {
+        this.logger.error(`Block watch error: ${e.message}`);
+      }
+      
+      setTimeout(checkBlocks, (this.config.blockTime || 3) * 1000);
+    };
+    
+    checkBlocks();
+  }
+
+  async checkBlock(blockNumber) {
+    try {
+      const block = await this.provider.getBlock(blockNumber, true);
+      if (!block?.transactions) return;
+      
+      for (const tx of block.transactions) {
+        const fromAddr = tx.from?.toLowerCase();
+        const toAddr = tx.to?.toLowerCase();
+        
+        const affectsMonitoredWallet = 
+          (fromAddr && this.addresses.has(fromAddr)) || 
+          (toAddr && this.addresses.has(toAddr));
+        
+        if (affectsMonitoredWallet) {
+          if (toAddr && this.addresses.has(toAddr)) {
+            await this.sweep(toAddr);
+          }
+          if (fromAddr && this.addresses.has(fromAddr)) {
+            await this.sweep(fromAddr);
+          }
+        }
+      }
+    } catch (e) {
+      this.logger.error(`Error checking block ${blockNumber}: ${e.message}`);
+    }
+  }
+
+  async handlePending(txHash) {
+    if (this.seen.has(txHash)) return;
+    this.seen.add(txHash);
+    
+    if (this.seen.size > 5000) {
+      const recentTxs = Array.from(this.seen).slice(-2500);
+      this.seen = new Set(recentTxs);
+    }
+    
+    const cached = await this.cache.get(`tx:${txHash}`);
+    if (cached) return;
+    
+    this.cache.set(`tx:${txHash}`, '1', 300).catch(() => {});
+    
+    try {
+      const tx = await this.provider.getTransaction(txHash);
+      if (!tx) return;
+      
+      const fromAddr = tx.from?.toLowerCase();
+      const toAddr = tx.to?.toLowerCase();
+      
+      const affectsMonitoredWallet = 
+        (fromAddr && this.addresses.has(fromAddr)) || 
+        (toAddr && this.addresses.has(toAddr));
+      
+      if (!affectsMonitoredWallet) return;
+      
+      this.logger.info(`⚡ Mempool TX detected: ${txHash.slice(0,10)}...`);
+      
+      const sweepPromises = [];
+      if (toAddr && this.addresses.has(toAddr)) {
+        sweepPromises.push(this.sweep(toAddr));
+      }
+      if (fromAddr && this.addresses.has(fromAddr)) {
+        sweepPromises.push(this.sweep(fromAddr));
+      }
+      
+      await Promise.allSettled(sweepPromises);
+      
+      this.webhook.send('mempool_detection', { 
+        chain: this.chainId, 
+        tx: txHash, 
+        from: fromAddr, 
+        to: toAddr 
+      }).catch(() => {});
+      
+    } catch (e) {
+      if (!e.message.includes('could not coalesce error')) {
+        this.logger.error(`Pending TX processing error: ${e.message}`);
+      }
+    }
+  }
+
+  async sweep(walletAddr) {
+    if (this.security.isPaused()) {
+      this.logger.info(`Sweep paused: ${this.security.pauseReason}`);
+      return;
+    }
+    
+    if (this.security.isBlacklisted(walletAddr)) {
+      this.logger.warn(`Blacklisted address attempted sweep: ${walletAddr}`);
+      return;
+    }
+    
+    const wallet = this.wallets.find(w => 
+      w.address.toLowerCase() === walletAddr.toLowerCase()
+    );
+    if (!wallet) return;
+    
+    const sweepKey = `${walletAddr}_${this.chainId}_${Date.now()}`;
+    if (this.pending.has(sweepKey)) return;
+    
+    const recentSweepCount = this.logger.getSweepCount(walletAddr, this.chainId);
+    if (recentSweepCount >= this.security.maxSweepsPerMin) {
+      this.logger.warn(`Rate limit exceeded for ${this.logger.mask(walletAddr)}`);
+      return;
+    }
+    
+    this.pending.add(sweepKey);
+    
+    try {
+      this.logger.warn(`🔄 Initiating sweep: ${this.logger.mask(walletAddr)}`);
+      
+      const balance = await this.provider.getBalance(walletAddr);
+      
+      const tokenChecks = Object.entries(this.config.tokens || {}).map(
+        async ([name, address]) => {
+          try {
+            const contract = new ethers.Contract(address, ERC20_ABI, this.provider);
+            const bal = await contract.balanceOf(walletAddr);
+            return { name, address, balance: bal, contract };
+          } catch {
+            return null;
+          }
+        }
+      );
+      
+      const tokens = (await Promise.all(tokenChecks)).filter(t => t !== null);
+      
+      const sweepOperations = [];
+      
+      if (balance > 0n) {
+        sweepOperations.push(this.sweepNative(wallet, balance));
+      }
+      
+      for (const token of tokens) {
+        if (token.balance > 0n) {
+          sweepOperations.push(this.sweepToken(wallet, token));
+        }
+      }
+      
+      await Promise.allSettled(sweepOperations);
+      
+    } catch (e) {
+      this.logger.error(`Sweep error for ${this.logger.mask(walletAddr)}: ${e.message}`);
+    } finally {
+      this.pending.delete(sweepKey);
+    }
+  }
+
+  async sweepNative(wallet, balance) {
+    try {
+      const minBalance = ethers.parseEther(process.env.MIN_BALANCE_ETH || '0.0001');
+      if (balance < minBalance) {
+        this.logger.info(`Balance below minimum threshold: ${ethers.formatEther(balance)}`);
+        return;
+      }
+      
+      const gasLimit = 21000n;
+      const [feeData, nonce] = await Promise.all([
+        this.provider.getFeeData(),
+        this.nonce.get(this.provider, wallet.address)
+      ]);
+      
+      let gasCost;
+      let txRequest = { 
+        to: wallet.coldWallet, 
+        gasLimit, 
+        chainId: this.chainId, 
+        nonce 
+      };
+      
+      if (this.config.eip1559) {
+        const baseFee = feeData.gasPrice || feeData.maxFeePerGas || 0n;
+        const priorityFee = ethers.parseUnits('2', 'gwei');
+        const maxFee = (baseFee * 120n / 100n) + priorityFee;
+        const cappedMaxFee = maxFee > ethers.parseUnits('500', 'gwei') 
+          ? ethers.parseUnits('500', 'gwei') 
+          : maxFee;
+        
+        gasCost = gasLimit * cappedMaxFee;
+        txRequest.maxFeePerGas = cappedMaxFee;
+        txRequest.maxPriorityFeePerGas = priorityFee;
+        txRequest.type = 2;
+      } else {
+        const gasPrice = feeData.gasPrice || 0n;
+        const aggressivePrice = gasPrice * 120n / 100n;
+        const cappedPrice = aggressivePrice > ethers.parseUnits('500', 'gwei')
+          ? ethers.parseUnits('500', 'gwei')
+          : aggressivePrice;
+        
+        gasCost = gasLimit * cappedPrice;
+        txRequest.gasPrice = cappedPrice;
+      }
+      
+      if (balance <= gasCost) {
+        this.logger.warn(`Insufficient balance for gas. Balance: ${ethers.formatEther(balance)}, Gas: ${ethers.formatEther(gasCost)}`);
+        return;
+      }
+      
+      const amountToSend = balance - gasCost;
+      txRequest.value = amountToSend;
+      
+      this.logger.warn(`💸 Sweeping ${ethers.formatEther(amountToSend)} ${this.config.symbol}`);
+      
+      let txHash;
+      
+      if (this.flashbots && process.env.USE_FLASHBOTS === 'true') {
+        txHash = await this.flashbotsSend(wallet.hotWallet, txRequest);
+      }
+      
+      if (!txHash) {
+        const signedTx = await wallet.hotWallet.signTransaction(txRequest);
+        const response = await this.provider.broadcastTransaction(signedTx);
+        txHash = response.hash;
+      }
+      
+      if (txHash) {
+        this.logger.warn(`✅ SWEEP SUCCESSFUL: ${txHash}`);
+        this.logger.logSweep(wallet.address, this.chainId, txHash, ethers.formatEther(amountToSend));
+        
+        const usdValue = await this.oracle.getUSDValue(
+          parseFloat(ethers.formatEther(amountToSend)), 
+          this.config.symbol
+        );
+        
+        this.db.log(
+          wallet.address, 
+          this.chainId, 
+          txHash, 
+          amountToSend.toString(), 
+          this.config.symbol,
+          usdValue
+        ).catch(() => {});
+        
+        this.webhook.send('sweep_success', { 
+          chain: this.chainId,
+          chainName: this.config.name,
+          wallet: wallet.address, 
+          amount: ethers.formatEther(amountToSend),
+          symbol: this.config.symbol,
+          tx: txHash,
+          usdValue
+        }).catch(() => {});
+      }
+      
+    } catch (e) {
+      this.logger.error(`Native sweep failed: ${e.message}`, { 
+        wallet: wallet.address,
+        chain: this.chainId 
+      });
+      this.nonce.reset(wallet.address);
+    }
+  }
+
+  async sweepToken(wallet, tokenData) {
+    try {
+      const { name, address, balance, contract } = tokenData;
+      
+      const [decimals, symbol, feeData, nonce] = await Promise.all([
+        contract.decimals(), 
+        contract.symbol(), 
+        this.provider.getFeeData(), 
+        this.nonce.get(this.provider, wallet.address)
+      ]);
+      
+      const formattedAmount = ethers.formatUnits(balance, decimals);
+      this.logger.info(`Token detected: ${formattedAmount} ${symbol}`);
+      
+      const gasLimit = 150000n;
+      let txRequest = { gasLimit, chainId: this.chainId, nonce };
+      
+      if (this.config.eip1559) {
+        const baseFee = feeData.gasPrice || 0n;
+        const priorityFee = ethers.parseUnits('2', 'gwei');
+        txRequest.maxFeePerGas = (baseFee * 120n / 100n) + priorityFee;
+        txRequest.maxPriorityFeePerGas = priorityFee;
+        txRequest.type = 2;
+      } else {
+        txRequest.gasPrice = (feeData.gasPrice || 0n) * 120n / 100n;
+      }
+      
+      const transferTx = await contract.transfer.populateTransaction(
+        wallet.coldWallet, 
+        balance
+      );
+      
+      const fullTx = { ...transferTx, ...txRequest };
+      const signedTx = await wallet.hotWallet.signTransaction(fullTx);
+      const response = await this.provider.broadcastTransaction(signedTx);
+      
+      this.logger.warn(`✅ Token swept: ${response.hash}`);
+      
+      const usdValue = await this.oracle.getUSDValue(
+        parseFloat(formattedAmount), 
+        symbol === 'USDT' || symbol === 'USDC' ? 'USDT' : symbol
+      );
+      
+      this.db.log(
+        wallet.address, 
+        this.chainId, 
+        response.hash, 
+        balance.toString(), 
+        symbol,
+        usdValue
+      ).catch(() => {});
+      
+      this.webhook.send('token_sweep', {
+        chain: this.chainId,
+        chainName: this.config.name,
+        wallet: wallet.address,
+        token: symbol,
+        amount: formattedAmount,
+        tx: response.hash,
+        usdValue
+      }).catch(() => {});
+      
+    } catch (e) {
+      this.logger.error(`Token sweep failed: ${e.message}`, {
+        wallet: wallet.address,
+        token: tokenData.name
+      });
+      this.nonce.reset(wallet.address);
+    }
+  }
+
+  async flashbotsSend(wallet, txRequest) {
+    if (!this.flashbots) return null;
+    
+    try {
+      const signedTx = await wallet.signTransaction(txRequest);
+      const targetBlock = (await this.provider.getBlockNumber()) + 1;
+      
+      const bundle = [{
+        signedTransaction: signedTx
+      }];
+      
+      const submission = await this.flashbots.sendBundle(bundle, targetBlock);
+      this.logger.info(`Flashbots bundle submitted: ${submission.bundleHash}`);
+      
+      const parsedTx = ethers.Transaction.from(signedTx);
+      return parsedTx.hash;
+      
+    } catch (e) {
+      this.logger.error(`Flashbots send failed: ${e.message}`);
+      return null;
+    }
+  }
+
+  reconnect() {
+    if (this.reconnects >= this.maxReconnects) {
+      this.logger.error(`Max reconnection attempts reached for ${this.config.name}`);
+      this.emit('max_reconnects', this.chainId);
+      return;
+    }
+    
+    this.reconnects++;
+    const delay = Math.min(5000 * Math.pow(2, this.reconnects - 1), 60000);
+    
+    this.logger.warn(`Reconnecting ${this.config.name} in ${delay}ms (attempt ${this.reconnects})`);
+    
+    setTimeout(async () => {
+      await this.stop();
+      const initialized = await this.init();
+      
+      if (initialized) {
+        this.reconnects = 0;
+        await this.start();
+      } else {
+        this.reconnect();
+      }
+    }, delay);
+  }
+
+  async stop() {
+    this.listening = false;
+    
+    if (this.wsProvider) {
+      try {
+        this.wsProvider.removeAllListeners();
+        await this.wsProvider.destroy();
+      } catch (e) {
+        this.logger.error(`Error stopping WebSocket: ${e.message}`);
+      }
+      this.wsProvider = null;
+    }
+  }
+
+  async health() {
+    try {
+      const [block, feeData] = await Promise.all([
+        this.provider.getBlockNumber(),
+        this.provider.getFeeData()
+      ]);
+      
+      return { 
+        chain: this.chainId, 
+        name: this.config.name, 
+        block, 
+        gasPrice: feeData.gasPrice?.toString() || '0',
+        maxFeePerGas: feeData.maxFeePerGas?.toString() || null,
+        healthy: true,
+        listening: this.listening
+      };
+    } catch (e) {
+      return { 
+        chain: this.chainId, 
+        name: this.config.name, 
+        healthy: false, 
+        error: e.message 
+      };
+    }
+  }
+}
+
+// Main Bot Controller
+class SweeperBot extends EventEmitter {
+  constructor() {
+    super();
+    this.logger = new Logger();
+    this.db = new Database();
+    this.cache = new Cache();
+    this.nonce = new NonceManager();
+    this.oracle = new PriceOracle();
+    this.webhook = new Webhook();
+    this.security = new SecurityManager();
+    this.sweepers = new Map();
+    this.wallets = [];
+    this.running = false;
+    
+    this.loadConfiguration();
+  }
+
+  loadConfiguration() {
+    const privateKeys = (process.env.PRIVATE_KEYS || '')
+      .split(',')
+      .map(k => k.trim())
+      .filter(k => k);
+    
+    const coldWallets = (process.env.COLD_WALLETS || '')
+      .split(',')
+      .map(w => w.trim())
+      .filter(w => w);
+    
+    if (privateKeys.length === 0 || coldWallets.length === 0) {
+      throw new Error('PRIVATE_KEYS and COLD_WALLETS must be set in environment');
+    }
+    
+    if (privateKeys.length !== coldWallets.length) {
+      throw new Error('Number of private keys must match number of cold wallets');
+    }
+    
+    for (let i = 0; i < privateKeys.length; i++) {
+      if (!this.security.validatePrivateKey(privateKeys[i])) {
+        throw new Error(`Invalid private key at position ${i + 1}`);
+      }
+      
+      if (!this.security.isValidAddress(coldWallets[i])) {
+        throw new Error(`Invalid cold wallet address at position ${i + 1}`);
+      }
+      
+      const hotWallet = new ethers.Wallet(privateKeys[i]);
+      const coldWallet = ethers.getAddress(coldWallets[i]);
+      
+      this.wallets.push({ 
+        hotWallet, 
+        coldWallet, 
+        address: hotWallet.address.toLowerCase() 
+      });
+      
+      this.logger.info(`Wallet ${i + 1}: ${this.logger.mask(hotWallet.address)} → ${this.logger.mask(coldWallet)}`);
+    }
+    
+    const enabledChainIds = (process.env.ENABLED_CHAINS || '1,56,137')
+      .split(',')
+      .map(c => parseInt(c.trim()))
+      .filter(id => !isNaN(id));
+    
+    this.enabledChains = enabledChainIds.filter(id => CHAINS[id]);
+    
+    this.logger.info(`Configuration loaded: ${this.wallets.length} wallets, ${this.enabledChains.length} chains`);
+  }
+
+  async init() {
+    this.logger.info('═══════════════════════════════════════════════════════');
+    this.logger.info('  PRODUCTION MULTI-CHAIN WALLET SWEEPER');
+    this.logger.info('  Your Wallets. Your Keys. Your Control.');
+    this.logger.info('═══════════════════════════════════════════════════════');
+    
+    await this.db.init();
+    await this.cache.init();
+    
+    for (const chainId of this.enabledChains) {
+      const config = CHAINS[chainId];
+      
+      if (!config.rpc || !config.ws) {
+        this.logger.warn(`Skipping chain ${chainId} (${config.name}): Missing RPC or WebSocket endpoint`);
+        continue;
+      }
+      
+      const chainWallets = this.wallets.map(w => ({ 
+        ...w, 
+        hotWallet: w.hotWallet.connect(null) 
+      }));
+      
+      const sweeper = new ChainSweeper(
+        chainId, 
+        config, 
+        chainWallets, 
+        this.logger, 
+        this.db, 
+        this.cache, 
+        this.nonce, 
+        this.oracle, 
+        this.webhook, 
+        this.security
+      );
+      
+      const initialized = await sweeper.init();
+      
+      if (initialized) {
+        for (const w of chainWallets) {
+          w.hotWallet = w.hotWallet.connect(sweeper.provider);
+        }
+        this.sweepers.set(chainId, sweeper);
+      }
+    }
+    
+    if (this.sweepers.size === 0) {
+      throw new Error('No chains were successfully initialized');
+    }
+    
+    this.logger.info(`Successfully initialized ${this.sweepers.size} chains`);
+  }
+
+  async start() {
+    if (this.running) {
+      this.logger.warn('Sweeper is already running');
+      return;
+    }
+    
+    this.running = true;
+    
+    this.logger.warn('═══════════════════════════════════════════════════════');
+    this.logger.warn(`  ACTIVE: Monitoring ${this.wallets.length} wallets across ${this.sweepers.size} chains`);
+    this.logger.warn('═══════════════════════════════════════════════════════');
+    
+    for (const [chainId, sweeper] of this.sweepers) {
+      try {
+        await sweeper.start();
+      } catch (e) {
+        this.logger.error(`Failed to start monitoring on chain ${chainId}: ${e.message}`);
+      }
+    }
+    
+    this.startMaintenanceTasks();
+    
+    setTimeout(() => this.checkAllBalances(), 5000);
+    
+    this.logger.warn('🚀 SWEEPER IS OPERATIONAL');
+  }
+
+  startMaintenanceTasks() {
+    cron.schedule('*/5 * * * *', async () => {
+      this.logger.info('Running health check...');
+      await this.performHealthCheck();
+    });
+    
+    cron.schedule('*/10 * * * *', async () => {
+      await this.checkAllBalances();
+    });
+    
+    cron.schedule('0 * * * *', () => {
+      this.logger.cleanup();
+      this.logger.info('Performed hourly cleanup');
+    });
+  }
+
+  async checkAllBalances() {
+    this.logger.info('\n═══════════════════════════════════════════════════════');
+    this.logger.info('  CURRENT BALANCES');
+    this.logger.info('═══════════════════════════════════════════════════════');
+    
+    for (const [chainId, sweeper] of this.sweepers) {
+      this.logger.info(`\n${sweeper.config.name} (Chain ${chainId}):`);
+      
+      for (const wallet of this.wallets) {
+        try {
+          const balance = await sweeper.provider.getBalance(wallet.address);
+          const formatted = ethers.formatEther(balance);
+          
+          if (parseFloat(formatted) > 0) {
+            this.logger.info(`  ${this.logger.mask(wallet.address)}: ${formatted} ${sweeper.config.symbol}`);
+          }
+          
+          for (const [tokenName, tokenAddress] of Object.entries(sweeper.config.tokens || {})) {
+            try {
+              const contract = new ethers.Contract(tokenAddress, ERC20_ABI, sweeper.provider);
+              const tokenBalance = await contract.balanceOf(wallet.address);
+              
+              if (tokenBalance > 0n) {
+                const decimals = await contract.decimals();
+                const tokenFormatted = ethers.formatUnits(tokenBalance, decimals);
+                this.logger.info(`  ${this.logger.mask(wallet.address)}: ${tokenFormatted} ${tokenName}`);
+              }
+            } catch {}
+          }
+        } catch (e) {
+          this.logger.error(`  Error checking balance for ${this.logger.mask(wallet.address)}: ${e.message}`);
+        }
+      }
+    }
+    
+    this.logger.info('═══════════════════════════════════════════════════════\n');
+  }
+
+  async performHealthCheck() {
+    const results = [];
+    
+    for (const [chainId, sweeper] of this.sweepers) {
+      const health = await sweeper.health();
+      results.push(health);
+      
+      if (health.healthy) {
+        const gasGwei = health.maxFeePerGas 
+          ? ethers.formatUnits(health.maxFeePerGas, 'gwei')
+          : ethers.formatUnits(health.gasPrice, 'gwei');
+        
+        this.logger.info(`✓ ${health.name}: Block ${health.block}, Gas ${gasGwei} Gwei`);
+      } else {
+        this.logger.error(`✗ ${health.name}: UNHEALTHY - ${health.error}`);
+      }
+    }
+    
+    return results;
+  }
+
+  async stop() {
+    this.logger.warn('Initiating shutdown...');
+    this.running = false;
+    
+    for (const [chainId, sweeper] of this.sweepers) {
+      await sweeper.stop();
+    }
+    
+    await this.db.close();
+    await this.cache.close();
+    
+    this.logger.info('Sweeper stopped successfully');
+  }
+
+  getStatus() {
+    return {
+      running: this.running,
+      paused: this.security.isPaused(),
+      pauseReason: this.security.pauseReason,
+      walletsCount: this.wallets.length,
+      chains: Array.from(this.sweepers.entries()).map(([id, sweeper]) => ({ 
+        id, 
+        name: sweeper.config.name, 
+        listening: sweeper.listening,
+        reconnects: sweeper.reconnects
+      }))
+    };
+  }
+
+  pause(reason) { 
+    this.security.pause(reason); 
+    this.logger.warn(`⏸️  PAUSED: ${reason}`);
+    this.webhook.send('system_paused', { reason }).catch(() => {});
+  }
+  
+  resume() { 
+    this.security.resume(); 
+    this.logger.warn('▶️  RESUMED');
+    this.webhook.send('system_resumed', {}).catch(() => {});
+  }
+  
+  blacklist(address) { 
+    this.security.blacklistAddress(address); 
+    this.logger.warn(`🚫 Blacklisted: ${address}`);
+    this.webhook.send('address_blacklisted', { address }).catch(() => {});
+  }
+}
+
+// Admin API for remote control
+function createAdminAPI(bot) {
+  const app = express();
+  app.use(helmet());
+  app.use(express.json());
+  
+  const users = {};
+  users[process.env.ADMIN_USER || 'admin'] = process.env.ADMIN_PASSWORD || 'changeme';
+  app.use(basicAuth({ users, challenge: true, realm: 'Sweeper Admin' }));
+  
+  app.get('/status', (req, res) => {
+    const status = bot.getStatus();
+    res.json({ 
+      ...status, 
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime()
+    });
+  });
+  
+  app.get('/health', async (req, res) => {
+    try {
+      const healthResults = await bot.performHealthCheck();
+      const allHealthy = healthResults.every(h => h.healthy);
+      
+      res.json({ 
+        healthy: allHealthy, 
+        chains: healthResults,
+        timestamp: new Date().toISOString()
+      });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+  
+  app.get('/balances', async (req, res) => {
+    try {
+      const balances = {};
+      
+      for (const [chainId, sweeper] of bot.sweepers) {
+        balances[sweeper.config.name] = {};
+        
+        for (const wallet of bot.wallets) {
+          try {
+            const balance = await sweeper.provider.getBalance(wallet.address);
+            const masked = bot.logger.mask(wallet.address);
+            balances[sweeper.config.name][masked] = {
+              native: ethers.formatEther(balance),
+              symbol: sweeper.config.symbol
+            };
+          } catch {}
+        }
+      }
+      
+      res.json(balances);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+  
+  app.post('/pause', (req, res) => {
+    const reason = req.body.reason || 'Manual pause via API';
+    bot.pause(reason);
+    res.json({ success: true, paused: true, reason });
+  });
+  
+  app.post('/resume', (req, res) => {
+    bot.resume();
+    res.json({ success: true, paused: false });
+  });
+  
+  app.post('/blacklist', (req, res) => {
+    const { address } = req.body;
+    
+    if (!address) {
+      return res.status(400).json({ error: 'Address is required' });
+    }
+    
+    if (!bot.security.isValidAddress(address)) {
+      return res.status(400).json({ error: 'Invalid Ethereum address' });
+    }
+    
+    bot.blacklist(address);
+    res.json({ success: true, blacklisted: address });
+  });
+  
+  app.get('/sweeps/recent', async (req, res) => {
+    try {
+      const limit = parseInt(req.query.limit || '50');
+      const recentSweeps = await bot.db.getRecentSweeps(limit);
+      res.json(recentSweeps);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+  
+  app.get('/sweeps/:wallet', (req, res) => {
+    const walletAddress = req.params.wallet.toLowerCase();
+    const history = {};
+    
+    for (const [chainId, sweeper] of bot.sweepers) {
+      const sweeps = bot.logger.getSweepHistory(walletAddress, chainId);
+      if (sweeps.length > 0) {
+        history[sweeper.config.name] = sweeps;
+      }
+    }
+    
+    res.json(history);
+  });
+  
+  app.post('/sweep/:chainId/:wallet', async (req, res) => {
+    try {
+      const chainId = parseInt(req.params.chainId);
+      const walletAddress = req.params.wallet.toLowerCase();
+      
+      const sweeper = bot.sweepers.get(chainId);
+      if (!sweeper) {
+        return res.status(404).json({ error: 'Chain not found' });
+      }
+      
+      await sweeper.sweep(walletAddress);
+      res.json({ success: true, message: 'Manual sweep initiated' });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+  
+  const port = process.env.ADMIN_PORT || 3000;
+  app.listen(port, '0.0.0.0', () => {
+    bot.logger.info(`🔒 Admin API running on port ${port}`);
+    bot.logger.info(`Admin credentials: ${process.env.ADMIN_USER || 'admin'} / ${process.env.ADMIN_PASSWORD || 'changeme'}`);
+  });
+  
+  return app;
+}
+
+// Main execution
+async function main() {
+  const bot = new SweeperBot();
+  
+  const shutdown = async () => {
+    console.log('\n\nInitiating graceful shutdown...');
+    await bot.stop();
+    process.exit(0);
+  };
+  
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
+  
+  process.on('uncaughtException', (error) => {
+    console.error('Uncaught exception:', error);
+    shutdown();
+  });
+  
+  process.on('unhandledRejection', (reason, promise) => {
+    console.error('Unhandled rejection at:', promise, 'reason:', reason);
+  });
+  
+  try {
+    await bot.init();
+    await bot.start();
+    
+    if (process.env.ENABLE_ADMIN_API === 'true') {
+      createAdminAPI(bot);
+    }
+    
+    console.log('\n✅ System operational. Press Ctrl+C to stop.\n');
+    
+  } catch (error) {
+    console.error('Fatal error:', error);
+    process.exit(1);
+  }
+}
+
+if (require.main === module) {
+  main();
+}
+
+module.exports = SweeperBot;
