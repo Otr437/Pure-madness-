@@ -1,0 +1,1468 @@
+#!/usr/bin/env node
+/**
+ * Aggressive Mempool Sweeper - Flashbots Edition
+ * Detects incoming transactions in mempool and sweeps via Flashbots bundles
+ */
+
+const { Web3 } = require('web3');
+const { Pool } = require('pg');
+const axios = require('axios');
+const redis = require('redis');
+const { Mutex } = require('async-mutex');
+const prometheus = require('prom-client');
+const crypto = require('crypto');
+const { EventEmitter } = require('events');
+const WebSocket = require('ws');
+require('dotenv').config();
+
+// Logging with full stack traces
+const logger = {
+    info: (msg) => console.log(`${new Date().toISOString()} - INFO - ${msg}`),
+    warn: (msg) => console.log(`${new Date().toISOString()} - WARN - ${msg}`),
+    error: (msg, err) => {
+        console.error(`${new Date().toISOString()} - ERROR - ${msg}`);
+        if (err && err.stack) console.error(err.stack);
+    },
+    critical: (msg) => console.error(`${new Date().toISOString()} - CRITICAL - ${msg}`),
+    debug: (msg) => console.log(`${new Date().toISOString()} - DEBUG - ${msg}`)
+};
+
+// Complete ERC20 ABI
+const ERC20_ABI = [
+    {"constant":true,"inputs":[],"name":"decimals","outputs":[{"name":"","type":"uint8"}],"type":"function"},
+    {"constant":true,"inputs":[{"name":"_owner","type":"address"}],"name":"balanceOf","outputs":[{"name":"","type":"uint256"}],"type":"function"},
+    {"constant":true,"inputs":[],"name":"symbol","outputs":[{"name":"","type":"string"}],"type":"function"},
+    {"constant":false,"inputs":[{"name":"_to","type":"address"},{"name":"_value","type":"uint256"}],"name":"transfer","outputs":[{"name":"","type":"bool"}],"type":"function"},
+    {"anonymous":false,"inputs":[{"indexed":true,"name":"from","type":"address"},{"indexed":true,"name":"to","type":"address"},{"indexed":false,"name":"value","type":"uint256"}],"name":"Transfer","type":"event"}
+];
+
+// Prometheus Metrics
+const SWEEP_COUNTER = new prometheus.Counter({
+    name: 'sweeps_total',
+    help: 'Total sweeps',
+    labelNames: ['chain', 'status', 'method']
+});
+
+const SWEEP_LATENCY = new prometheus.Histogram({
+    name: 'sweep_latency_seconds',
+    help: 'Sweep execution time',
+    labelNames: ['chain', 'method']
+});
+
+const BALANCE_SWEPT = new prometheus.Gauge({
+    name: 'balance_swept_usd',
+    help: 'Total USD value swept',
+    labelNames: ['chain']
+});
+
+const RPC_HEALTH = new prometheus.Gauge({
+    name: 'rpc_health_status',
+    help: 'RPC health',
+    labelNames: ['chain', 'provider', 'type']
+});
+
+const RPC_LATENCY = new prometheus.Gauge({
+    name: 'rpc_latency_ms',
+    help: 'RPC latency',
+    labelNames: ['chain', 'provider']
+});
+
+const FLASHBOTS_BUNDLES = new prometheus.Counter({
+    name: 'flashbots_bundles_total',
+    help: 'Total Flashbots bundles sent',
+    labelNames: ['chain', 'status']
+});
+
+const DRY_RUN = process.env.DRY_RUN === 'true';
+const USE_FLASHBOTS = process.env.USE_FLASHBOTS === 'true';
+
+// Flashbots Bundle Manager
+class FlashbotsBundleManager {
+    constructor(chain, rpcManager) {
+        this.chain = chain;
+        this.rpcManager = rpcManager;
+        this.flashbotsEndpoint = this._getFlashbotsEndpoint();
+        this.session = axios.create({
+            timeout: 15000,
+            headers: {
+                'Content-Type': 'application/json',
+                'User-Agent': 'MempoolSweeper/1.0'
+            }
+        });
+    }
+
+    _getFlashbotsEndpoint() {
+        const endpoints = {
+            ethereum: process.env.FLASHBOTS_ENDPOINT || 'https://relay.flashbots.net',
+            polygon: process.env.FLASHBOTS_POLYGON_ENDPOINT || 'https://relay-polygon.flashbots.net',
+            bsc: process.env.FLASHBOTS_BSC_ENDPOINT || 'https://relay-bsc.flashbots.net'
+        };
+        return endpoints[this.chain] || endpoints.ethereum;
+    }
+
+    async sendBundle(signedTxs, targetBlock, retries = 3) {
+        if (!USE_FLASHBOTS) {
+            throw new Error('Flashbots not enabled');
+        }
+
+        const bundle = signedTxs.map(tx => ({
+            signedTransaction: tx
+        }));
+
+        const payload = {
+            jsonrpc: "2.0",
+            id: 1,
+            method: "eth_sendBundle",
+            params: [{
+                txs: bundle.map(b => b.signedTransaction),
+                blockNumber: `0x${targetBlock.toString(16)}`,
+                minTimestamp: 0,
+                maxTimestamp: 0
+            }]
+        };
+
+        for (let attempt = 1; attempt <= retries; attempt++) {
+            try {
+                logger.info(`Sending Flashbots bundle for block ${targetBlock} (attempt ${attempt}/${retries})`);
+                
+                const response = await this.session.post(this.flashbotsEndpoint, payload);
+                
+                if (response.data.error) {
+                    throw new Error(`Flashbots error: ${response.data.error.message}`);
+                }
+
+                if (response.data.result) {
+                    logger.info(`Flashbots bundle accepted for block ${targetBlock}`);
+                    FLASHBOTS_BUNDLES.inc({ chain: this.chain, status: 'success' });
+                    return response.data.result;
+                }
+
+                throw new Error('No result from Flashbots');
+
+            } catch (error) {
+                logger.warn(`Flashbots bundle attempt ${attempt} failed: ${error.message}`);
+                
+                if (attempt === retries) {
+                    FLASHBOTS_BUNDLES.inc({ chain: this.chain, status: 'error' });
+                    throw error;
+                }
+                
+                await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+            }
+        }
+    }
+
+    async simulateBundle(signedTxs, targetBlock) {
+        if (!USE_FLASHBOTS) return { success: true };
+
+        const bundle = signedTxs.map(tx => ({
+            signedTransaction: tx
+        }));
+
+        const payload = {
+            jsonrpc: "2.0",
+            id: 1,
+            method: "eth_callBundle",
+            params: [{
+                txs: bundle.map(b => b.signedTransaction),
+                blockNumber: `0x${targetBlock.toString(16)}`,
+                stateBlockNumber: "latest",
+                timestamp: 0
+            }]
+        };
+
+        try {
+            const response = await this.session.post(this.flashbotsEndpoint, payload);
+            return response.data.result || { success: true };
+        } catch (error) {
+            logger.warn(`Flashbots simulation failed: ${error.message}`);
+            return { success: true }; // Continue anyway
+        }
+    }
+}
+
+// Redis Cache
+class RedisCache {
+    constructor() {
+        this.client = null;
+        this.connected = false;
+    }
+    async init() {
+        const redisUrl = process.env.REDIS_URL;
+        if (!redisUrl) { logger.warn('No REDIS_URL, skipping Redis'); return; }
+        try {
+            this.client = redis.createClient({ 
+                url: redisUrl, 
+                socket: { reconnectStrategy: (r) => r > 10 ? new Error('Max retries') : Math.min(r * 100, 3000) } 
+            });
+            this.client.on('error', (e) => logger.error(`Redis: ${e.message}`, e));
+            this.client.on('connect', () => { logger.info('Redis connected'); this.connected = true; });
+            this.client.on('disconnect', () => { logger.warn('Redis disconnected'); this.connected = false; });
+            await this.client.connect();
+        } catch (e) { logger.error(`Redis init failed: ${e.message}`, e); }
+    }
+    async get(key) { if (!this.connected) return null; try { return await this.client.get(key); } catch { return null; } }
+    async set(key, val, exp = 3600) { if (!this.connected) return false; try { await this.client.setEx(key, exp, val); return true; } catch { return false; } }
+    async close() { if (this.client) { await this.client.quit(); logger.info('Redis closed'); } }
+}
+
+// Encryption
+class Encryption {
+    static encrypt(text) {
+        const key = (process.env.ENCRYPTION_KEY || crypto.randomBytes(32).toString('hex')).slice(0, 64);
+        const iv = crypto.randomBytes(16);
+        const cipher = crypto.createCipheriv('aes-256-cbc', Buffer.from(key, 'hex'), iv);
+        return iv.toString('hex') + ':' + cipher.update(text, 'utf8', 'hex') + cipher.final('hex');
+    }
+    static decrypt(text) {
+        const key = (process.env.ENCRYPTION_KEY || crypto.randomBytes(32).toString('hex')).slice(0, 64);
+        const [ivHex, encrypted] = [text.split(':')[0], text.split(':').slice(1).join(':')];
+        const decipher = crypto.createDecipheriv('aes-256-cbc', Buffer.from(key, 'hex'), Buffer.from(ivHex, 'hex'));
+        return decipher.update(encrypted, 'hex', 'utf8') + decipher.final('utf8');
+    }
+}
+
+// Alert System
+class AlertSystem {
+    constructor(webhook) { this.webhook = webhook; this.session = axios.create({ timeout: 5000 }); }
+    async send(level, msg, data = {}) {
+        if (!this.webhook) return;
+        try { await this.session.post(this.webhook, { level, message: msg, data, timestamp: new Date().toISOString(), service: 'mempool-sweeper' }); }
+        catch (e) { logger.error(`Alert failed: ${e.message}`, e); }
+    }
+    async critical(msg, data) { await this.send('CRITICAL', msg, data); }
+    async error(msg, data) { await this.send('ERROR', msg, data); }
+    async warn(msg, data) { await this.send('WARN', msg, data); }
+}
+
+// RPC Manager for multi-provider fallback
+class RPCManager {
+    constructor(chain, rpcs, wss) {
+        this.chain = chain;
+        this.providers = rpcs.map((url, i) => ({
+            url,
+            name: `${chain}_rpc${i}`,
+            w3: null,
+            healthy: true,
+            latency: 0,
+            failures: 0,
+            priority: i
+        }));
+        this.wsProviders = wss.map((url, i) => ({
+            url,
+            name: `${chain}_ws${i}`,
+            healthy: true,
+            priority: i
+        }));
+        this.currentRPC = 0;
+        this.currentWS = 0;
+        this.mutex = new Mutex();
+        this.healthCheckInterval = null;
+    }
+
+    async init() {
+        for (const provider of this.providers) {
+            try {
+                provider.w3 = new Web3(new Web3.providers.HttpProvider(provider.url, {
+                    timeout: 10000,
+                    keepAlive: true,
+                    withCredentials: false
+                }));
+                await provider.w3.eth.getBlockNumber();
+                logger.info(`${this.chain} ${provider.name} CONNECTED`);
+            } catch (err) {
+                logger.error(`${this.chain} ${provider.name} init failed: ${err.message}`);
+                provider.healthy = false;
+            }
+        }
+        
+        this.healthCheckInterval = setInterval(() => this.healthCheck(), 30000);
+    }
+
+    async healthCheck() {
+        for (const provider of this.providers) {
+            if (!provider.w3) continue;
+            const start = Date.now();
+            try {
+                await provider.w3.eth.getBlockNumber();
+                provider.latency = Date.now() - start;
+                provider.healthy = true;
+                provider.failures = 0;
+                RPC_HEALTH.set({ chain: this.chain, provider: provider.name, type: 'http' }, 1);
+                RPC_LATENCY.set({ chain: this.chain, provider: provider.name }, provider.latency);
+            } catch (err) {
+                provider.failures++;
+                if (provider.failures >= 3) {
+                    provider.healthy = false;
+                    RPC_HEALTH.set({ chain: this.chain, provider: provider.name, type: 'http' }, 0);
+                    logger.warn(`${this.chain} ${provider.name} marked UNHEALTHY`);
+                }
+            }
+        }
+    }
+
+    async getWeb3() {
+        const release = await this.mutex.acquire();
+        try {
+            let healthy = this.providers.filter(p => p.healthy && p.w3);
+            if (healthy.length === 0) {
+                logger.critical(`${this.chain}: NO HEALTHY RPCs! Resetting...`);
+                this.providers.forEach(p => { p.healthy = true; p.failures = 0; });
+                healthy = this.providers.filter(p => p.w3);
+            }
+            
+            healthy.sort((a, b) => a.latency - b.latency);
+            const best = healthy[0];
+            this.currentRPC = this.providers.indexOf(best);
+            
+            return best.w3;
+        } finally {
+            release();
+        }
+    }
+
+    async executeWithFallback(operation, maxRetries = 3) {
+        let attempts = 0;
+        let lastError = null;
+
+        while (attempts < maxRetries) {
+            try {
+                const w3 = await this.getWeb3();
+                return await operation(w3);
+            } catch (err) {
+                lastError = err;
+                attempts++;
+                
+                const current = this.providers[this.currentRPC];
+                if (current) {
+                    current.failures++;
+                    if (current.failures >= 3) current.healthy = false;
+                }
+                
+                logger.warn(`${this.chain} operation failed on ${current?.name} (attempt ${attempts}/${maxRetries}): ${err.message}`);
+                
+                if (attempts < maxRetries) {
+                    await new Promise(r => setTimeout(r, 1000));
+                }
+            }
+        }
+
+        throw new Error(`${this.chain}: All RPCs failed after ${maxRetries} attempts: ${lastError.message}`);
+    }
+
+    async raceTransaction(signedTx) {
+        const healthy = this.providers.filter(p => p.healthy && p.w3);
+        if (healthy.length === 0) throw new Error(`${this.chain}: No healthy RPCs for TX broadcast`);
+
+        logger.info(`${this.chain}: Racing TX across ${healthy.length} providers`);
+
+        const promises = healthy.map(async (p) => {
+            try {
+                const receipt = await p.w3.eth.sendSignedTransaction(signedTx);
+                logger.info(`${this.chain}: TX sent via ${p.name}: ${receipt.transactionHash}`);
+                return { provider: p.name, receipt, success: true };
+            } catch (err) {
+                logger.warn(`${this.chain}: TX failed on ${p.name}: ${err.message}`);
+                p.failures++;
+                return { provider: p.name, error: err.message, success: false };
+            }
+        });
+
+        const results = await Promise.allSettled(promises);
+        const successful = results.filter(r => r.status === 'fulfilled' && r.value.success).map(r => r.value);
+
+        if (successful.length > 0) return successful[0].receipt;
+        
+        throw new Error(`${this.chain}: All providers failed to broadcast TX`);
+    }
+
+    getBestWS() {
+        const healthy = this.wsProviders.filter(w => w.healthy);
+        if (healthy.length === 0) {
+            this.wsProviders.forEach(w => w.healthy = true);
+            return this.wsProviders[0].url;
+        }
+        return healthy[0].url;
+    }
+
+    markWSUnhealthy(url) {
+        const ws = this.wsProviders.find(w => w.url === url);
+        if (ws) {
+            ws.healthy = false;
+            logger.warn(`${this.chain}: ${ws.name} marked UNHEALTHY`);
+        }
+    }
+
+    stop() {
+        if (this.healthCheckInterval) {
+            clearInterval(this.healthCheckInterval);
+        }
+    }
+}
+
+// Chain Configuration
+class ChainConfig {
+    constructor(name, rpc, ws, chainId, symbol, eip1559, tokens, blockTime = 3) {
+        this.name = name;
+        this.rpc = rpc;
+        this.ws = ws;
+        this.chainId = chainId;
+        this.symbol = symbol;
+        this.eip1559 = eip1559;
+        this.tokens = tokens;
+        this.blockTime = blockTime;
+        this.rpcManager = null;
+        this.flashbotsManager = null;
+    }
+}
+
+// Database
+class Database {
+    constructor(url) {
+        this.url = url;
+        this.pool = null;
+    }
+
+    async init() {
+        if (!this.url) {
+            logger.warn('No DATABASE_URL provided, skipping database');
+            return;
+        }
+
+        try {
+            this.pool = new Pool({
+                connectionString: this.url,
+                min: 3,
+                max: 10,
+                connectionTimeoutMillis: 5000,
+                idleTimeoutMillis: 30000
+            });
+
+            await this.pool.query(`
+                CREATE TABLE IF NOT EXISTS sweeps (
+                    id BIGSERIAL PRIMARY KEY,
+                    wallet TEXT,
+                    chain TEXT,
+                    tx_hash TEXT,
+                    amount NUMERIC,
+                    token TEXT,
+                    status TEXT,
+                    method TEXT DEFAULT 'public',
+                    created TIMESTAMPTZ DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_sweeps_wallet ON sweeps(wallet);
+                CREATE INDEX IF NOT EXISTS idx_sweeps_chain ON sweeps(chain);
+                CREATE INDEX IF NOT EXISTS idx_sweeps_created ON sweeps(created);
+                CREATE INDEX IF NOT EXISTS idx_sweeps_method ON sweeps(method);
+            `);
+            
+            logger.info('Database initialized successfully');
+        } catch (err) {
+            logger.error(`Database initialization FAILED: ${err.message}`, err);
+            throw err;
+        }
+    }
+
+    async log(wallet, chain, txHash, amount, token, status, method = 'public') {
+        if (!this.pool) return;
+        
+        try {
+            await this.pool.query(
+                'INSERT INTO sweeps (wallet, chain, tx_hash, amount, token, status, method) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+                [wallet, chain, txHash, amount.toString(), token, status, method]
+            );
+        } catch (err) {
+            logger.error(`Database logging FAILED: ${err.message}`, err);
+            throw err;
+        }
+    }
+
+    async close() {
+        if (this.pool) {
+            await this.pool.end();
+            logger.info('Database connection closed');
+        }
+    }
+}
+
+// Price Oracle with Redis support
+class PriceOracle {
+    constructor() {
+        this.session = null;
+        this.cache = new Map();
+        this.redisCache = null;
+    }
+
+    async init(redisCache = null) {
+        this.session = axios.create({ 
+            timeout: 5000,
+            headers: { 'Accept': 'application/json' }
+        });
+        this.redisCache = redisCache;
+        logger.info('Price oracle initialized');
+    }
+
+    async price(symbol) {
+        const cached = this.cache.get(symbol);
+        if (cached && Date.now() - cached.time < 30000) {
+            return cached.price;
+        }
+
+        if (this.redisCache) {
+            const redisPrice = await this.redisCache.get(`price:${symbol}`);
+            if (redisPrice) {
+                const p = parseFloat(redisPrice);
+                this.cache.set(symbol, { price: p, time: Date.now() });
+                return p;
+            }
+        }
+
+        let retries = 3;
+        while (retries > 0) {
+            try {
+                const response = await this.session.get(
+                    `https://api.binance.com/api/v3/ticker/price?symbol=${symbol}USDT`
+                );
+                
+                if (response.status === 200 && response.data.price) {
+                    const p = parseFloat(response.data.price);
+                    this.cache.set(symbol, { price: p, time: Date.now() });
+                    if (this.redisCache) await this.redisCache.set(`price:${symbol}`, p.toString(), 30);
+                    return p;
+                }
+            } catch (err) {
+                retries--;
+                if (retries === 0) {
+                    logger.error(`Price fetch FAILED for ${symbol} after retries: ${err.message}`, err);
+                    throw new Error(`Cannot fetch price for ${symbol}`);
+                }
+                await new Promise(resolve => setTimeout(resolve, 1000));
+            }
+        }
+        
+        return 0.0;
+    }
+
+    async close() {
+        logger.info('Price oracle closed');
+    }
+}
+
+// Nonce Manager with proper mutex locking
+class NonceManager {
+    constructor() {
+        this.nonces = new Map();
+        this.locks = new Map();
+    }
+
+    async get(w3, addr) {
+        if (!this.locks.has(addr)) {
+            this.locks.set(addr, new Mutex());
+        }
+
+        const mutex = this.locks.get(addr);
+        const release = await mutex.acquire();
+
+        try {
+            const pending = await w3.eth.getTransactionCount(addr, 'pending');
+            
+            if (!this.nonces.has(addr)) {
+                this.nonces.set(addr, pending);
+            } else {
+                this.nonces.set(addr, Math.max(this.nonces.get(addr) + 1, pending));
+            }
+            
+            return this.nonces.get(addr);
+        } finally {
+            release();
+        }
+    }
+
+    reset(addr) {
+        this.nonces.delete(addr);
+        logger.debug(`Nonce reset for ${addr}`);
+    }
+}
+
+// Aggressive Sweeper with Flashbots support
+class AggressiveSweeper {
+    constructor(chain, cfg, keys, dest, oracle, db, nonceMgr, alertSystem = null) {
+        this.chain = chain;
+        this.cfg = cfg;
+        this.dest = dest;
+        this.oracle = oracle;
+        this.db = db;
+        this.nonceMgr = nonceMgr;
+        this.alertSystem = alertSystem;
+        
+        this.accounts = new Map();
+        this.privateKeys = new Map();
+        
+        for (const key of keys) {
+            try {
+                const cleanKey = key.startsWith('0x') ? key : '0x' + key;
+                const tempW3 = new Web3();
+                const account = tempW3.eth.accounts.privateKeyToAccount(cleanKey);
+                const addr = account.address.toLowerCase();
+                this.accounts.set(addr, account);
+                this.privateKeys.set(addr, Encryption.encrypt(cleanKey));
+            } catch (err) {
+                logger.error(`Invalid private key: ${err.message}`, err);
+                if (this.alertSystem) this.alertSystem.error('Invalid private key', { error: err.message });
+            }
+        }
+        
+        this.wallets = new Set(Array.from(this.accounts.keys()));
+        this.w3 = null;
+        this.pendingSweeps = new Set();
+        this.lastSweepTime = new Map();
+        
+        logger.info(`Sweeper ${chain}: monitoring ${this.accounts.size} wallets`);
+    }
+
+    async init() {
+        try {
+            if (this.cfg.rpcManager) {
+                this.w3 = await this.cfg.rpcManager.getWeb3();
+            } else {
+                this.w3 = new Web3(new Web3.providers.HttpProvider(this.cfg.rpc, {
+                    timeout: 10000,
+                    keepAlive: true,
+                    withCredentials: false
+                }));
+            }
+            
+            // Initialize Flashbots manager if enabled
+            if (USE_FLASHBOTS && this.cfg.rpcManager) {
+                this.cfg.flashbotsManager = new FlashbotsBundleManager(this.chain, this.cfg.rpcManager);
+                logger.info(`Flashbots enabled for ${this.chain}`);
+            }
+            
+            const blockNum = await this.w3.eth.getBlockNumber();
+            logger.info(`Sweeper ${this.chain} connected - block ${blockNum}`);
+        } catch (err) {
+            logger.error(`Sweeper ${this.chain} initialization FAILED: ${err.message}`, err);
+            if (this.alertSystem) await this.alertSystem.critical(`Sweeper ${this.chain} init failed`, { error: err.message });
+            throw err;
+        }
+    }
+
+    async _calculateOptimalGas(currentGas) {
+        try {
+            const w3 = this.cfg.rpcManager ? await this.cfg.rpcManager.getWeb3() : this.w3;
+            const latest = await w3.eth.getBlock('latest', true);
+            const txCount = latest.transactions.length;
+            
+            if (txCount > 150) {
+                return BigInt(currentGas) * 35n / 10n;
+            } else if (txCount > 100) {
+                return BigInt(currentGas) * 25n / 10n;
+            } else if (txCount > 50) {
+                return BigInt(currentGas) * 20n / 10n;
+            } else {
+                return BigInt(currentGas) * 20n / 10n;
+            }
+        } catch (err) {
+            logger.error(`Gas calculation failed: ${err.message}`, err);
+            return BigInt(currentGas) * 3n;
+        }
+    }
+
+    async _verifySweep(txHash, timeout = 30) {
+        const start = Date.now();
+        
+        while (Date.now() - start < timeout * 1000) {
+            try {
+                const w3 = this.cfg.rpcManager ? await this.cfg.rpcManager.getWeb3() : this.w3;
+                const receipt = await w3.eth.getTransactionReceipt(txHash);
+                if (receipt) {
+                    const success = receipt.status === 1n || receipt.status === true;
+                    if (!success && this.alertSystem) {
+                        await this.alertSystem.error(`TX failed: ${txHash}`, { chain: this.chain, txHash });
+                    }
+                    return success;
+                }
+            } catch (err) {
+                // Transaction not mined yet
+            }
+            await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+        
+        logger.error(`Transaction ${txHash} verification timeout`);
+        if (this.alertSystem) await this.alertSystem.warn(`TX timeout: ${txHash}`, { chain: this.chain, txHash });
+        return false;
+    }
+
+    async sweepImmediately(wallet, reason) {
+        if (!this.accounts.has(wallet)) {
+            return;
+        }
+
+        const now = Date.now();
+        const last = this.lastSweepTime.get(wallet) || 0;
+        
+        if (now - last < 2000) {
+            logger.debug(`Skipping duplicate sweep for ${wallet.slice(0, 10)}... (cooldown)`);
+            return;
+        }
+        
+        this.lastSweepTime.set(wallet, now);
+
+        const sweepId = `${wallet}_${now}`;
+        if (this.pendingSweeps.has(sweepId)) {
+            return;
+        }
+
+        this.pendingSweeps.add(sweepId);
+        const startTime = Date.now();
+
+        try {
+            logger.warn(`IMMEDIATE SWEEP TRIGGERED: ${wallet.slice(0, 10)}... on ${this.chain} - Reason: ${reason}`);
+            
+            const account = this.accounts.get(wallet);
+            const results = [];
+            
+            const w3 = this.cfg.rpcManager ? await this.cfg.rpcManager.getWeb3() : this.w3;
+            const balance = await w3.eth.getBalance(account.address);
+            
+            // Sweep tokens FIRST
+            for (const [tokenName, tokenAddr] of Object.entries(this.cfg.tokens)) {
+                const result = await this._sweepToken(account, tokenAddr, tokenName);
+                if (result) {
+                    results.push(result);
+                }
+            }
+            
+            // Sweep native currency
+            if (balance > 0n) {
+                const nativeResult = await this._sweepNativeAggressive(account, balance);
+                if (nativeResult) {
+                    results.push(nativeResult);
+                }
+            }
+            
+            if (results.length > 0) {
+                const method = USE_FLASHBOTS ? 'flashbots' : 'public';
+                logger.info(`SWEEP COMPLETE: ${results.length} transactions sent for ${wallet.slice(0, 10)}... via ${method}`);
+                SWEEP_COUNTER.inc({ chain: this.chain, status: 'success', method });
+                SWEEP_LATENCY.observe({ chain: this.chain, method }, (Date.now() - startTime) / 1000);
+            }
+            
+        } catch (err) {
+            const method = USE_FLASHBOTS ? 'flashbots' : 'public';
+            logger.error(`Sweep failed for ${wallet}: ${err.message}`, err);
+            SWEEP_COUNTER.inc({ chain: this.chain, status: 'error', method });
+            if (this.alertSystem) await this.alertSystem.error(`Sweep failed: ${wallet.slice(0, 10)}`, { chain: this.chain, error: err.message, method });
+        } finally {
+            this.pendingSweeps.delete(sweepId);
+        }
+    }
+
+    async _sweepNativeAggressive(account, balance) {
+        try {
+            const w3 = this.cfg.rpcManager ? await this.cfg.rpcManager.getWeb3() : this.w3;
+            const currentGas = await w3.eth.getGasPrice();
+            const aggressiveGas = await this._calculateOptimalGas(currentGas);
+            const maxGas = 500000000000n;
+            const finalGas = aggressiveGas < maxGas ? aggressiveGas : maxGas;
+            
+            const gasCost = 21000n * finalGas;
+            
+            if (balance <= gasCost * 3n / 2n) {
+                logger.warn(`Balance ${balance} too low for aggressive sweep on ${this.chain}`);
+                return null;
+            }
+            
+            const amount = balance - gasCost;
+            const nonce = await this.nonceMgr.get(w3, account.address);
+            
+            let tx;
+            
+            if (this.cfg.eip1559) {
+                const latest = await w3.eth.getBlock('latest');
+                const baseFee = latest.baseFeePerGas || 0n;
+                const priorityFee = 10000000000n;
+                const maxFeePerGas = (BigInt(baseFee) * 3n + priorityFee) < maxGas ? 
+                    (BigInt(baseFee) * 3n + priorityFee) : maxGas;
+                
+                tx = {
+                    from: account.address,
+                    to: this.dest,
+                    value: amount.toString(),
+                    gas: 21000,
+                    maxFeePerGas: maxFeePerGas.toString(),
+                    maxPriorityFeePerGas: priorityFee.toString(),
+                    nonce: nonce,
+                    type: 2,
+                    chainId: this.cfg.chainId
+                };
+            } else {
+                tx = {
+                    from: account.address,
+                    to: this.dest,
+                    value: amount.toString(),
+                    gas: 21000,
+                    gasPrice: finalGas.toString(),
+                    nonce: nonce,
+                    chainId: this.cfg.chainId
+                };
+            }
+            
+            if (DRY_RUN) {
+                logger.info(`DRY RUN: Would send native sweep tx: ${JSON.stringify(tx)}`);
+                return `dry_run_${Date.now()}`;
+            }
+            
+            const privateKey = Encryption.decrypt(this.privateKeys.get(account.address.toLowerCase()));
+            const signed = await w3.eth.accounts.signTransaction(tx, privateKey);
+            
+            let receipt;
+            let method = 'public';
+            
+            // Use Flashbots if enabled
+            if (USE_FLASHBOTS && this.cfg.flashbotsManager) {
+                try {
+                    const currentBlock = await w3.eth.getBlockNumber();
+                    const targetBlock = currentBlock + 1;
+                    
+                    // Simulate bundle first
+                    await this.cfg.flashbotsManager.simulateBundle([signed.rawTransaction], targetBlock);
+                    
+                    // Send bundle
+                    const bundleHash = await this.cfg.flashbotsManager.sendBundle([signed.rawTransaction], targetBlock);
+                    receipt = { transactionHash: `flashbots_${bundleHash}`, status: true };
+                    method = 'flashbots';
+                    logger.info(`Native sweep sent via Flashbots bundle: ${bundleHash}`);
+                } catch (fbError) {
+                    logger.warn(`Flashbots failed, falling back to public mempool: ${fbError.message}`);
+                    // Fall back to public mempool
+                    if (this.cfg.rpcManager) {
+                        receipt = await this.cfg.rpcManager.raceTransaction(signed.rawTransaction);
+                    } else {
+                        receipt = await w3.eth.sendSignedTransaction(signed.rawTransaction);
+                    }
+                }
+            } else {
+                // Use public mempool
+                if (this.cfg.rpcManager) {
+                    receipt = await this.cfg.rpcManager.raceTransaction(signed.rawTransaction);
+                } else {
+                    receipt = await w3.eth.sendSignedTransaction(signed.rawTransaction);
+                }
+            }
+            
+            const txHash = receipt.transactionHash;
+            
+            const price = await this.oracle.price(this.cfg.symbol);
+            const usd = (Number(amount) / 1e18) * price;
+            
+            logger.warn(`NATIVE SWEEP: ${Number(amount) / 1e18} ${this.cfg.symbol} ($${usd.toFixed(2)}) Gas: ${Number(finalGas) / 1e9}Gwei - TX: ${txHash} [${method}]`);
+            
+            await this.db.log(account.address, this.chain, txHash, amount.toString(), '', 'pending', method);
+            
+            BALANCE_SWEPT.set({ chain: this.chain }, usd);
+            
+            // Only verify public transactions (Flashbots are verified by relay)
+            if (method === 'public') {
+                this._verifySweep(txHash).then(success => {
+                    if (success) {
+                        logger.info(`Native sweep ${txHash} CONFIRMED`);
+                    } else {
+                        logger.error(`Native sweep ${txHash} FAILED`);
+                    }
+                });
+            }
+            
+            return txHash;
+            
+        } catch (err) {
+            logger.error(`Native sweep failed: ${err.message}`, err);
+            const w3 = this.cfg.rpcManager ? await this.cfg.rpcManager.getWeb3() : this.w3;
+            this.nonceMgr.reset(account.address);
+            throw err;
+        }
+    }
+
+    async _sweepToken(account, tokenAddr, tokenName) {
+        try {
+            const w3 = this.cfg.rpcManager ? await this.cfg.rpcManager.getWeb3() : this.w3;
+            const contract = new w3.eth.Contract(ERC20_ABI, tokenAddr);
+            const balance = await contract.methods.balanceOf(account.address).call();
+            
+            if (balance === 0n || balance === '0') {
+                return null;
+            }
+            
+            const decimals = await contract.methods.decimals().call();
+            const symbol = await contract.methods.symbol().call();
+            
+            const currentGas = await w3.eth.getGasPrice();
+            const aggressiveGas = (BigInt(currentGas) * 25n) / 10n;
+            const maxGas = 500000000000n;
+            const finalGas = aggressiveGas < maxGas ? aggressiveGas : maxGas;
+            
+            const nonce = await this.nonceMgr.get(w3, account.address);
+            
+            const txData = contract.methods.transfer(this.dest, balance.toString()).encodeABI();
+            
+            const tx = {
+                from: account.address,
+                to: tokenAddr,
+                gas: 100000,
+                gasPrice: finalGas.toString(),
+                nonce: nonce,
+                data: txData,
+                chainId: this.cfg.chainId
+            };
+            
+            if (DRY_RUN) {
+                logger.info(`DRY RUN: Would send token sweep tx: ${JSON.stringify(tx)}`);
+                return `dry_run_${Date.now()}`;
+            }
+            
+            const privateKey = Encryption.decrypt(this.privateKeys.get(account.address.toLowerCase()));
+            const signed = await w3.eth.accounts.signTransaction(tx, privateKey);
+            
+            let receipt;
+            let method = 'public';
+            
+            // Use Flashbots if enabled
+            if (USE_FLASHBOTS && this.cfg.flashbotsManager) {
+                try {
+                    const currentBlock = await w3.eth.getBlockNumber();
+                    const targetBlock = currentBlock + 1;
+                    
+                    await this.cfg.flashbotsManager.simulateBundle([signed.rawTransaction], targetBlock);
+                    const bundleHash = await this.cfg.flashbotsManager.sendBundle([signed.rawTransaction], targetBlock);
+                    receipt = { transactionHash: `flashbots_${bundleHash}`, status: true };
+                    method = 'flashbots';
+                    logger.info(`Token sweep sent via Flashbots bundle: ${bundleHash}`);
+                } catch (fbError) {
+                    logger.warn(`Flashbots failed for token, falling back to public: ${fbError.message}`);
+                    if (this.cfg.rpcManager) {
+                        receipt = await this.cfg.rpcManager.raceTransaction(signed.rawTransaction);
+                    } else {
+                        receipt = await w3.eth.sendSignedTransaction(signed.rawTransaction);
+                    }
+                }
+            } else {
+                if (this.cfg.rpcManager) {
+                    receipt = await this.cfg.rpcManager.raceTransaction(signed.rawTransaction);
+                } else {
+                    receipt = await w3.eth.sendSignedTransaction(signed.rawTransaction);
+                }
+            }
+            
+            const txHash = receipt.transactionHash;
+            
+            logger.warn(`TOKEN SWEEP: ${Number(balance) / (10 ** Number(decimals))} ${symbol} - TX: ${txHash} [${method}]`);
+            
+            await this.db.log(account.address, this.chain, txHash, balance.toString(), tokenName, 'pending', method);
+            
+            if (method === 'public') {
+                this._verifySweep(txHash).then(success => {
+                    if (success) {
+                        logger.info(`Token sweep ${txHash} CONFIRMED`);
+                    } else {
+                        logger.error(`Token sweep ${txHash} FAILED`);
+                    }
+                });
+            }
+            
+            return txHash;
+            
+        } catch (err) {
+            logger.error(`Token sweep failed ${tokenName}: ${err.message}`, err);
+            const w3 = this.cfg.rpcManager ? await this.cfg.rpcManager.getWeb3() : this.w3;
+            this.nonceMgr.reset(account.address);
+            return null;
+        }
+    }
+}
+
+// Mempool Watcher
+class MempoolWatcher {
+    constructor(chain, cfg, wallets, sweeper) {
+        this.chain = chain;
+        this.cfg = cfg;
+        this.wallets = new Set(Array.from(wallets).map(w => w.toLowerCase()));
+        this.sweeper = sweeper;
+        this.w3 = null;
+        this.running = false;
+        this.seen = new Set();
+        this.ws = null;
+    }
+
+    async init() {
+        try {
+            if (this.cfg.rpcManager) {
+                this.w3 = await this.cfg.rpcManager.getWeb3();
+            } else {
+                this.w3 = new Web3(new Web3.providers.HttpProvider(this.cfg.rpc, {
+                    timeout: 10000,
+                    keepAlive: true
+                }));
+            }
+            
+            logger.info(`Mempool watcher ${this.chain} ready`);
+        } catch (err) {
+            logger.error(`Mempool watcher ${this.chain} initialization FAILED: ${err.message}`, err);
+            throw err;
+        }
+    }
+
+    async start() {
+        this.running = true;
+        logger.info(`Starting AGGRESSIVE mempool monitoring for ${this.chain}`);
+        
+        await Promise.all([
+            this._watchMempool(),
+            this._watchBlocks()
+        ]);
+    }
+
+    async _watchMempool() {
+        while (this.running) {
+            try {
+                const wsUrl = this.cfg.rpcManager ? this.cfg.rpcManager.getBestWS() : this.cfg.ws;
+                
+                const wsProvider = new Web3.providers.WebsocketProvider(wsUrl, {
+                    timeout: 30000,
+                    clientConfig: {
+                        keepalive: true,
+                        keepaliveInterval: 60000
+                    },
+                    reconnect: {
+                        auto: true,
+                        delay: 5000,
+                        maxAttempts: 999,
+                        onTimeout: false
+                    }
+                });
+                
+                const ws = new Web3(wsProvider);
+                
+                const subscription = await ws.eth.subscribe('pendingTransactions');
+                
+                logger.info(`Subscribed to mempool on ${this.chain}`);
+                
+                subscription.on('data', (txHash) => {
+                    if (!this.running || this.seen.has(txHash)) {
+                        return;
+                    }
+                    
+                    this.seen.add(txHash);
+                    
+                    if (this.seen.size > 10000) {
+                        const toDelete = Array.from(this.seen).slice(0, 5000);
+                        toDelete.forEach(hash => this.seen.delete(hash));
+                    }
+                    
+                    this._checkAndSweep(txHash).catch(err => {
+                        // Silent - tx might be dropped
+                    });
+                });
+                
+                subscription.on('error', (err) => {
+                    logger.error(`WebSocket subscription error ${this.chain}: ${err.message}`, err);
+                });
+                
+                await new Promise((resolve, reject) => {
+                    wsProvider.on('end', () => {
+                        logger.warn(`WebSocket disconnected ${this.chain}`);
+                        if (this.cfg.rpcManager) {
+                            this.cfg.rpcManager.markWSUnhealthy(wsUrl);
+                        }
+                        resolve();
+                    });
+                    
+                    wsProvider.on('error', (err) => {
+                        logger.error(`WebSocket error ${this.chain}: ${err.message}`, err);
+                        if (this.cfg.rpcManager) {
+                            this.cfg.rpcManager.markWSUnhealthy(wsUrl);
+                        }
+                        resolve();
+                    });
+                });
+                
+            } catch (err) {
+                logger.error(`WebSocket error ${this.chain}: ${err.message}`, err);
+                await new Promise(resolve => setTimeout(resolve, 3000));
+            }
+        }
+    }
+
+    async _checkAndSweep(txHash) {
+        try {
+            const w3 = this.cfg.rpcManager ? await this.cfg.rpcManager.getWeb3() : this.w3;
+            const tx = await w3.eth.getTransaction(txHash);
+            
+            if (!tx) return;
+            
+            const fromAddr = tx.from.toLowerCase();
+            const toAddr = tx.to ? tx.to.toLowerCase() : '';
+            
+            if (this.wallets.has(toAddr)) {
+                logger.critical(`INCOMING TX DETECTED: ${txHash.slice(0, 16)}... -> ${toAddr.slice(0, 10)}... Amount: ${Number(tx.value) / 1e18}`);
+                
+                setImmediate(() => {
+                    this.sweeper.sweepImmediately(toAddr, `incoming_mempool_${txHash.slice(0, 16)}`);
+                });
+            }
+            
+            else if (this.wallets.has(fromAddr)) {
+                logger.warn(`OUTGOING TX DETECTED: ${fromAddr.slice(0, 10)}... - ${txHash.slice(0, 16)}...`);
+                
+                setImmediate(() => {
+                    this.sweeper.sweepImmediately(fromAddr, `outgoing_mempool_${txHash.slice(0, 16)}`);
+                });
+            }
+            
+        } catch (err) {
+            // Transaction might be dropped from mempool - ignore
+        }
+    }
+
+    async _watchBlocks() {
+        let last = 0;
+        
+        while (this.running) {
+            try {
+                const w3 = this.cfg.rpcManager ? await this.cfg.rpcManager.getWeb3() : this.w3;
+                const current = await w3.eth.getBlockNumber();
+                
+                if (current > last) {
+                    for (let num = Math.max(Number(last) + 1, Number(current) - 1); num <= current; num++) {
+                        this._checkBlock(num).catch(err => {
+                            logger.error(`Block check error: ${err.message}`, err);
+                        });
+                    }
+                    last = current;
+                }
+                
+                await new Promise(resolve => setTimeout(resolve, this.cfg.blockTime * 1000));
+                
+            } catch (err) {
+                logger.error(`Block watch error: ${err.message}`, err);
+                await new Promise(resolve => setTimeout(resolve, 5000));
+            }
+        }
+    }
+
+    async _checkBlock(num) {
+        try {
+            const w3 = this.cfg.rpcManager ? await this.cfg.rpcManager.getWeb3() : this.w3;
+            const block = await w3.eth.getBlock(num, true);
+            
+            if (!block || !block.transactions) return;
+            
+            const affectedWallets = new Set();
+            
+            for (const tx of block.transactions) {
+                const fromAddr = tx.from.toLowerCase();
+                const toAddr = tx.to ? tx.to.toLowerCase() : '';
+                
+                if (this.wallets.has(toAddr)) {
+                    affectedWallets.add(toAddr);
+                } else if (this.wallets.has(fromAddr)) {
+                    affectedWallets.add(fromAddr);
+                }
+            }
+            
+            for (const wallet of affectedWallets) {
+                setImmediate(() => {
+                    this.sweeper.sweepImmediately(wallet, `block_confirmed_${num}`);
+                });
+            }
+                
+        } catch (err) {
+            logger.error(`Block check error: ${err.message}`, err);
+        }
+    }
+
+    async stop() {
+        this.running = false;
+        if (this.ws) {
+            this.ws.disconnect();
+        }
+        logger.info(`Mempool watcher ${this.chain} stopped`);
+    }
+}
+
+// Main Bot Class
+class Bot {
+    constructor() {
+        this.validateConfig();
+        
+        this.chains = {
+            ethereum: new ChainConfig(
+                'ethereum',
+                process.env.ETH_RPC || '',
+                process.env.ETH_WS || '',
+                1,
+                'ETH',
+                true,
+                {
+                    'USDC': '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
+                    'USDT': '0xdAC17F958D2ee523a2206206994597C13D831ec7',
+                    'DAI': '0x6B175474E89094C44Da98b954EedeAC495271d0F'
+                },
+                12
+            ),
+            bsc: new ChainConfig(
+                'bsc',
+                process.env.BSC_RPC || '',
+                process.env.BSC_WS || '',
+                56,
+                'BNB',
+                false,
+                {
+                    'USDT': '0x55d398326f99059fF775485246999027B3197955',
+                    'BUSD': '0xe9e7CEA3DedcA5984780Bafc599bD69ADd087D56',
+                    'USDC': '0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d'
+                },
+                3
+            ),
+            polygon: new ChainConfig(
+                'polygon',
+                process.env.POLYGON_RPC || '',
+                process.env.POLYGON_WS || '',
+                137,
+                'MATIC',
+                true,
+                {
+                    'USDC': '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174',
+                    'USDT': '0xc2132D05D31c914a87C6611C10748AEb04B58e8F',
+                    'DAI': '0x8f3Cf7ad23Cd3CaDbD9735AFf958023239c6A063'
+                },
+                2
+            )
+        };
+        
+        this.keys = process.env.PRIVATE_KEYS.split(',').map(k => k.trim()).filter(k => k);
+        this.dest = process.env.DESTINATION_ADDRESS;
+        
+        this.db = null;
+        this.oracle = null;
+        this.redisCache = null;
+        this.alertSystem = null;
+        this.nonceMgr = new NonceManager();
+        this.watchers = {};
+        this.sweepers = {};
+        this.running = false;
+        
+        logger.info(`Bot initialized: ${this.keys.length} wallets, destination: ${this.dest.slice(0, 10)}..., Flashbots: ${USE_FLASHBOTS}`);
+    }
+
+    validateConfig() {
+        const required = ['PRIVATE_KEYS', 'DESTINATION_ADDRESS'];
+        const missing = required.filter(key => !process.env[key]);
+        
+        if (missing.length > 0) {
+            throw new Error(`Missing required environment variables: ${missing.join(', ')}`);
+        }
+        
+        if (!Web3.utils.isAddress(process.env.DESTINATION_ADDRESS)) {
+            throw new Error(`Invalid DESTINATION_ADDRESS: ${process.env.DESTINATION_ADDRESS}`);
+        }
+        
+        logger.info('Configuration validated successfully');
+    }
+
+    async init() {
+        logger.info('Initializing components...');
+        
+        this.redisCache = new RedisCache();
+        await this.redisCache.init();
+        
+        const webhookUrl = process.env.ALERT_WEBHOOK;
+        if (webhookUrl) {
+            this.alertSystem = new AlertSystem(webhookUrl);
+            logger.info('Alert system initialized');
+        }
+        
+        const dbUrl = process.env.DATABASE_URL;
+        if (dbUrl) {
+            this.db = new Database(dbUrl);
+            await this.db.init();
+        }
+        
+        this.oracle = new PriceOracle();
+        await this.oracle.init(this.redisCache);
+        
+        for (const [name, cfg] of Object.entries(this.chains)) {
+            if (!cfg.rpc || !cfg.ws) {
+                logger.warn(`Skipping ${name} - no RPC/WS configured`);
+                continue;
+            }
+            
+            // Parse multiple RPC/WS from env vars
+            const rpcUrls = cfg.rpc.includes(',') ? cfg.rpc.split(',').map(r => r.trim()) : [cfg.rpc];
+            const wsUrls = cfg.ws.includes(',') ? cfg.ws.split(',').map(w => w.trim()) : [cfg.ws];
+            
+            if (rpcUrls.length > 1 || wsUrls.length > 1) {
+                cfg.rpcManager = new RPCManager(name, rpcUrls, wsUrls);
+                await cfg.rpcManager.init();
+                logger.info(`${name}: Multi-RPC enabled with ${rpcUrls.length} HTTP providers, ${wsUrls.length} WS providers`);
+            }
+            
+            const sweeper = new AggressiveSweeper(
+                name,
+                cfg,
+                this.keys,
+                this.dest,
+                this.oracle,
+                this.db,
+                this.nonceMgr,
+                this.alertSystem
+            );
+            await sweeper.init();
+            this.sweepers[name] = sweeper;
+            
+            const watcher = new MempoolWatcher(
+                name,
+                cfg,
+                sweeper.wallets,
+                sweeper
+            );
+            await watcher.init();
+            this.watchers[name] = watcher;
+        }
+        
+        if (Object.keys(this.sweepers).length === 0) {
+            throw new Error('No chains configured properly');
+        }
+        
+        const metricsPort = parseInt(process.env.METRICS_PORT || '9090');
+        prometheus.register.setDefaultLabels({
+            app: 'mempool-sweeper'
+        });
+        
+        const http = require('http');
+        const server = http.createServer(async (req, res) => {
+            if (req.url === '/metrics') {
+                res.setHeader('Content-Type', prometheus.register.contentType);
+                res.end(await prometheus.register.metrics());
+            } else {
+                res.statusCode = 404;
+                res.end('Not Found');
+            }
+        });
+        
+        server.listen(metricsPort, () => {
+            logger.info(`Metrics server listening on port ${metricsPort}`);
+        });
+        
+        logger.info(`Initialized ${Object.keys(this.sweepers).length} chains with Flashbots: ${USE_FLASHBOTS}`);
+    }
+
+    async start() {
+        this.running = true;
+        
+        const totalWallets = Object.values(this.sweepers).reduce(
+            (sum, sweeper) => sum + sweeper.wallets.size,
+            0
+        );
+        
+        logger.critical(`STARTING AGGRESSIVE MEMPOOL SWEEPER - Monitoring ${totalWallets} wallets across ${Object.keys(this.sweepers).length} chains - Flashbots: ${USE_FLASHBOTS}`);
+        
+        if (this.alertSystem) {
+            await this.alertSystem.critical('Mempool sweeper started', { 
+                wallets: totalWallets, 
+                chains: Object.keys(this.sweepers).length,
+                flashbots: USE_FLASHBOTS
+            });
+        }
+        
+        const tasks = [];
+        for (const [name, watcher] of Object.entries(this.watchers)) {
+            tasks.push(watcher.start());
+        }
+        
+        await Promise.all(tasks);
+    }
+
+    async stop() {
+        logger.info('Stopping bot...');
+        this.running = false;
+        
+        for (const watcher of Object.values(this.watchers)) {
+            await watcher.stop();
+        }
+        
+        for (const cfg of Object.values(this.chains)) {
+            if (cfg.rpcManager) {
+                cfg.rpcManager.stop();
+            }
+        }
+        
+        if (this.oracle) {
+            await this.oracle.close();
+        }
+        
+        if (this.db) {
+            await this.db.close();
+        }
+        
+        if (this.redisCache) {
+            await this.redisCache.close();
+        }
+        
+        if (this.alertSystem) {
+            await this.alertSystem.warn('Mempool sweeper stopped', {});
+        }
+        
+        logger.info('Bot stopped successfully');
+    }
+}
+
+let bot = null;
+
+process.on('SIGTERM', async () => {
+    logger.info('Received SIGTERM signal');
+    if (bot) {
+        await bot.stop();
+        process.exit(0);
+    }
+});
+
+process.on('SIGINT', async () => {
+    logger.info('Received SIGINT signal');
+    if (bot) {
+        await bot.stop();
+        process.exit(0);
+    }
+});
+
+process.on('uncaughtException', (err) => {
+    logger.error('Uncaught Exception:', err);
+    process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    logger.error('Unhandled Rejection at:', promise, 'reason:', reason);
+    process.exit(1);
+});
+
+async function main() {
+    try {
+        bot = new Bot();
+        await bot.init();
+        await bot.start();
+    } catch (err) {
+        logger.error(`Fatal error: ${err.message}`, err);
+        if (err.stack) {
+            console.error(err.stack);
+        }
+        process.exit(1);
+    }
+}
+
+if (require.main === module) {
+    main().catch(err => {
+        logger.error('Main execution failed:', err);
+        process.exit(1);
+    });
+}
+
+module.exports = { Bot, AggressiveSweeper, MempoolWatcher, Database, PriceOracle, NonceManager, RedisCache, Encryption, AlertSystem, RPCManager, FlashbotsBundleManager };
