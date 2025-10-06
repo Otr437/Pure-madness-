@@ -1,0 +1,1770 @@
+const express = require('express');
+const crypto = require('crypto');
+const secp256k1 = require('secp256k1');
+const createKeccakHash = require('keccak');
+const bip39 = require('bip39');
+const hdkey = require('hdkey');
+const axios = require('axios');
+const rateLimit = require('express-rate-limit');
+const helmet = require('helmet');
+const cors = require('cors');
+const compression = require('compression');
+const morgan = require('morgan');
+const winston = require('winston');
+const redis = require('redis');
+const { v4: uuidv4 } = require('uuid');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const swaggerUi = require('swagger-ui-express');
+const { Sequelize, DataTypes, Op } = require('sequelize');
+const cluster = require('cluster');
+const os = require('os');
+const fs = require('fs');
+const path = require('path');
+require('dotenv').config();
+
+// Create logs directory if it doesn't exist
+const logsDir = path.join(__dirname, 'logs');
+if (!fs.existsSync(logsDir)) {
+  fs.mkdirSync(logsDir, { recursive: true });
+}
+
+// Cluster setup for production
+if (cluster.isMaster && process.env.NODE_ENV === 'production') {
+  const numCPUs = Math.min(os.cpus().length, 4);
+  console.log(`Master ${process.pid} is running`);
+  console.log(`Forking ${numCPUs} workers...`);
+
+  for (let i = 0; i < numCPUs; i++) {
+    cluster.fork();
+  }
+
+  cluster.on('exit', (worker, code, signal) => {
+    console.log(`Worker ${worker.process.pid} died. Forking new worker...`);
+    cluster.fork();
+  });
+  return;
+}
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// Enhanced logging configuration
+const logger = winston.createLogger({
+  level: process.env.LOG_LEVEL || 'info',
+  format: winston.format.combine(
+    winston.format.timestamp(),
+    winston.format.errors({ stack: true }),
+    winston.format.json()
+  ),
+  defaultMeta: { service: 'hd-wallet-server' },
+  transports: [
+    new winston.transports.File({ filename: path.join(logsDir, 'error.log'), level: 'error' }),
+    new winston.transports.File({ filename: path.join(logsDir, 'combined.log') }),
+    new winston.transports.Console({
+      format: winston.format.combine(
+        winston.format.colorize(),
+        winston.format.simple()
+      )
+    })
+  ],
+});
+
+// Database setup with Sequelize
+const sequelize = new Sequelize(
+  process.env.DATABASE_URL || 'sqlite::memory:',
+  {
+    dialect: process.env.DB_DIALECT || 'sqlite',
+    logging: (msg) => logger.debug(msg),
+    pool: {
+      max: 10,
+      min: 0,
+      acquire: 30000,
+      idle: 10000
+    }
+  }
+);
+
+// Redis client for caching and rate limiting
+let redisClient = null;
+(async () => {
+  if (process.env.REDIS_URL) {
+    try {
+      redisClient = redis.createClient({
+        url: process.env.REDIS_URL,
+        socket: {
+          reconnectStrategy: (retries) => Math.min(retries * 50, 2000)
+        }
+      });
+
+      redisClient.on('error', (err) => logger.error('Redis Client Error', err));
+      redisClient.on('connect', () => logger.info('Redis Client Connected'));
+
+      await redisClient.connect();
+    } catch (error) {
+      logger.warn('Redis connection failed, continuing without Redis', { error: error.message });
+      redisClient = null;
+    }
+  }
+})();
+
+// Database Models
+
+// Admin Users Model
+const AdminUser = sequelize.define('AdminUser', {
+  id: {
+    type: DataTypes.UUID,
+    defaultValue: DataTypes.UUIDV4,
+    primaryKey: true
+  },
+  username: {
+    type: DataTypes.STRING,
+    allowNull: false,
+    unique: true
+  },
+  email: {
+    type: DataTypes.STRING,
+    allowNull: false,
+    unique: true,
+    validate: { isEmail: true }
+  },
+  passwordHash: {
+    type: DataTypes.STRING,
+    allowNull: false
+  },
+  role: {
+    type: DataTypes.ENUM('super_admin', 'admin', 'operator'),
+    defaultValue: 'operator'
+  },
+  isActive: {
+    type: DataTypes.BOOLEAN,
+    defaultValue: true
+  },
+  lastLogin: {
+    type: DataTypes.DATE
+  },
+  twoFactorSecret: {
+    type: DataTypes.STRING
+  },
+  twoFactorEnabled: {
+    type: DataTypes.BOOLEAN,
+    defaultValue: false
+  }
+});
+
+// Custodial Wallet Model
+const CustodialWallet = sequelize.define('CustodialWallet', {
+  id: {
+    type: DataTypes.UUID,
+    defaultValue: DataTypes.UUIDV4,
+    primaryKey: true
+  },
+  userId: {
+    type: DataTypes.STRING,
+    allowNull: false,
+    index: true
+  },
+  walletType: {
+    type: DataTypes.ENUM('hot', 'cold'),
+    defaultValue: 'hot'
+  },
+  encryptedMnemonic: {
+    type: DataTypes.TEXT,
+    allowNull: false
+  },
+  encryptionIV: {
+    type: DataTypes.STRING,
+    allowNull: false
+  },
+  encryptionAuthTag: {
+    type: DataTypes.STRING,
+    allowNull: false
+  },
+  encryptionSalt: {
+    type: DataTypes.STRING,
+    allowNull: false
+  },
+  masterPublicKey: {
+    type: DataTypes.STRING
+  },
+  derivationPath: {
+    type: DataTypes.STRING,
+    defaultValue: "m/44'/60'/0'/0"
+  },
+  accountCount: {
+    type: DataTypes.INTEGER,
+    defaultValue: 0
+  },
+  isActive: {
+    type: DataTypes.BOOLEAN,
+    defaultValue: true
+  },
+  metadata: {
+    type: DataTypes.JSON,
+    defaultValue: {}
+  }
+});
+
+// Wallet Account Model
+const WalletAccount = sequelize.define('WalletAccount', {
+  id: {
+    type: DataTypes.UUID,
+    defaultValue: DataTypes.UUIDV4,
+    primaryKey: true
+  },
+  walletId: {
+    type: DataTypes.UUID,
+    allowNull: false,
+    references: {
+      model: 'CustodialWallets',
+      key: 'id'
+    }
+  },
+  accountIndex: {
+    type: DataTypes.INTEGER,
+    allowNull: false
+  },
+  address: {
+    type: DataTypes.STRING,
+    allowNull: false,
+    unique: true,
+    index: true
+  },
+  publicKey: {
+    type: DataTypes.STRING,
+    allowNull: false
+  },
+  derivationPath: {
+    type: DataTypes.STRING,
+    allowNull: false
+  },
+  label: {
+    type: DataTypes.STRING
+  },
+  isActive: {
+    type: DataTypes.BOOLEAN,
+    defaultValue: true
+  }
+});
+
+// Transaction Model
+const Transaction = sequelize.define('Transaction', {
+  id: {
+    type: DataTypes.UUID,
+    defaultValue: DataTypes.UUIDV4,
+    primaryKey: true
+  },
+  walletId: {
+    type: DataTypes.UUID,
+    allowNull: false
+  },
+  accountId: {
+    type: DataTypes.UUID,
+    allowNull: false
+  },
+  txHash: {
+    type: DataTypes.STRING,
+    index: true
+  },
+  network: {
+    type: DataTypes.STRING,
+    allowNull: false
+  },
+  type: {
+    type: DataTypes.ENUM('send', 'receive', 'contract'),
+    allowNull: false
+  },
+  from: {
+    type: DataTypes.STRING,
+    allowNull: false
+  },
+  to: {
+    type: DataTypes.STRING,
+    allowNull: false
+  },
+  value: {
+    type: DataTypes.STRING,
+    allowNull: false
+  },
+  gasUsed: {
+    type: DataTypes.STRING
+  },
+  gasPrice: {
+    type: DataTypes.STRING
+  },
+  status: {
+    type: DataTypes.ENUM('pending', 'confirmed', 'failed'),
+    defaultValue: 'pending'
+  },
+  blockNumber: {
+    type: DataTypes.INTEGER
+  },
+  confirmations: {
+    type: DataTypes.INTEGER,
+    defaultValue: 0
+  },
+  metadata: {
+    type: DataTypes.JSON,
+    defaultValue: {}
+  }
+});
+
+// API Key Model for external access
+const ApiKey = sequelize.define('ApiKey', {
+  id: {
+    type: DataTypes.UUID,
+    defaultValue: DataTypes.UUIDV4,
+    primaryKey: true
+  },
+  key: {
+    type: DataTypes.STRING,
+    allowNull: false,
+    unique: true
+  },
+  hashedKey: {
+    type: DataTypes.STRING,
+    allowNull: false
+  },
+  userId: {
+    type: DataTypes.STRING,
+    allowNull: false
+  },
+  name: {
+    type: DataTypes.STRING
+  },
+  permissions: {
+    type: DataTypes.JSON,
+    defaultValue: ['read']
+  },
+  isActive: {
+    type: DataTypes.BOOLEAN,
+    defaultValue: true
+  },
+  expiresAt: {
+    type: DataTypes.DATE
+  },
+  lastUsedAt: {
+    type: DataTypes.DATE
+  },
+  rateLimit: {
+    type: DataTypes.INTEGER,
+    defaultValue: 100
+  }
+});
+
+// Audit Log Model
+const AuditLog = sequelize.define('AuditLog', {
+  id: {
+    type: DataTypes.UUID,
+    defaultValue: DataTypes.UUIDV4,
+    primaryKey: true
+  },
+  adminId: {
+    type: DataTypes.UUID
+  },
+  userId: {
+    type: DataTypes.STRING
+  },
+  action: {
+    type: DataTypes.STRING,
+    allowNull: false
+  },
+  resource: {
+    type: DataTypes.STRING,
+    allowNull: false
+  },
+  resourceId: {
+    type: DataTypes.STRING
+  },
+  ipAddress: {
+    type: DataTypes.STRING
+  },
+  userAgent: {
+    type: DataTypes.STRING
+  },
+  details: {
+    type: DataTypes.JSON
+  },
+  status: {
+    type: DataTypes.ENUM('success', 'failure'),
+    allowNull: false
+  }
+});
+
+// Define associations
+CustodialWallet.hasMany(WalletAccount, { foreignKey: 'walletId' });
+WalletAccount.belongsTo(CustodialWallet, { foreignKey: 'walletId' });
+
+// Enhanced security middleware
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      imgSrc: ["'self'", "data:", "https:"],
+    },
+  },
+  crossOriginEmbedderPolicy: false
+}));
+
+app.use(cors({
+  origin: process.env.ALLOWED_ORIGINS?.split(',') || ['http://localhost:3000'],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Admin-Key', 'X-API-Key']
+}));
+
+app.use(compression());
+app.use(morgan('combined', {
+  stream: { write: (message) => logger.info(message.trim()) }
+}));
+
+// Enhanced rate limiting
+const createRateLimiter = (windowMs, max, message) => rateLimit({
+  windowMs,
+  max,
+  message: { error: message },
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.headers['x-forwarded-for'] || req.ip
+});
+
+app.use(createRateLimiter(15 * 60 * 1000, 100, 'Too many requests'));
+app.use('/wallet/create', createRateLimiter(60 * 1000, 5, 'Too many wallet creation attempts'));
+app.use('/custodial/wallet/create', createRateLimiter(60 * 1000, 10, 'Too many custodial wallet attempts'));
+
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Request ID middleware
+app.use((req, res, next) => {
+  req.id = uuidv4();
+  res.setHeader('X-Request-ID', req.id);
+  next();
+});
+
+// Audit logging middleware
+const auditLog = async (req, action, resource, resourceId, status, details = {}) => {
+  try {
+    await AuditLog.create({
+      adminId: req.admin?.id,
+      userId: req.user?.id,
+      action,
+      resource,
+      resourceId,
+      ipAddress: req.headers['x-forwarded-for'] || req.ip,
+      userAgent: req.headers['user-agent'],
+      details,
+      status
+    });
+  } catch (error) {
+    logger.error('Audit log failed', { error: error.message });
+  }
+};
+
+// Enhanced admin authentication middleware
+const adminAuth = async (req, res, next) => {
+  const adminKey = req.headers['x-admin-key'];
+  const authHeader = req.headers['authorization'];
+  
+  if (!adminKey && !authHeader) {
+    await auditLog(req, 'auth_attempt', 'admin', null, 'failure', { reason: 'no_credentials' });
+    return res.status(401).json({ error: 'Authentication required' });
+  }
+
+  try {
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      const token = authHeader.substring(7);
+      const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback-secret-change-in-production');
+      
+      const admin = await AdminUser.findByPk(decoded.id);
+      if (!admin || !admin.isActive) {
+        throw new Error('Invalid or inactive admin');
+      }
+      
+      req.admin = admin;
+      await admin.update({ lastLogin: new Date() });
+    } else if (adminKey) {
+      const adminKeyHash = process.env.ADMIN_KEY_HASH;
+      if (!adminKeyHash) {
+        throw new Error('Admin key not configured');
+      }
+      const isValidKey = await bcrypt.compare(adminKey, adminKeyHash);
+      if (!isValidKey) {
+        throw new Error('Invalid admin key');
+      }
+    } else {
+      throw new Error('Invalid authentication method');
+    }
+
+    logger.info('Admin access', { 
+      requestId: req.id, 
+      path: req.path,
+      adminId: req.admin?.id 
+    });
+    
+    next();
+  } catch (error) {
+    await auditLog(req, 'auth_attempt', 'admin', null, 'failure', { reason: error.message });
+    logger.warn('Admin auth failed', { error: error.message, requestId: req.id });
+    return res.status(401).json({ error: 'Authentication failed' });
+  }
+};
+
+// API Key authentication middleware
+const apiKeyAuth = async (req, res, next) => {
+  const apiKey = req.headers['x-api-key'];
+  
+  if (!apiKey) {
+    return res.status(401).json({ error: 'API key required' });
+  }
+
+  try {
+    const keyRecord = await ApiKey.findOne({
+      where: { key: apiKey, isActive: true }
+    });
+
+    if (!keyRecord) {
+      throw new Error('Invalid API key');
+    }
+
+    if (keyRecord.expiresAt && new Date() > keyRecord.expiresAt) {
+      throw new Error('API key expired');
+    }
+
+    await keyRecord.update({ lastUsedAt: new Date() });
+    req.apiKey = keyRecord;
+    req.user = { id: keyRecord.userId };
+    
+    next();
+  } catch (error) {
+    logger.warn('API key auth failed', { error: error.message, requestId: req.id });
+    return res.status(401).json({ error: 'Authentication failed' });
+  }
+};
+
+// Enhanced blockchain scanner configurations
+const SCANNERS = {
+  ethereum: {
+    name: 'Etherscan',
+    baseUrl: 'https://api.etherscan.io/api',
+    apiKey: process.env.ETHERSCAN_API_KEY || '',
+    chainId: 1
+  },
+  bsc: {
+    name: 'BscScan',
+    baseUrl: 'https://api.bscscan.com/api',
+    apiKey: process.env.BSCSCAN_API_KEY || '',
+    chainId: 56
+  },
+  arbitrum: {
+    name: 'Arbiscan',
+    baseUrl: 'https://api.arbiscan.io/api',
+    apiKey: process.env.ARBISCAN_API_KEY || '',
+    chainId: 42161
+  },
+  polygon: {
+    name: 'Polygonscan',
+    baseUrl: 'https://api.polygonscan.com/api',
+    apiKey: process.env.POLYGONSCAN_API_KEY || '',
+    chainId: 137
+  },
+  optimism: {
+    name: 'Optimism',
+    baseUrl: 'https://api-optimistic.etherscan.io/api',
+    apiKey: process.env.OPTIMISM_API_KEY || '',
+    chainId: 10
+  }
+};
+
+// Enhanced cryptographic utilities
+class CryptoUtils {
+  static sha256(data) {
+    return crypto.createHash('sha256').update(data).digest();
+  }
+
+  static sha256Hex(data) {
+    return crypto.createHash('sha256').update(data).digest('hex');
+  }
+
+  static keccak256(data) {
+    return createKeccakHash('keccak256').update(data).digest();
+  }
+
+  static generatePrivateKey() {
+    let privateKey;
+    do {
+      privateKey = crypto.randomBytes(32);
+    } while (!secp256k1.privateKeyVerify(privateKey));
+    return privateKey;
+  }
+
+  static getPublicKey(privateKey) {
+    return secp256k1.publicKeyCreate(privateKey, false);
+  }
+
+  static getCompressedPublicKey(privateKey) {
+    return secp256k1.publicKeyCreate(privateKey, true);
+  }
+
+  static encryptData(data, password) {
+    const salt = crypto.randomBytes(32);
+    const key = crypto.scryptSync(password, salt, 32);
+    const iv = crypto.randomBytes(16);
+    
+    const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+    let encrypted = cipher.update(data, 'utf8', 'hex');
+    encrypted += cipher.final('hex');
+    
+    const authTag = cipher.getAuthTag();
+    
+    return {
+      encrypted,
+      iv: iv.toString('hex'),
+      authTag: authTag.toString('hex'),
+      salt: salt.toString('hex')
+    };
+  }
+
+  static decryptData(encryptedData, password) {
+    const key = crypto.scryptSync(password, Buffer.from(encryptedData.salt, 'hex'), 32);
+    const decipher = crypto.createDecipheriv(
+      'aes-256-gcm',
+      key,
+      Buffer.from(encryptedData.iv, 'hex')
+    );
+    decipher.setAuthTag(Buffer.from(encryptedData.authTag, 'hex'));
+    
+    let decrypted = decipher.update(encryptedData.encrypted, 'hex', 'utf8');
+    decrypted += decipher.final('utf8');
+    
+    return decrypted;
+  }
+}
+
+// Self-Custody HD Wallet class
+class HDWallet {
+  constructor(mnemonic = null, passphrase = '') {
+    if (!mnemonic) {
+      this.mnemonic = bip39.generateMnemonic(256);
+      this.isNew = true;
+    } else {
+      if (!bip39.validateMnemonic(mnemonic)) {
+        throw new Error('Invalid mnemonic');
+      }
+      this.mnemonic = mnemonic;
+      this.isNew = false;
+    }
+    
+    this.seed = bip39.mnemonicToSeedSync(this.mnemonic, passphrase);
+    this.root = hdkey.fromMasterSeed(this.seed);
+    this.accounts = new Map();
+    this.createdAt = new Date();
+    this.lastAccessed = new Date();
+    this.derivationCount = 0;
+  }
+
+  deriveAccount(index = 0, path = null) {
+    if (this.derivationCount >= 1000) {
+      throw new Error('Derivation limit reached');
+    }
+
+    const derivePath = path || `m/44'/60'/${index}'/0/0`;
+    const account = this.root.derive(derivePath);
+    const privateKey = account.privateKey;
+    const publicKey = CryptoUtils.getPublicKey(privateKey);
+    const address = this.getEthereumAddress(publicKey);
+    
+    const accountData = {
+      index,
+      path: derivePath,
+      privateKey: privateKey.toString('hex'),
+      publicKey: publicKey.toString('hex'),
+      address,
+      compressed: CryptoUtils.getCompressedPublicKey(privateKey).toString('hex'),
+      derivedAt: new Date()
+    };
+    
+    this.accounts.set(index, accountData);
+    this.derivationCount++;
+    this.lastAccessed = new Date();
+    
+    return accountData;
+  }
+
+  deriveMultipleAccounts(count = 10) {
+    if (count > 50) {
+      throw new Error('Cannot derive more than 50 accounts at once');
+    }
+
+    const accounts = [];
+    for (let i = 0; i < count; i++) {
+      accounts.push(this.deriveAccount(i));
+    }
+    return accounts;
+  }
+
+  getEthereumAddress(publicKey) {
+    const hash = CryptoUtils.keccak256(publicKey.slice(1));
+    return '0x' + hash.slice(-20).toString('hex');
+  }
+
+  getStats() {
+    return {
+      accountCount: this.accounts.size,
+      derivationCount: this.derivationCount,
+      createdAt: this.createdAt,
+      lastAccessed: this.lastAccessed,
+      isNew: this.isNew
+    };
+  }
+}
+
+// Custodial Wallet Service
+class CustodialWalletService {
+  static async createWallet(userId, walletType = 'hot', metadata = {}) {
+    const mnemonic = bip39.generateMnemonic(256);
+    const masterPassword = process.env.MASTER_ENCRYPTION_KEY;
+    
+    if (!masterPassword) {
+      throw new Error('Master encryption key not configured');
+    }
+
+    const encryptedData = CryptoUtils.encryptData(mnemonic, masterPassword);
+    
+    const hdWallet = new HDWallet(mnemonic);
+    const masterPubKey = hdWallet.root.publicKey.toString('hex');
+
+    const wallet = await CustodialWallet.create({
+      userId,
+      walletType,
+      encryptedMnemonic: encryptedData.encrypted,
+      encryptionIV: encryptedData.iv,
+      encryptionAuthTag: encryptedData.authTag,
+      encryptionSalt: encryptedData.salt,
+      masterPublicKey: masterPubKey,
+      metadata
+    });
+
+    logger.info('Custodial wallet created', { walletId: wallet.id, userId, walletType });
+    
+    return wallet;
+  }
+
+  static async decryptWallet(wallet) {
+    const masterPassword = process.env.MASTER_ENCRYPTION_KEY;
+    
+    if (!masterPassword) {
+      throw new Error('Master encryption key not configured');
+    }
+
+    const encryptedData = {
+      encrypted: wallet.encryptedMnemonic,
+      iv: wallet.encryptionIV,
+      authTag: wallet.encryptionAuthTag,
+      salt: wallet.encryptionSalt
+    };
+
+    const mnemonic = CryptoUtils.decryptData(encryptedData, masterPassword);
+    return new HDWallet(mnemonic);
+  }
+
+  static async createAccount(walletId, label = null) {
+    const wallet = await CustodialWallet.findByPk(walletId);
+    
+    if (!wallet || !wallet.isActive) {
+      throw new Error('Wallet not found or inactive');
+    }
+
+    const hdWallet = await this.decryptWallet(wallet);
+    const accountIndex = wallet.accountCount;
+    const account = hdWallet.deriveAccount(accountIndex);
+
+    const walletAccount = await WalletAccount.create({
+      walletId: wallet.id,
+      accountIndex,
+      address: account.address,
+      publicKey: account.publicKey,
+      derivationPath: account.path,
+      label
+    });
+
+    await wallet.update({ accountCount: accountIndex + 1 });
+
+    logger.info('Account created', { 
+      walletId: wallet.id, 
+      accountId: walletAccount.id,
+      address: account.address 
+    });
+
+    return {
+      id: walletAccount.id,
+      address: walletAccount.address,
+      publicKey: walletAccount.publicKey,
+      path: walletAccount.derivationPath,
+      index: accountIndex
+    };
+  }
+
+  static async signTransaction(accountId, message) {
+    const account = await WalletAccount.findByPk(accountId, {
+      include: [CustodialWallet]
+    });
+
+    if (!account || !account.CustodialWallet) {
+      throw new Error('Account not found');
+    }
+
+    const hdWallet = await this.decryptWallet(account.CustodialWallet);
+    const accountData = hdWallet.deriveAccount(account.accountIndex);
+    
+    const privateKey = Buffer.from(accountData.privateKey, 'hex');
+    const hash = CryptoUtils.sha256(Buffer.from(message));
+    const signature = secp256k1.ecdsaSign(hash, privateKey);
+
+    return {
+      signature: signature.signature.toString('hex'),
+      recovery: signature.recid,
+      hash: hash.toString('hex')
+    };
+  }
+
+  static async getWalletBalance(walletId, network) {
+    const accounts = await WalletAccount.findAll({
+      where: { walletId, isActive: true }
+    });
+
+    const scanner = new BlockchainScanner();
+    const balances = await Promise.all(
+      accounts.map(async (account) => {
+        try {
+          const balance = await scanner.getBalance(network, account.address);
+          return {
+            accountId: account.id,
+            address: account.address,
+            ...balance
+          };
+        } catch (error) {
+          return {
+            accountId: account.id,
+            address: account.address,
+            error: error.message
+          };
+        }
+      })
+    );
+
+    return balances;
+  }
+}
+
+// Enhanced BlockchainScanner
+class BlockchainScanner {
+  constructor() {
+    this.cache = new Map();
+    this.cacheTimeout = 30000;
+    this.retryAttempts = 3;
+    this.retryDelay = 1000;
+  }
+
+  async makeRequestWithRetry(url, params, attempt = 1) {
+    try {
+      const response = await axios.get(url, { 
+        params,
+        timeout: 10000,
+        validateStatus: (status) => status < 500
+      });
+      return response;
+    } catch (error) {
+      if (attempt < this.retryAttempts && error.code !== 'ECONNABORTED') {
+        await new Promise(resolve => setTimeout(resolve, this.retryDelay * attempt));
+        return this.makeRequestWithRetry(url, params, attempt + 1);
+      }
+      throw error;
+    }
+  }
+
+  async getBalance(network, address) {
+    const scanner = SCANNERS[network];
+    if (!scanner) {
+      throw new Error(`Unsupported network: ${network}`);
+    }
+
+    if (!scanner.apiKey) {
+      throw new Error(`API key not configured for network: ${network}`);
+    }
+
+    const cacheKey = `balance_${network}_${address}`;
+    
+    if (redisClient) {
+      try {
+        const cached = await redisClient.get(cacheKey);
+        if (cached) return JSON.parse(cached);
+      } catch (error) {
+        logger.warn('Redis cache read failed', { error: error.message });
+      }
+    }
+
+    try {
+      const response = await this.makeRequestWithRetry(scanner.baseUrl, {
+        module: 'account',
+        action: 'balance',
+        address,
+        tag: 'latest',
+        apikey: scanner.apiKey
+      });
+
+      if (response.data.status === '0' && response.data.message !== 'No transactions found') {
+        throw new Error(response.data.result || 'API error');
+      }
+
+      const balance = response.data.result;
+      const balanceEth = (parseInt(balance) / 1e18).toFixed(6);
+      
+      const result = {
+        balance,
+        balanceEth,
+        network,
+        address,
+        timestamp: new Date().toISOString()
+      };
+
+      if (redisClient) {
+        try {
+          await redisClient.setEx(cacheKey, 30, JSON.stringify(result));
+        } catch (error) {
+          logger.warn('Redis cache write failed', { error: error.message });
+        }
+      }
+
+      return result;
+    } catch (error) {
+      logger.error('Balance fetch failed', { network, address, error: error.message });
+      throw new Error(`Failed to get balance: ${error.message}`);
+    }
+  }
+
+  async getTransactionHistory(network, address, page = 1, offset = 10) {
+    const scanner = SCANNERS[network];
+    if (!scanner) {
+      throw new Error(`Unsupported network: ${network}`);
+    }
+
+    if (!scanner.apiKey) {
+      throw new Error(`API key not configured for network: ${network}`);
+    }
+
+    try {
+      const response = await this.makeRequestWithRetry(scanner.baseUrl, {
+        module: 'account',
+        action: 'txlist',
+        address,
+        startblock: 0,
+        endblock: 99999999,
+        page,
+        offset,
+        sort: 'desc',
+        apikey: scanner.apiKey
+      });
+
+      if (response.data.status === '0' && response.data.message !== 'No transactions found') {
+        throw new Error(response.data.result || 'API error');
+      }
+
+      return {
+        transactions: response.data.result || [],
+        network,
+        address,
+        page: parseInt(page),
+        offset: parseInt(offset),
+        total: response.data.result ? response.data.result.length : 0
+      };
+    } catch (error) {
+      logger.error('Transaction history fetch failed', { network, address, error: error.message });
+      throw new Error(`Failed to get transaction history: ${error.message}`);
+    }
+  }
+}
+
+// Initialize database
+sequelize.sync({ alter: process.env.NODE_ENV === 'development' })
+  .then(() => logger.info('Database synced'))
+  .catch(err => logger.error('Database sync failed', { error: err.message }));
+
+// Global instances
+const scanner = new BlockchainScanner();
+const selfCustodyWallets = new Map();
+
+// Auto-cleanup of self-custody wallets
+setInterval(() => {
+  const now = new Date();
+  let cleanedCount = 0;
+  
+  for (const [walletId, wallet] of selfCustodyWallets.entries()) {
+    const hoursSinceAccess = (now - wallet.lastAccessed) / (1000 * 60 * 60);
+    if (hoursSinceAccess > 24) {
+      selfCustodyWallets.delete(walletId);
+      cleanedCount++;
+    }
+  }
+  
+  if (cleanedCount > 0) {
+    logger.info(`Cleaned up ${cleanedCount} inactive self-custody wallets`);
+  }
+}, 60 * 60 * 1000);
+
+// ===== ADMIN ROUTES =====
+
+// Admin login
+app.post('/admin/login', async (req, res) => {
+  try {
+    const { username, password } = req.body;
+    
+    if (!username || !password) {
+      return res.status(400).json({ error: 'Username and password required' });
+    }
+    
+    const admin = await AdminUser.findOne({ where: { username, isActive: true } });
+    
+    if (!admin) {
+      await auditLog(req, 'login_attempt', 'admin', null, 'failure', { username });
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    const isValid = await bcrypt.compare(password, admin.passwordHash);
+    
+    if (!isValid) {
+      await auditLog(req, 'login_attempt', 'admin', admin.id, 'failure');
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    const token = jwt.sign(
+      { id: admin.id, username: admin.username, role: admin.role },
+      process.env.JWT_SECRET || 'fallback-secret-change-in-production',
+      { expiresIn: '8h' }
+    );
+
+    await admin.update({ lastLogin: new Date() });
+    await auditLog(req, 'login', 'admin', admin.id, 'success');
+
+    res.json({
+      success: true,
+      token,
+      admin: {
+        id: admin.id,
+        username: admin.username,
+        email: admin.email,
+        role: admin.role
+      }
+    });
+  } catch (error) {
+    logger.error('Admin login failed', { error: error.message, requestId: req.id });
+    res.status(500).json({ error: 'Login failed' });
+  }
+});
+
+// Create admin user
+app.post('/admin/create', adminAuth, async (req, res) => {
+  try {
+    if (req.admin?.role !== 'super_admin') {
+      return res.status(403).json({ error: 'Insufficient permissions' });
+    }
+
+    const { username, email, password, role = 'operator' } = req.body;
+    
+    if (!username || !email || !password) {
+      return res.status(400).json({ error: 'Username, email, and password required' });
+    }
+    
+    const passwordHash = await bcrypt.hash(password, 12);
+    
+    const admin = await AdminUser.create({
+      username,
+      email,
+      passwordHash,
+      role
+    });
+
+    await auditLog(req, 'create', 'admin', admin.id, 'success', { username, email, role });
+
+    res.json({
+      success: true,
+      admin: {
+        id: admin.id,
+        username: admin.username,
+        email: admin.email,
+        role: admin.role
+      }
+    });
+  } catch (error) {
+    logger.error('Admin creation failed', { error: error.message, requestId: req.id });
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// List all admins
+app.get('/admin/list', adminAuth, async (req, res) => {
+  try {
+    if (req.admin?.role !== 'super_admin') {
+      return res.status(403).json({ error: 'Insufficient permissions' });
+    }
+
+    const admins = await AdminUser.findAll({
+      attributes: ['id', 'username', 'email', 'role', 'isActive', 'lastLogin', 'createdAt']
+    });
+
+    res.json({ admins });
+  } catch (error) {
+    logger.error('Admin list failed', { error: error.message, requestId: req.id });
+    res.status(500).json({ error: 'Failed to list admins' });
+  }
+});
+
+// Update admin
+app.put('/admin/:id', adminAuth, async (req, res) => {
+  try {
+    if (req.admin?.role !== 'super_admin') {
+      return res.status(403).json({ error: 'Insufficient permissions' });
+    }
+
+    const { id } = req.params;
+    const { isActive, role } = req.body;
+
+    const admin = await AdminUser.findByPk(id);
+    if (!admin) {
+      return res.status(404).json({ error: 'Admin not found' });
+    }
+
+    const updateData = {};
+    if (typeof isActive !== 'undefined') updateData.isActive = isActive;
+    if (role) updateData.role = role;
+
+    await admin.update(updateData);
+    await auditLog(req, 'update', 'admin', id, 'success', updateData);
+
+    res.json({ success: true, admin });
+  } catch (error) {
+    logger.error('Admin update failed', { error: error.message, requestId: req.id });
+    res.status(500).json({ error: 'Failed to update admin' });
+  }
+});
+
+// Get audit logs
+app.get('/admin/audit-logs', adminAuth, async (req, res) => {
+  try {
+    const { limit = 100, offset = 0, action, resource } = req.query;
+
+    const where = {};
+    if (action) where.action = action;
+    if (resource) where.resource = resource;
+
+    const logs = await AuditLog.findAll({
+      where,
+      limit: parseInt(limit),
+      offset: parseInt(offset),
+      order: [['createdAt', 'DESC']]
+    });
+
+    const total = await AuditLog.count({ where });
+
+    res.json({ logs, total, limit: parseInt(limit), offset: parseInt(offset) });
+  } catch (error) {
+    logger.error('Audit logs fetch failed', { error: error.message, requestId: req.id });
+    res.status(500).json({ error: 'Failed to fetch audit logs' });
+  }
+});
+
+// ===== API KEY MANAGEMENT ROUTES =====
+
+// Create API key
+app.post('/api-keys/create', adminAuth, async (req, res) => {
+  try {
+    const { userId, name, permissions = ['read'], expiresInDays = 365, rateLimit = 100 } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({ error: 'userId required' });
+    }
+
+    const key = crypto.randomBytes(32).toString('hex');
+    const hashedKey = await bcrypt.hash(key, 10);
+
+    const expiresAt = expiresInDays 
+      ? new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000)
+      : null;
+
+    const apiKey = await ApiKey.create({
+      key,
+      hashedKey,
+      userId,
+      name,
+      permissions,
+      expiresAt,
+      rateLimit
+    });
+
+    await auditLog(req, 'create', 'api_key', apiKey.id, 'success', { userId, name });
+
+    res.json({
+      success: true,
+      apiKey: {
+        id: apiKey.id,
+        key,
+        userId: apiKey.userId,
+        name: apiKey.name,
+        permissions: apiKey.permissions,
+        expiresAt: apiKey.expiresAt
+      },
+      warning: 'Save this key securely. It will not be shown again.'
+    });
+  } catch (error) {
+    logger.error('API key creation failed', { error: error.message, requestId: req.id });
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// List API keys
+app.get('/api-keys/list', adminAuth, async (req, res) => {
+  try {
+    const { userId } = req.query;
+    
+    const where = userId ? { userId } : {};
+    
+    const apiKeys = await ApiKey.findAll({
+      where,
+      attributes: ['id', 'userId', 'name', 'permissions', 'isActive', 'expiresAt', 'lastUsedAt', 'createdAt']
+    });
+
+    res.json({ apiKeys });
+  } catch (error) {
+    logger.error('API keys list failed', { error: error.message, requestId: req.id });
+    res.status(500).json({ error: 'Failed to list API keys' });
+  }
+});
+
+// Revoke API key
+app.delete('/api-keys/:id', adminAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const apiKey = await ApiKey.findByPk(id);
+    if (!apiKey) {
+      return res.status(404).json({ error: 'API key not found' });
+    }
+
+    await apiKey.update({ isActive: false });
+    await auditLog(req, 'revoke', 'api_key', id, 'success');
+
+    res.json({ success: true, message: 'API key revoked' });
+  } catch (error) {
+    logger.error('API key revocation failed', { error: error.message, requestId: req.id });
+    res.status(500).json({ error: 'Failed to revoke API key' });
+  }
+});
+
+// ===== SELF-CUSTODY WALLET ROUTES =====
+
+// Create new self-custody HD wallet
+app.post('/wallet/create', adminAuth, async (req, res) => {
+  try {
+    const { mnemonic, passphrase = '', accountCount = 1 } = req.body;
+    
+    if (accountCount > 50) {
+      return res.status(400).json({ error: 'Cannot create more than 50 accounts at once' });
+    }
+
+    const wallet = new HDWallet(mnemonic, passphrase);
+    const walletId = CryptoUtils.sha256Hex(wallet.mnemonic + Date.now().toString());
+    
+    const accounts = wallet.deriveMultipleAccounts(accountCount);
+    
+    selfCustodyWallets.set(walletId, wallet);
+    
+    await auditLog(req, 'create', 'self_custody_wallet', walletId, 'success', { accountCount });
+    
+    logger.info('Self-custody wallet created', { 
+      walletId, 
+      accountCount,
+      requestId: req.id 
+    });
+    
+    res.json({
+      success: true,
+      walletId,
+      mnemonic: wallet.mnemonic,
+      accounts: accounts.map(acc => ({
+        index: acc.index,
+        address: acc.address,
+        path: acc.path
+      })),
+      stats: wallet.getStats(),
+      warning: 'Store this mnemonic securely. It cannot be recovered.'
+    });
+  } catch (error) {
+    logger.error('Wallet creation failed', { error: error.message, requestId: req.id });
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// Import existing self-custody wallet
+app.post('/wallet/import', adminAuth, async (req, res) => {
+  try {
+    const { mnemonic, passphrase = '', accountCount = 1 } = req.body;
+    
+    if (!mnemonic) {
+      return res.status(400).json({ error: 'Mnemonic required' });
+    }
+    
+    if (!bip39.validateMnemonic(mnemonic)) {
+      return res.status(400).json({ error: 'Invalid mnemonic' });
+    }
+
+    const wallet = new HDWallet(mnemonic, passphrase);
+    const walletId = CryptoUtils.sha256Hex(wallet.mnemonic + Date.now().toString());
+    
+    const accounts = wallet.deriveMultipleAccounts(accountCount);
+    
+    selfCustodyWallets.set(walletId, wallet);
+    
+    await auditLog(req, 'import', 'self_custody_wallet', walletId, 'success', { accountCount });
+    
+    res.json({
+      success: true,
+      walletId,
+      accounts: accounts.map(acc => ({
+        index: acc.index,
+        address: acc.address,
+        path: acc.path
+      })),
+      stats: wallet.getStats()
+    });
+  } catch (error) {
+    logger.error('Wallet import failed', { error: error.message, requestId: req.id });
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// Get self-custody wallet info
+app.get('/wallet/:walletId', adminAuth, async (req, res) => {
+  try {
+    const { walletId } = req.params;
+    const wallet = selfCustodyWallets.get(walletId);
+    
+    if (!wallet) {
+      return res.status(404).json({ error: 'Wallet not found' });
+    }
+    
+    wallet.lastAccessed = new Date();
+    
+    const accounts = Array.from(wallet.accounts.values()).map(acc => ({
+      index: acc.index,
+      address: acc.address,
+      path: acc.path
+    }));
+    
+    res.json({
+      walletId,
+      accounts,
+      stats: wallet.getStats()
+    });
+  } catch (error) {
+    logger.error('Wallet info fetch failed', { error: error.message, requestId: req.id });
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// ===== CUSTODIAL WALLET ROUTES =====
+
+// Create custodial wallet
+app.post('/custodial/wallet/create', apiKeyAuth, async (req, res) => {
+  try {
+    const { walletType = 'hot', metadata = {} } = req.body;
+    const userId = req.user.id;
+
+    const wallet = await CustodialWalletService.createWallet(userId, walletType, metadata);
+    
+    await auditLog(req, 'create', 'custodial_wallet', wallet.id, 'success', { userId, walletType });
+
+    res.json({
+      success: true,
+      wallet: {
+        id: wallet.id,
+        userId: wallet.userId,
+        walletType: wallet.walletType,
+        accountCount: wallet.accountCount,
+        createdAt: wallet.createdAt
+      }
+    });
+  } catch (error) {
+    logger.error('Custodial wallet creation failed', { error: error.message, requestId: req.id });
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// Create custodial account
+app.post('/custodial/wallet/:walletId/account', apiKeyAuth, async (req, res) => {
+  try {
+    const { walletId } = req.params;
+    const { label } = req.body;
+
+    const wallet = await CustodialWallet.findOne({
+      where: { id: walletId, userId: req.user.id }
+    });
+
+    if (!wallet) {
+      return res.status(404).json({ error: 'Wallet not found' });
+    }
+
+    const account = await CustodialWalletService.createAccount(walletId, label);
+    
+    await auditLog(req, 'create', 'custodial_account', account.id, 'success', { walletId });
+
+    res.json({
+      success: true,
+      account
+    });
+  } catch (error) {
+    logger.error('Account creation failed', { error: error.message, requestId: req.id });
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// List custodial wallets
+app.get('/custodial/wallets', apiKeyAuth, async (req, res) => {
+  try {
+    const wallets = await CustodialWallet.findAll({
+      where: { userId: req.user.id, isActive: true },
+      attributes: ['id', 'walletType', 'accountCount', 'createdAt', 'updatedAt']
+    });
+
+    res.json({ wallets });
+  } catch (error) {
+    logger.error('Wallet list failed', { error: error.message, requestId: req.id });
+    res.status(500).json({ error: 'Failed to list wallets' });
+  }
+});
+
+// List custodial accounts
+app.get('/custodial/wallet/:walletId/accounts', apiKeyAuth, async (req, res) => {
+  try {
+    const { walletId } = req.params;
+
+    const wallet = await CustodialWallet.findOne({
+      where: { id: walletId, userId: req.user.id }
+    });
+
+    if (!wallet) {
+      return res.status(404).json({ error: 'Wallet not found' });
+    }
+
+    const accounts = await WalletAccount.findAll({
+      where: { walletId, isActive: true },
+      attributes: ['id', 'accountIndex', 'address', 'label', 'createdAt']
+    });
+
+    res.json({ accounts });
+  } catch (error) {
+    logger.error('Account list failed', { error: error.message, requestId: req.id });
+    res.status(500).json({ error: 'Failed to list accounts' });
+  }
+});
+
+// Sign transaction with custodial account
+app.post('/custodial/account/:accountId/sign', apiKeyAuth, async (req, res) => {
+  try {
+    const { accountId } = req.params;
+    const { message } = req.body;
+
+    if (!message) {
+      return res.status(400).json({ error: 'Message required' });
+    }
+
+    const account = await WalletAccount.findByPk(accountId, {
+      include: [{ model: CustodialWallet, where: { userId: req.user.id } }]
+    });
+
+    if (!account) {
+      return res.status(404).json({ error: 'Account not found' });
+    }
+
+    const signature = await CustodialWalletService.signTransaction(accountId, message);
+    
+    await auditLog(req, 'sign', 'transaction', accountId, 'success', { message: message.substring(0, 50) });
+
+    res.json({
+      success: true,
+      signature
+    });
+  } catch (error) {
+    logger.error('Transaction signing failed', { error: error.message, requestId: req.id });
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// Get custodial wallet balance
+app.get('/custodial/wallet/:walletId/balance/:network', apiKeyAuth, async (req, res) => {
+  try {
+    const { walletId, network } = req.params;
+
+    const wallet = await CustodialWallet.findOne({
+      where: { id: walletId, userId: req.user.id }
+    });
+
+    if (!wallet) {
+      return res.status(404).json({ error: 'Wallet not found' });
+    }
+
+    const balances = await CustodialWalletService.getWalletBalance(walletId, network);
+
+    res.json({
+      walletId,
+      network,
+      balances,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    logger.error('Balance fetch failed', { error: error.message, requestId: req.id });
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// ===== BLOCKCHAIN SCANNER ROUTES =====
+
+// Get balance
+app.get('/balance/:network/:address', apiKeyAuth, async (req, res) => {
+  try {
+    const { network, address } = req.params;
+    const balance = await scanner.getBalance(network, address);
+    res.json(balance);
+  } catch (error) {
+    logger.error('Balance fetch failed', { error: error.message, requestId: req.id });
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// Get transaction history
+app.get('/transactions/:network/:address', apiKeyAuth, async (req, res) => {
+  try {
+    const { network, address } = req.params;
+    const { page = 1, offset = 10 } = req.query;
+    const history = await scanner.getTransactionHistory(network, address, page, offset);
+    res.json(history);
+  } catch (error) {
+    logger.error('Transaction history fetch failed', { error: error.message, requestId: req.id });
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// ===== SYSTEM ROUTES =====
+
+// Health check
+app.get('/health', async (req, res) => {
+  const health = {
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    version: '2.0.0',
+    uptime: process.uptime(),
+    memory: process.memoryUsage(),
+    selfCustodyWallets: selfCustodyWallets.size,
+    environment: process.env.NODE_ENV || 'development'
+  };
+
+  try {
+    await sequelize.authenticate();
+    health.database = 'connected';
+  } catch (error) {
+    health.database = 'disconnected';
+    health.status = 'degraded';
+  }
+
+  if (redisClient) {
+    try {
+      await redisClient.ping();
+      health.redis = 'connected';
+    } catch (error) {
+      health.redis = 'disconnected';
+      health.status = 'degraded';
+    }
+  }
+
+  res.json(health);
+});
+
+// Metrics endpoint
+app.get('/metrics', adminAuth, async (req, res) => {
+  try {
+    const custodialWalletCount = await CustodialWallet.count();
+    const custodialAccountCount = await WalletAccount.count();
+    const transactionCount = await Transaction.count();
+    const activeApiKeys = await ApiKey.count({ where: { isActive: true } });
+
+    const metrics = {
+      wallets: {
+        selfCustody: selfCustodyWallets.size,
+        custodial: custodialWalletCount,
+        accounts: custodialAccountCount
+      },
+      transactions: {
+        total: transactionCount
+      },
+      apiKeys: {
+        active: activeApiKeys
+      },
+      system: {
+        memory: process.memoryUsage(),
+        uptime: process.uptime()
+      }
+    };
+
+    res.json(metrics);
+  } catch (error) {
+    logger.error('Metrics fetch failed', { error: error.message, requestId: req.id });
+    res.status(500).json({ error: 'Failed to fetch metrics' });
+  }
+});
+
+// System statistics
+app.get('/stats', adminAuth, async (req, res) => {
+  try {
+    const [
+      totalWallets,
+      totalAccounts,
+      totalTransactions,
+      recentLogins,
+      activeApiKeys
+    ] = await Promise.all([
+      CustodialWallet.count(),
+      WalletAccount.count(),
+      Transaction.count(),
+      AdminUser.count({
+        where: {
+          lastLogin: {
+            [Op.gte]: new Date(Date.now() - 24 * 60 * 60 * 1000)
+          }
+        }
+      }),
+      ApiKey.count({ where: { isActive: true } })
+    ]);
+
+    res.json({
+      wallets: {
+        custodial: totalWallets,
+        selfCustody: selfCustodyWallets.size
+      },
+      accounts: totalAccounts,
+      transactions: totalTransactions,
+      admins: {
+        recentLogins
+      },
+      apiKeys: {
+        active: activeApiKeys
+      },
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    logger.error('Stats fetch failed', { error: error.message, requestId: req.id });
+    res.status(500).json({ error: 'Failed to fetch statistics' });
+  }
+});
+
+// Error handling middleware
+app.use((error, req, res, next) => {
+  logger.error('Unhandled error', { 
+    error: error.message,
+    stack: error.stack,
+    requestId: req.id
+  });
+  
+  res.status(500).json({ 
+    error: 'Internal server error',
+    requestId: req.id
+  });
+});
+
+// 404 handler
+app.use((req, res) => {
+  res.status(404).json({ 
+    error: 'Route not found',
+    requestId: req.id 
+  });
+});
+
+// Graceful shutdown
+process.on('SIGTERM', async () => {
+  logger.info('SIGTERM received, starting graceful shutdown');
+  
+  if (redisClient) {
+    try {
+      await redisClient.quit();
+    } catch (error) {
+      logger.error('Redis shutdown error', { error: error.message });
+    }
+  }
+  
+  try {
+    await sequelize.close();
+  } catch (error) {
+    logger.error('Database shutdown error', { error: error.message });
+  }
+  
+  selfCustodyWallets.clear();
+  
+  server.close(() => {
+    logger.info('Server closed');
+    process.exit(0);
+  });
+  
+  setTimeout(() => {
+    logger.error('Forced shutdown after timeout');
+    process.exit(1);
+  }, 10000);
+});
+
+// Start server
+const server = app.listen(PORT, '0.0.0.0', () => {
+  logger.info(`HD Wallet Server running on port ${PORT}`);
+  console.log(`
+╔═══════════════════════════════════════════════════════════════╗
+║         HD WALLET SERVER WITH CUSTODIAL SERVICES              ║
+╠═══════════════════════════════════════════════════════════════╣
+║ Port: ${PORT}                                                   
+║ Environment: ${process.env.NODE_ENV || 'development'}         
+║ Worker: ${cluster.worker ? cluster.worker.id : 'master'}      
+╠═══════════════════════════════════════════════════════════════╣
+║ ADMIN ROUTES:                                                 ║
+║   POST   /admin/login                                         ║
+║   POST   /admin/create                                        ║
+║   GET    /admin/list                                          ║
+║   GET    /admin/audit-logs                                    ║
+║                                                               ║
+║ API KEY ROUTES:                                               ║
+║   POST   /api-keys/create                                     ║
+║   GET    /api-keys/list                                       ║
+║   DELETE /api-keys/:id                                        ║
+║                                                               ║
+║ SELF-CUSTODY WALLET ROUTES:                                   ║
+║   POST   /wallet/create                                       ║
+║   POST   /wallet/import                                       ║
+║   GET    /wallet/:id                                          ║
+║                                                               ║
+║ CUSTODIAL WALLET ROUTES:                                      ║
+║   POST   /custodial/wallet/create                             ║
+║   GET    /custodial/wallets                                   ║
+║   POST   /custodial/wallet/:id/account                        ║
+║   GET    /custodial/wallet/:id/accounts                       ║
+║   POST   /custodial/account/:id/sign                          ║
+║   GET    /custodial/wallet/:id/balance/:network               ║
+║                                                               ║
+║ BLOCKCHAIN ROUTES:                                            ║
+║   GET    /balance/:network/:address                           ║
+║   GET    /transactions/:network/:address                      ║
+║                                                               ║
+║ SYSTEM ROUTES:                                                ║
+║   GET    /health                                              ║
+║   GET    /metrics                                             ║
+║   GET    /stats                                               ║
+╚═══════════════════════════════════════════════════════════════╝
+  `);
+});
+
+module.exports = app;
