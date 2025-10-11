@@ -1,0 +1,1691 @@
+const express = require('express');
+const crypto = require('crypto');
+const secp256k1 = require('secp256k1');
+const createKeccakHash = require('keccak');
+const bip39 = require('bip39');
+const hdkey = require('hdkey');
+const axios = require('axios');
+const rateLimit = require('express-rate-limit');
+const helmet = require('helmet');
+const cors = require('cors');
+const winston = require('winston');
+const { Transaction } = require('@ethereumjs/tx');
+const { Common } = require('@ethereumjs/common');
+const Web3 = require('web3');
+const bs58 = require('bs58');
+const bip32 = require('bip32');
+const bitcoinjs = require('bitcoinjs-lib');
+require('dotenv').config();
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// Logger configuration
+const logger = winston.createLogger({
+    level: process.env.LOG_LEVEL || 'info',
+    format: winston.format.combine(
+        winston.format.timestamp(),
+        winston.format.json()
+    ),
+    transports: [
+        new winston.transports.File({ filename: 'error.log', level: 'error' }),
+        new winston.transports.File({ filename: 'combined.log' }),
+        new winston.transports.Console({
+            format: winston.format.combine(
+                winston.format.colorize(),
+                winston.format.simple()
+            )
+        })
+    ]
+});
+
+// Security middleware
+app.use(helmet({
+    contentSecurityPolicy: {
+        directives: {
+            defaultSrc: ["'self'"],
+            styleSrc: ["'self'", "'unsafe-inline'"],
+            scriptSrc: ["'self'"],
+            imgSrc: ["'self'", "data:", "https:"],
+        },
+    },
+    hsts: {
+        maxAge: 31536000,
+        includeSubDomains: true,
+        preload: true
+    }
+}));
+
+app.use(cors({
+    origin: process.env.ALLOWED_ORIGINS?.split(',') || ['http://localhost:3000'],
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-admin-key']
+}));
+
+// Rate limiting with different tiers
+const createRateLimiter = (windowMs, max) => rateLimit({
+    windowMs,
+    max,
+    message: { error: 'Too many requests from this IP, please try again later' },
+    standardHeaders: true,
+    legacyHeaders: false
+});
+
+const generalLimiter = createRateLimiter(15 * 60 * 1000, 100);
+const strictLimiter = createRateLimiter(15 * 60 * 1000, 20);
+const authLimiter = createRateLimiter(15 * 60 * 1000, 5);
+
+app.use('/wallet/create', strictLimiter);
+app.use('/wallet/import', strictLimiter);
+app.use('/wallet/*/export', authLimiter);
+app.use(generalLimiter);
+
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Request logging middleware
+app.use((req, res, next) => {
+    logger.info(`${req.method} ${req.path}`, {
+        ip: req.ip,
+        userAgent: req.get('user-agent')
+    });
+    next();
+});
+
+// Admin authentication middleware
+const adminAuth = (req, res, next) => {
+    const adminKey = req.headers['x-admin-key'];
+    if (!adminKey || adminKey !== process.env.ADMIN_KEY) {
+        logger.warn('Unauthorized access attempt', { ip: req.ip });
+        return res.status(401).json({ error: 'Unauthorized' });
+    }
+    next();
+};
+
+// Blockchain scanner configurations
+const SCANNERS = {
+    ethereum: {
+        name: 'Etherscan',
+        baseUrl: 'https://api.etherscan.io/api',
+        apiKey: process.env.ETHERSCAN_API_KEY,
+        chainId: 1,
+        rpcUrl: process.env.ETHEREUM_RPC_URL || 'https://eth.llamarpc.com'
+    },
+    bsc: {
+        name: 'BscScan',
+        baseUrl: 'https://api.bscscan.com/api',
+        apiKey: process.env.BSCSCAN_API_KEY,
+        chainId: 56,
+        rpcUrl: process.env.BSC_RPC_URL || 'https://bsc-dataseed1.binance.org'
+    },
+    arbitrum: {
+        name: 'Arbiscan',
+        baseUrl: 'https://api.arbiscan.io/api',
+        apiKey: process.env.ARBISCAN_API_KEY,
+        chainId: 42161,
+        rpcUrl: process.env.ARBITRUM_RPC_URL || 'https://arb1.arbitrum.io/rpc'
+    },
+    polygon: {
+        name: 'Polygonscan',
+        baseUrl: 'https://api.polygonscan.com/api',
+        apiKey: process.env.POLYGONSCAN_API_KEY,
+        chainId: 137,
+        rpcUrl: process.env.POLYGON_RPC_URL || 'https://polygon-rpc.com'
+    },
+    optimism: {
+        name: 'Optimism',
+        baseUrl: 'https://api-optimistic.etherscan.io/api',
+        apiKey: process.env.OPTIMISM_API_KEY,
+        chainId: 10,
+        rpcUrl: process.env.OPTIMISM_RPC_URL || 'https://mainnet.optimism.io'
+    }
+};
+
+// ERC-20 Token ABI
+const ERC20_ABI = [
+    {
+        constant: true,
+        inputs: [{ name: '_owner', type: 'address' }],
+        name: 'balanceOf',
+        outputs: [{ name: 'balance', type: 'uint256' }],
+        type: 'function'
+    },
+    {
+        constant: true,
+        inputs: [],
+        name: 'decimals',
+        outputs: [{ name: '', type: 'uint8' }],
+        type: 'function'
+    },
+    {
+        constant: true,
+        inputs: [],
+        name: 'symbol',
+        outputs: [{ name: '', type: 'string' }],
+        type: 'function'
+    },
+    {
+        constant: false,
+        inputs: [
+            { name: '_to', type: 'address' },
+            { name: '_value', type: 'uint256' }
+        ],
+        name: 'transfer',
+        outputs: [{ name: '', type: 'bool' }],
+        type: 'function'
+    }
+];
+
+// Cryptographic utilities
+class CryptoUtils {
+    static sha256(data) {
+        return crypto.createHash('sha256').update(data).digest();
+    }
+
+    static sha256Hex(data) {
+        return crypto.createHash('sha256').update(data).digest('hex');
+    }
+
+    static sha512(data) {
+        return crypto.createHash('sha512').update(data).digest();
+    }
+
+    static ripemd160(data) {
+        return crypto.createHash('ripemd160').update(data).digest();
+    }
+
+    static keccak256(data) {
+        return createKeccakHash('keccak256').update(data).digest();
+    }
+
+    static hash160(data) {
+        return this.ripemd160(this.sha256(data));
+    }
+
+    static generatePrivateKey() {
+        let privateKey;
+        do {
+            privateKey = crypto.randomBytes(32);
+        } while (!secp256k1.privateKeyVerify(privateKey));
+        return privateKey;
+    }
+
+    static getPublicKey(privateKey) {
+        return secp256k1.publicKeyCreate(privateKey, false);
+    }
+
+    static getCompressedPublicKey(privateKey) {
+        return secp256k1.publicKeyCreate(privateKey, true);
+    }
+
+    static signMessage(message, privateKey) {
+        const hash = this.sha256(Buffer.from(message));
+        const signature = secp256k1.ecdsaSign(hash, privateKey);
+        return {
+            signature: signature.signature,
+            recovery: signature.recovery
+        };
+    }
+
+    static verifySignature(message, signature, publicKey) {
+        const hash = this.sha256(Buffer.from(message));
+        return secp256k1.ecdsaVerify(signature, hash, publicKey);
+    }
+
+    static encryptPrivateKey(privateKey, password) {
+        const salt = crypto.randomBytes(16);
+        const iv = crypto.randomBytes(16);
+        const key = crypto.pbkdf2Sync(password, salt, 100000, 32, 'sha256');
+        const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+        
+        let encrypted = cipher.update(privateKey, 'hex', 'hex');
+        encrypted += cipher.final('hex');
+        const authTag = cipher.getAuthTag();
+        
+        return {
+            encrypted,
+            salt: salt.toString('hex'),
+            iv: iv.toString('hex'),
+            authTag: authTag.toString('hex')
+        };
+    }
+
+    static decryptPrivateKey(encryptedData, password) {
+        const salt = Buffer.from(encryptedData.salt, 'hex');
+        const iv = Buffer.from(encryptedData.iv, 'hex');
+        const authTag = Buffer.from(encryptedData.authTag, 'hex');
+        const key = crypto.pbkdf2Sync(password, salt, 100000, 32, 'sha256');
+        
+        const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+        decipher.setAuthTag(authTag);
+        
+        let decrypted = decipher.update(encryptedData.encrypted, 'hex', 'hex');
+        decrypted += decipher.final('hex');
+        
+        return decrypted;
+    }
+
+    static generateMnemonic(strength = 256) {
+        return bip39.generateMnemonic(strength);
+    }
+
+    static validateMnemonic(mnemonic) {
+        return bip39.validateMnemonic(mnemonic);
+    }
+}
+
+// HD Wallet class
+class HDWallet {
+    constructor(mnemonic = null, passphrase = '') {
+        if (!mnemonic) {
+            this.mnemonic = bip39.generateMnemonic(256);
+        } else {
+            if (!bip39.validateMnemonic(mnemonic)) {
+                throw new Error('Invalid mnemonic');
+            }
+            this.mnemonic = mnemonic;
+        }
+        
+        this.seed = bip39.mnemonicToSeedSync(this.mnemonic, passphrase);
+        this.root = hdkey.fromMasterSeed(this.seed);
+        this.btcRoot = bip32.fromSeed(this.seed);
+        this.accounts = new Map();
+        this.createdAt = new Date().toISOString();
+    }
+
+    deriveAccount(index = 0, coinType = 60) {
+        const path = `m/44'/${coinType}'/${index}'/0/0`;
+        const account = this.root.derive(path);
+        const privateKey = account.privateKey;
+        const publicKey = CryptoUtils.getPublicKey(privateKey);
+        const address = this.getEthereumAddress(publicKey);
+        
+        const accountData = {
+            index,
+            coinType,
+            path,
+            privateKey: privateKey.toString('hex'),
+            publicKey: publicKey.toString('hex'),
+            address,
+            compressed: CryptoUtils.getCompressedPublicKey(privateKey).toString('hex'),
+            createdAt: new Date().toISOString()
+        };
+        
+        this.accounts.set(`${coinType}-${index}`, accountData);
+        return accountData;
+    }
+
+    deriveBitcoinAccount(index = 0) {
+        const path = `m/44'/0'/${index}'/0/0`;
+        const child = this.btcRoot.derivePath(path);
+        const { address } = bitcoinjs.payments.p2pkh({
+            pubkey: child.publicKey,
+            network: bitcoinjs.networks.bitcoin
+        });
+        
+        return {
+            index,
+            coinType: 0,
+            path,
+            privateKey: child.privateKey.toString('hex'),
+            publicKey: child.publicKey.toString('hex'),
+            address,
+            wif: child.toWIF()
+        };
+    }
+
+    deriveMultipleAccounts(count = 10, coinType = 60) {
+        const accounts = [];
+        for (let i = 0; i < count; i++) {
+            accounts.push(this.deriveAccount(i, coinType));
+        }
+        return accounts;
+    }
+
+    getEthereumAddress(publicKey) {
+        const hash = CryptoUtils.keccak256(publicKey.slice(1));
+        const address = '0x' + hash.slice(-20).toString('hex');
+        return Web3.utils.toChecksumAddress(address);
+    }
+
+    signTransaction(accountIndex, message, coinType = 60) {
+        const account = this.accounts.get(`${coinType}-${accountIndex}`);
+        if (!account) {
+            throw new Error('Account not found');
+        }
+        
+        const privateKey = Buffer.from(account.privateKey, 'hex');
+        return CryptoUtils.signMessage(message, privateKey);
+    }
+
+    signEthereumTransaction(accountIndex, txData) {
+        const account = this.accounts.get(`60-${accountIndex}`);
+        if (!account) {
+            throw new Error('Account not found');
+        }
+
+        const privateKey = Buffer.from(account.privateKey, 'hex');
+        const common = Common.custom({ chainId: txData.chainId });
+        const tx = Transaction.fromTxData(txData, { common });
+        const signedTx = tx.sign(privateKey);
+        
+        return {
+            rawTransaction: '0x' + signedTx.serialize().toString('hex'),
+            transactionHash: '0x' + signedTx.hash().toString('hex')
+        };
+    }
+
+    exportAccount(index, coinType = 60) {
+        const account = this.accounts.get(`${coinType}-${index}`);
+        if (!account) {
+            throw new Error('Account not found');
+        }
+        
+        return {
+            address: account.address,
+            privateKey: account.privateKey,
+            publicKey: account.publicKey,
+            path: account.path,
+            coinType: account.coinType
+        };
+    }
+
+    exportWallet(includePrivateKeys = false) {
+        const accounts = Array.from(this.accounts.values()).map(acc => ({
+            index: acc.index,
+            address: acc.address,
+            path: acc.path,
+            coinType: acc.coinType,
+            ...(includePrivateKeys && { privateKey: acc.privateKey })
+        }));
+
+        return {
+            mnemonic: includePrivateKeys ? this.mnemonic : '[HIDDEN]',
+            accounts,
+            createdAt: this.createdAt
+        };
+    }
+}
+
+// Blockchain integration
+class BlockchainScanner {
+    constructor() {
+        this.cache = new Map();
+        this.cacheTimeout = 30000;
+        this.web3Instances = {};
+        this.initWeb3();
+    }
+
+    initWeb3() {
+        for (const [network, config] of Object.entries(SCANNERS)) {
+            this.web3Instances[network] = new Web3(config.rpcUrl);
+        }
+    }
+
+    async getBalance(network, address) {
+        const scanner = SCANNERS[network];
+        if (!scanner) {
+            throw new Error(`Unsupported network: ${network}`);
+        }
+
+        const cacheKey = `balance_${network}_${address}`;
+        const cached = this.cache.get(cacheKey);
+        if (cached && Date.now() - cached.timestamp < this.cacheTimeout) {
+            return cached.data;
+        }
+
+        try {
+            const web3 = this.web3Instances[network];
+            const balance = await web3.eth.getBalance(address);
+            const balanceEth = web3.utils.fromWei(balance, 'ether');
+            
+            const result = {
+                balance: balance.toString(),
+                balanceEth: parseFloat(balanceEth).toFixed(6),
+                balanceWei: balance.toString(),
+                network: network,
+                address: address,
+                timestamp: new Date().toISOString()
+            };
+
+            this.cache.set(cacheKey, {
+                data: result,
+                timestamp: Date.now()
+            });
+
+            return result;
+        } catch (error) {
+            logger.error(`Failed to get balance for ${address} on ${network}`, { error: error.message });
+            throw new Error(`Failed to get balance: ${error.message}`);
+        }
+    }
+
+    async getTransactionHistory(network, address, page = 1, offset = 10) {
+        const scanner = SCANNERS[network];
+        if (!scanner) {
+            throw new Error(`Unsupported network: ${network}`);
+        }
+
+        try {
+            const response = await axios.get(scanner.baseUrl, {
+                params: {
+                    module: 'account',
+                    action: 'txlist',
+                    address: address,
+                    startblock: 0,
+                    endblock: 99999999,
+                    page: page,
+                    offset: offset,
+                    sort: 'desc',
+                    apikey: scanner.apiKey
+                },
+                timeout: 10000
+            });
+
+            const transactions = response.data.result || [];
+            return {
+                transactions: transactions.map(tx => ({
+                    hash: tx.hash,
+                    from: tx.from,
+                    to: tx.to,
+                    value: tx.value,
+                    valueEth: (parseInt(tx.value) / 1e18).toFixed(6),
+                    gasUsed: tx.gasUsed,
+                    gasPrice: tx.gasPrice,
+                    timestamp: new Date(parseInt(tx.timeStamp) * 1000).toISOString(),
+                    blockNumber: tx.blockNumber,
+                    confirmations: tx.confirmations,
+                    isError: tx.isError === '1'
+                })),
+                network: network,
+                address: address,
+                page: parseInt(page),
+                offset: parseInt(offset)
+            };
+        } catch (error) {
+            logger.error(`Failed to get transaction history for ${address}`, { error: error.message });
+            throw new Error(`Failed to get transaction history: ${error.message}`);
+        }
+    }
+
+    async getTokenBalance(network, address, contractAddress) {
+        const scanner = SCANNERS[network];
+        if (!scanner) {
+            throw new Error(`Unsupported network: ${network}`);
+        }
+
+        try {
+            const web3 = this.web3Instances[network];
+            const contract = new web3.eth.Contract(ERC20_ABI, contractAddress);
+            
+            const [balance, decimals, symbol] = await Promise.all([
+                contract.methods.balanceOf(address).call(),
+                contract.methods.decimals().call(),
+                contract.methods.symbol().call()
+            ]);
+
+            const balanceFormatted = (parseInt(balance) / Math.pow(10, parseInt(decimals))).toFixed(6);
+
+            return {
+                balance: balance.toString(),
+                balanceFormatted,
+                decimals: decimals.toString(),
+                symbol,
+                network: network,
+                address: address,
+                contractAddress: contractAddress
+            };
+        } catch (error) {
+            logger.error(`Failed to get token balance`, { error: error.message });
+            throw new Error(`Failed to get token balance: ${error.message}`);
+        }
+    }
+
+    async getGasPrice(network) {
+        const web3 = this.web3Instances[network];
+        if (!web3) {
+            throw new Error(`Unsupported network: ${network}`);
+        }
+
+        try {
+            const gasPrice = await web3.eth.getGasPrice();
+            const gasPriceGwei = web3.utils.fromWei(gasPrice, 'gwei');
+
+            return {
+                gasPrice: gasPrice.toString(),
+                gasPriceGwei: parseFloat(gasPriceGwei).toFixed(2),
+                network: network
+            };
+        } catch (error) {
+            throw new Error(`Failed to get gas price: ${error.message}`);
+        }
+    }
+
+    async estimateGas(network, txData) {
+        const web3 = this.web3Instances[network];
+        if (!web3) {
+            throw new Error(`Unsupported network: ${network}`);
+        }
+
+        try {
+            const gas = await web3.eth.estimateGas(txData);
+            const gasPrice = await web3.eth.getGasPrice();
+            const cost = (BigInt(gas) * BigInt(gasPrice)).toString();
+            const costEth = web3.utils.fromWei(cost, 'ether');
+
+            return {
+                gas: gas.toString(),
+                gasPrice: gasPrice.toString(),
+                gasPriceGwei: web3.utils.fromWei(gasPrice, 'gwei'),
+                estimatedCost: cost,
+                estimatedCostEth: parseFloat(costEth).toFixed(6),
+                network: network
+            };
+        } catch (error) {
+            throw new Error(`Failed to estimate gas: ${error.message}`);
+        }
+    }
+
+    async getTransactionReceipt(network, txHash) {
+        const web3 = this.web3Instances[network];
+        if (!web3) {
+            throw new Error(`Unsupported network: ${network}`);
+        }
+
+        try {
+            const receipt = await web3.eth.getTransactionReceipt(txHash);
+            return {
+                ...receipt,
+                network: network
+            };
+        } catch (error) {
+            throw new Error(`Failed to get transaction receipt: ${error.message}`);
+        }
+    }
+
+    async getNonce(network, address) {
+        const web3 = this.web3Instances[network];
+        if (!web3) {
+            throw new Error(`Unsupported network: ${network}`);
+        }
+
+        try {
+            const nonce = await web3.eth.getTransactionCount(address, 'pending');
+            return {
+                nonce,
+                address,
+                network
+            };
+        } catch (error) {
+            throw new Error(`Failed to get nonce: ${error.message}`);
+        }
+    }
+
+    async broadcastTransaction(network, signedTx) {
+        const web3 = this.web3Instances[network];
+        if (!web3) {
+            throw new Error(`Unsupported network: ${network}`);
+        }
+
+        try {
+            const receipt = await web3.eth.sendSignedTransaction(signedTx);
+            return {
+                transactionHash: receipt.transactionHash,
+                blockNumber: receipt.blockNumber,
+                gasUsed: receipt.gasUsed.toString(),
+                status: receipt.status,
+                network: network
+            };
+        } catch (error) {
+            throw new Error(`Failed to broadcast transaction: ${error.message}`);
+        }
+    }
+}
+
+// Transaction Builder
+class TransactionBuilder {
+    constructor(scanner) {
+        this.scanner = scanner;
+    }
+
+    async buildEthereumTransaction(network, from, to, value, data = '0x') {
+        try {
+            const [nonce, gasPrice, chainId] = await Promise.all([
+                this.scanner.getNonce(network, from),
+                this.scanner.getGasPrice(network),
+                Promise.resolve(SCANNERS[network].chainId)
+            ]);
+
+            const txData = {
+                nonce: nonce.nonce,
+                gasPrice: gasPrice.gasPrice,
+                gasLimit: 21000,
+                to: to,
+                value: value,
+                data: data,
+                chainId: chainId
+            };
+
+            const gasEstimate = await this.scanner.estimateGas(network, {
+                from,
+                to,
+                value,
+                data
+            });
+
+            txData.gasLimit = Math.ceil(parseInt(gasEstimate.gas) * 1.2);
+
+            return txData;
+        } catch (error) {
+            throw new Error(`Failed to build transaction: ${error.message}`);
+        }
+    }
+
+    async buildTokenTransfer(network, from, to, tokenAddress, amount) {
+        const web3 = this.scanner.web3Instances[network];
+        const contract = new web3.eth.Contract(ERC20_ABI, tokenAddress);
+        
+        const data = contract.methods.transfer(to, amount).encodeABI();
+        
+        return this.buildEthereumTransaction(network, from, tokenAddress, '0x0', data);
+    }
+}
+
+// Global instances
+const scanner = new BlockchainScanner();
+const txBuilder = new TransactionBuilder(scanner);
+const wallets = new Map();
+const sessions = new Map();
+
+// Session management
+function createSession(walletId) {
+    const sessionId = crypto.randomBytes(32).toString('hex');
+    const expiresAt = Date.now() + (60 * 60 * 1000); // 1 hour
+    
+    sessions.set(sessionId, {
+        walletId,
+        expiresAt,
+        createdAt: Date.now()
+    });
+    
+    return sessionId;
+}
+
+function validateSession(sessionId) {
+    const session = sessions.get(sessionId);
+    if (!session) return null;
+    
+    if (Date.now() > session.expiresAt) {
+        sessions.delete(sessionId);
+        return null;
+    }
+    
+    return session;
+}
+
+// API Routes
+
+// Health check with system info
+app.get('/health', (req, res) => {
+    res.json({ 
+        status: 'healthy', 
+        timestamp: new Date().toISOString(),
+        version: '2.0.0',
+        uptime: process.uptime(),
+        networks: Object.keys(SCANNERS),
+        walletsCount: wallets.size
+    });
+});
+
+// Get supported networks
+app.get('/networks', (req, res) => {
+    const networks = Object.entries(SCANNERS).map(([key, value]) => ({
+        id: key,
+        name: value.name,
+        chainId: value.chainId
+    }));
+    
+    res.json({ networks });
+});
+
+// Create new HD wallet
+app.post('/wallet/create', adminAuth, (req, res) => {
+    try {
+        const { mnemonic, passphrase = '', accountCount = 1, coinTypes = [60] } = req.body;
+        
+        const wallet = new HDWallet(mnemonic, passphrase);
+        const walletId = CryptoUtils.sha256Hex(wallet.mnemonic + Date.now().toString());
+        
+        const allAccounts = [];
+        for (const coinType of coinTypes) {
+            const accounts = wallet.deriveMultipleAccounts(accountCount, coinType);
+            allAccounts.push(...accounts);
+        }
+        
+        wallets.set(walletId, wallet);
+        const sessionId = createSession(walletId);
+        
+        logger.info('Wallet created', { walletId, accountCount: allAccounts.length });
+        
+        res.json({
+            success: true,
+            walletId: walletId,
+            sessionId: sessionId,
+            mnemonic: wallet.mnemonic,
+            accounts: allAccounts.map(acc => ({
+                index: acc.index,
+                address: acc.address,
+                path: acc.path,
+                coinType: acc.coinType
+            })),
+            warning: 'Store the mnemonic securely. This is the only time it will be displayed.'
+        });
+    } catch (error) {
+        logger.error('Wallet creation failed', { error: error.message });
+        res.status(400).json({ error: error.message });
+    }
+});
+
+// Import existing wallet
+app.post('/wallet/import', adminAuth, (req, res) => {
+    try {
+        const { mnemonic, passphrase = '', accountCount = 1, coinTypes = [60] } = req.body;
+        
+        if (!mnemonic || !bip39.validateMnemonic(mnemonic)) {
+            return res.status(400).json({ error: 'Invalid mnemonic' });
+        }
+        
+        const wallet = new HDWallet(mnemonic, passphrase);
+        const walletId = CryptoUtils.sha256Hex(wallet.mnemonic + Date.now().toString());
+        
+        const allAccounts = [];
+        for (const coinType of coinTypes) {
+            const accounts = wallet.deriveMultipleAccounts(accountCount, coinType);
+            allAccounts.push(...accounts);
+        }
+        
+        wallets.set(walletId, wallet);
+        const sessionId = createSession(walletId);
+        
+        logger.info('Wallet imported', { walletId, accountCount: allAccounts.length });
+        
+        res.json({
+            success: true,
+            walletId: walletId,
+            sessionId: sessionId,
+            accounts: allAccounts.map(acc => ({
+                index: acc.index,
+                address: acc.address,
+                path: acc.path,
+                coinType: acc.coinType
+            }))
+        });
+    } catch (error) {
+        logger.error('Wallet import failed', { error: error.message });
+        res.status(400).json({ error: error.message });
+    }
+});
+
+// List all wallets (metadata only)
+app.get('/wallets', adminAuth, (req, res) => {
+    try {
+        const walletList = Array.from(wallets.entries()).map(([id, wallet]) => ({
+            walletId: id,
+            accountCount: wallet.accounts.size,
+            createdAt: wallet.createdAt
+        }));
+        
+        res.json({
+            wallets: walletList,
+            total: walletList.length
+        });
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+
+// Get wallet info
+app.get('/wallet/:walletId', adminAuth, (req, res) => {
+    try {
+        const { walletId } = req.params;
+        const wallet = wallets.get(walletId);
+        
+        if (!wallet) {
+            return res.status(404).json({ error: 'Wallet not found' });
+        }
+        
+        const accounts = Array.from(wallet.accounts.values()).map(acc => ({
+            index: acc.index,
+            address: acc.address,
+            path: acc.path,
+            coinType: acc.coinType,
+            createdAt: acc.createdAt
+        }));
+        
+        res.json({
+            walletId: walletId,
+            accounts: accounts,
+            createdAt: wallet.createdAt
+        });
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+
+// Derive new account
+app.post('/wallet/:walletId/derive', adminAuth, (req, res) => {
+    try {
+        const { walletId } = req.params;
+        const { index, coinType = 60 } = req.body;
+        const wallet = wallets.get(walletId);
+        
+        if (!wallet) {
+            return res.status(404).json({ error: 'Wallet not found' });
+        }
+        
+        const accountIndex = index !== undefined ? index : wallet.accounts.size;
+        const account = wallet.deriveAccount(accountIndex, coinType);
+        
+        logger.info('Account derived', { walletId, index: accountIndex, coinType });
+        
+        res.json({
+            success: true,
+            account: {
+                index: account.index,
+                address: account.address,
+                path: account.path,
+                coinType: account.coinType
+            }
+        });
+    } catch (error) {
+        logger.error('Account derivation failed', { error: error.message });
+        res.status(400).json({ error: error.message });
+    }
+});
+
+// Derive Bitcoin account
+app.post('/wallet/:walletId/derive-bitcoin', adminAuth, (req, res) => {
+    try {
+        const { walletId } = req.params;
+        const { index = 0 } = req.body;
+        const wallet = wallets.get(walletId);
+        
+        if (!wallet) {
+            return res.status(404).json({ error: 'Wallet not found' });
+        }
+        
+        const account = wallet.deriveBitcoinAccount(index);
+        
+        logger.info('Bitcoin account derived', { walletId, index });
+        
+        res.json({
+            success: true,
+            account: {
+                index: account.index,
+                address: account.address,
+                path: account.path,
+                wif: account.wif
+            }
+        });
+    } catch (error) {
+        logger.error('Bitcoin account derivation failed', { error: error.message });
+        res.status(400).json({ error: error.message });
+    }
+});
+
+// Sign message
+app.post('/wallet/:walletId/sign', adminAuth, (req, res) => {
+    try {
+        const { walletId } = req.params;
+        const { accountIndex, message, coinType = 60 } = req.body;
+        const wallet = wallets.get(walletId);
+        
+        if (!wallet) {
+            return res.status(404).json({ error: 'Wallet not found' });
+        }
+        
+        if (!message) {
+            return res.status(400).json({ error: 'Message is required' });
+        }
+        
+        const signature = wallet.signTransaction(accountIndex, message, coinType);
+        
+        logger.info('Message signed', { walletId, accountIndex });
+        
+        res.json({
+            success: true,
+            signature: signature.signature.toString('hex'),
+            recovery: signature.recovery,
+            message: message,
+            accountIndex,
+            coinType
+        });
+    } catch (error) {
+        logger.error('Message signing failed', { error: error.message });
+        res.status(400).json({ error: error.message });
+    }
+});
+
+// Verify signature
+app.post('/crypto/verify', adminAuth, (req, res) => {
+    try {
+        const { message, signature, publicKey } = req.body;
+        
+        if (!message || !signature || !publicKey) {
+            return res.status(400).json({ error: 'Message, signature, and publicKey are required' });
+        }
+        
+        const sigBuffer = Buffer.from(signature, 'hex');
+        const pubKeyBuffer = Buffer.from(publicKey, 'hex');
+        
+        const isValid = CryptoUtils.verifySignature(message, sigBuffer, pubKeyBuffer);
+        
+        res.json({
+            success: true,
+            isValid,
+            message,
+            publicKey
+        });
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+
+// Build transaction
+app.post('/wallet/:walletId/build-transaction', adminAuth, async (req, res) => {
+    try {
+        const { walletId } = req.params;
+        const { network, from, to, value, data } = req.body;
+        const wallet = wallets.get(walletId);
+        
+        if (!wallet) {
+            return res.status(404).json({ error: 'Wallet not found' });
+        }
+        
+        if (!network || !from || !to || !value) {
+            return res.status(400).json({ error: 'Network, from, to, and value are required' });
+        }
+        
+        const txData = await txBuilder.buildEthereumTransaction(network, from, to, value, data);
+        
+        logger.info('Transaction built', { walletId, network, from, to });
+        
+        res.json({
+            success: true,
+            transaction: txData,
+            network
+        });
+    } catch (error) {
+        logger.error('Transaction build failed', { error: error.message });
+        res.status(400).json({ error: error.message });
+    }
+});
+
+// Sign and broadcast transaction
+app.post('/wallet/:walletId/send-transaction', adminAuth, async (req, res) => {
+    try {
+        const { walletId } = req.params;
+        const { network, accountIndex, to, value, data = '0x' } = req.body;
+        const wallet = wallets.get(walletId);
+        
+        if (!wallet) {
+            return res.status(404).json({ error: 'Wallet not found' });
+        }
+        
+        const account = wallet.accounts.get(`60-${accountIndex}`);
+        if (!account) {
+            return res.status(404).json({ error: 'Account not found' });
+        }
+        
+        const txData = await txBuilder.buildEthereumTransaction(
+            network,
+            account.address,
+            to,
+            value,
+            data
+        );
+        
+        const signedTx = wallet.signEthereumTransaction(accountIndex, txData);
+        const receipt = await scanner.broadcastTransaction(network, signedTx.rawTransaction);
+        
+        logger.info('Transaction sent', { 
+            walletId, 
+            network, 
+            txHash: receipt.transactionHash 
+        });
+        
+        res.json({
+            success: true,
+            transactionHash: receipt.transactionHash,
+            receipt,
+            network
+        });
+    } catch (error) {
+        logger.error('Transaction send failed', { error: error.message });
+        res.status(400).json({ error: error.message });
+    }
+});
+
+// Build token transfer
+app.post('/wallet/:walletId/build-token-transfer', adminAuth, async (req, res) => {
+    try {
+        const { walletId } = req.params;
+        const { network, accountIndex, to, tokenAddress, amount } = req.body;
+        const wallet = wallets.get(walletId);
+        
+        if (!wallet) {
+            return res.status(404).json({ error: 'Wallet not found' });
+        }
+        
+        const account = wallet.accounts.get(`60-${accountIndex}`);
+        if (!account) {
+            return res.status(404).json({ error: 'Account not found' });
+        }
+        
+        const txData = await txBuilder.buildTokenTransfer(
+            network,
+            account.address,
+            to,
+            tokenAddress,
+            amount
+        );
+        
+        res.json({
+            success: true,
+            transaction: txData,
+            network
+        });
+    } catch (error) {
+        logger.error('Token transfer build failed', { error: error.message });
+        res.status(400).json({ error: error.message });
+    }
+});
+
+// Export account private key
+app.post('/wallet/:walletId/export', adminAuth, (req, res) => {
+    try {
+        const { walletId } = req.params;
+        const { accountIndex, coinType = 60, password } = req.body;
+        const wallet = wallets.get(walletId);
+        
+        if (!wallet) {
+            return res.status(404).json({ error: 'Wallet not found' });
+        }
+        
+        const account = wallet.exportAccount(accountIndex, coinType);
+        
+        let exportData = { ...account };
+        
+        if (password) {
+            const encrypted = CryptoUtils.encryptPrivateKey(account.privateKey, password);
+            exportData.encryptedPrivateKey = encrypted;
+            delete exportData.privateKey;
+        }
+        
+        logger.warn('Account exported', { walletId, accountIndex, encrypted: !!password });
+        
+        res.json({
+            success: true,
+            account: exportData,
+            warning: 'Keep this information secure. Never share your private key.'
+        });
+    } catch (error) {
+        logger.error('Account export failed', { error: error.message });
+        res.status(400).json({ error: error.message });
+    }
+});
+
+// Export entire wallet
+app.post('/wallet/:walletId/export-wallet', adminAuth, (req, res) => {
+    try {
+        const { walletId } = req.params;
+        const { includePrivateKeys = false, password } = req.body;
+        const wallet = wallets.get(walletId);
+        
+        if (!wallet) {
+            return res.status(404).json({ error: 'Wallet not found' });
+        }
+        
+        let exportData = wallet.exportWallet(includePrivateKeys);
+        
+        if (password && includePrivateKeys) {
+            const encryptedMnemonic = CryptoUtils.encryptPrivateKey(
+                Buffer.from(wallet.mnemonic).toString('hex'),
+                password
+            );
+            exportData.encryptedMnemonic = encryptedMnemonic;
+            exportData.mnemonic = '[ENCRYPTED]';
+        }
+        
+        logger.warn('Wallet exported', { walletId, includePrivateKeys });
+        
+        res.json({
+            success: true,
+            wallet: exportData,
+            warning: 'Keep this information secure.'
+        });
+    } catch (error) {
+        logger.error('Wallet export failed', { error: error.message });
+        res.status(400).json({ error: error.message });
+    }
+});
+
+// Delete wallet
+app.delete('/wallet/:walletId', adminAuth, (req, res) => {
+    try {
+        const { walletId } = req.params;
+        const { confirm } = req.body;
+        
+        if (confirm !== walletId) {
+            return res.status(400).json({ 
+                error: 'Confirmation required. Send walletId in body as "confirm"' 
+            });
+        }
+        
+        const deleted = wallets.delete(walletId);
+        
+        if (!deleted) {
+            return res.status(404).json({ error: 'Wallet not found' });
+        }
+        
+        // Clean up sessions
+        for (const [sessionId, session] of sessions.entries()) {
+            if (session.walletId === walletId) {
+                sessions.delete(sessionId);
+            }
+        }
+        
+        logger.info('Wallet deleted', { walletId });
+        
+        res.json({
+            success: true,
+            message: 'Wallet deleted successfully',
+            walletId
+        });
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+
+// Get balance for address
+app.get('/balance/:network/:address', adminAuth, async (req, res) => {
+    try {
+        const { network, address } = req.params;
+        const balance = await scanner.getBalance(network, address);
+        res.json(balance);
+    } catch (error) {
+        logger.error('Balance fetch failed', { error: error.message });
+        res.status(400).json({ error: error.message });
+    }
+});
+
+// Get transaction history
+app.get('/transactions/:network/:address', adminAuth, async (req, res) => {
+    try {
+        const { network, address } = req.params;
+        const { page = 1, offset = 10 } = req.query;
+        const history = await scanner.getTransactionHistory(network, address, page, offset);
+        res.json(history);
+    } catch (error) {
+        logger.error('Transaction history fetch failed', { error: error.message });
+        res.status(400).json({ error: error.message });
+    }
+});
+
+// Get token balance
+app.get('/token-balance/:network/:address/:contractAddress', adminAuth, async (req, res) => {
+    try {
+        const { network, address, contractAddress } = req.params;
+        const balance = await scanner.getTokenBalance(network, address, contractAddress);
+        res.json(balance);
+    } catch (error) {
+        logger.error('Token balance fetch failed', { error: error.message });
+        res.status(400).json({ error: error.message });
+    }
+});
+
+// Get all balances for wallet
+app.get('/wallet/:walletId/balances', adminAuth, async (req, res) => {
+    try {
+        const { walletId } = req.params;
+        const { networks } = req.query;
+        const wallet = wallets.get(walletId);
+        
+        if (!wallet) {
+            return res.status(404).json({ error: 'Wallet not found' });
+        }
+        
+        const balances = {};
+        const networksToCheck = networks 
+            ? networks.split(',') 
+            : ['ethereum', 'bsc', 'arbitrum', 'polygon', 'optimism'];
+        
+        for (const [key, account] of wallet.accounts) {
+            if (account.coinType !== 60) continue; // Only check Ethereum-compatible accounts
+            
+            balances[account.address] = {
+                index: account.index,
+                path: account.path,
+                balances: {}
+            };
+            
+            for (const network of networksToCheck) {
+                try {
+                    const balance = await scanner.getBalance(network, account.address);
+                    balances[account.address].balances[network] = balance;
+                } catch (error) {
+                    balances[account.address].balances[network] = { 
+                        error: error.message 
+                    };
+                }
+            }
+        }
+        
+        res.json({
+            walletId: walletId,
+            balances: balances,
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        logger.error('Wallet balances fetch failed', { error: error.message });
+        res.status(400).json({ error: error.message });
+    }
+});
+
+// Get gas price
+app.get('/gas-price/:network', adminAuth, async (req, res) => {
+    try {
+        const { network } = req.params;
+        const gasPrice = await scanner.getGasPrice(network);
+        res.json(gasPrice);
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+
+// Estimate gas
+app.post('/estimate-gas/:network', adminAuth, async (req, res) => {
+    try {
+        const { network } = req.params;
+        const txData = req.body;
+        const estimate = await scanner.estimateGas(network, txData);
+        res.json(estimate);
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+
+// Get transaction receipt
+app.get('/receipt/:network/:txHash', adminAuth, async (req, res) => {
+    try {
+        const { network, txHash } = req.params;
+        const receipt = await scanner.getTransactionReceipt(network, txHash);
+        res.json(receipt);
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+
+// Get nonce
+app.get('/nonce/:network/:address', adminAuth, async (req, res) => {
+    try {
+        const { network, address } = req.params;
+        const nonce = await scanner.getNonce(network, address);
+        res.json(nonce);
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+
+// Cryptographic utilities - hash
+app.post('/crypto/hash', adminAuth, (req, res) => {
+    try {
+        const { data, algorithm = 'sha256' } = req.body;
+        
+        if (!data) {
+            return res.status(400).json({ error: 'Data is required' });
+        }
+        
+        let hash;
+        switch (algorithm) {
+            case 'sha256':
+                hash = CryptoUtils.sha256Hex(data);
+                break;
+            case 'sha512':
+                hash = CryptoUtils.sha512(Buffer.from(data)).toString('hex');
+                break;
+            case 'keccak256':
+                hash = CryptoUtils.keccak256(Buffer.from(data)).toString('hex');
+                break;
+            case 'ripemd160':
+                hash = CryptoUtils.ripemd160(Buffer.from(data)).toString('hex');
+                break;
+            case 'hash160':
+                hash = CryptoUtils.hash160(Buffer.from(data)).toString('hex');
+                break;
+            default:
+                return res.status(400).json({ error: 'Unsupported algorithm' });
+        }
+        
+        res.json({
+            algorithm: algorithm,
+            input: data,
+            hash: hash
+        });
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+
+// Generate random private key
+app.post('/crypto/generate-key', adminAuth, (req, res) => {
+    try {
+        const privateKey = CryptoUtils.generatePrivateKey();
+        const publicKey = CryptoUtils.getPublicKey(privateKey);
+        const compressedPublicKey = CryptoUtils.getCompressedPublicKey(privateKey);
+        const address = new HDWallet().getEthereumAddress(publicKey);
+        
+        res.json({
+            privateKey: privateKey.toString('hex'),
+            publicKey: publicKey.toString('hex'),
+            compressedPublicKey: compressedPublicKey.toString('hex'),
+            address: address,
+            warning: 'This is a standalone key, not part of any HD wallet'
+        });
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+
+// Generate mnemonic
+app.post('/crypto/generate-mnemonic', adminAuth, (req, res) => {
+    try {
+        const { strength = 256 } = req.body;
+        
+        if (![128, 160, 192, 224, 256].includes(strength)) {
+            return res.status(400).json({ 
+                error: 'Strength must be 128, 160, 192, 224, or 256' 
+            });
+        }
+        
+        const mnemonic = CryptoUtils.generateMnemonic(strength);
+        const wordCount = mnemonic.split(' ').length;
+        
+        res.json({
+            mnemonic,
+            wordCount,
+            strength,
+            warning: 'Store this mnemonic securely. It cannot be recovered if lost.'
+        });
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+
+// Validate mnemonic
+app.post('/crypto/validate-mnemonic', adminAuth, (req, res) => {
+    try {
+        const { mnemonic } = req.body;
+        
+        if (!mnemonic) {
+            return res.status(400).json({ error: 'Mnemonic is required' });
+        }
+        
+        const isValid = CryptoUtils.validateMnemonic(mnemonic);
+        const wordCount = mnemonic.split(' ').length;
+        
+        res.json({
+            isValid,
+            wordCount,
+            mnemonic: isValid ? mnemonic : undefined
+        });
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+
+// Encrypt data
+app.post('/crypto/encrypt', adminAuth, (req, res) => {
+    try {
+        const { data, password } = req.body;
+        
+        if (!data || !password) {
+            return res.status(400).json({ error: 'Data and password are required' });
+        }
+        
+        const encrypted = CryptoUtils.encryptPrivateKey(
+            Buffer.from(data).toString('hex'),
+            password
+        );
+        
+        res.json({
+            success: true,
+            encrypted
+        });
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+
+// Decrypt data
+app.post('/crypto/decrypt', adminAuth, (req, res) => {
+    try {
+        const { encryptedData, password } = req.body;
+        
+        if (!encryptedData || !password) {
+            return res.status(400).json({ error: 'Encrypted data and password are required' });
+        }
+        
+        const decrypted = CryptoUtils.decryptPrivateKey(encryptedData, password);
+        const data = Buffer.from(decrypted, 'hex').toString();
+        
+        res.json({
+            success: true,
+            data
+        });
+    } catch (error) {
+        res.status(400).json({ error: 'Decryption failed. Invalid password or data.' });
+    }
+});
+
+// Batch balance check
+app.post('/batch/balances', adminAuth, async (req, res) => {
+    try {
+        const { addresses, network } = req.body;
+        
+        if (!addresses || !Array.isArray(addresses)) {
+            return res.status(400).json({ error: 'Addresses array is required' });
+        }
+        
+        if (!network) {
+            return res.status(400).json({ error: 'Network is required' });
+        }
+        
+        const results = await Promise.allSettled(
+            addresses.map(addr => scanner.getBalance(network, addr))
+        );
+        
+        const balances = results.map((result, index) => ({
+            address: addresses[index],
+            ...(result.status === 'fulfilled' 
+                ? result.value 
+                : { error: result.reason.message })
+        }));
+        
+        res.json({
+            network,
+            balances,
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+
+// Batch transaction history
+app.post('/batch/transactions', adminAuth, async (req, res) => {
+    try {
+        const { addresses, network, page = 1, offset = 10 } = req.body;
+        
+        if (!addresses || !Array.isArray(addresses)) {
+            return res.status(400).json({ error: 'Addresses array is required' });
+        }
+        
+        if (!network) {
+            return res.status(400).json({ error: 'Network is required' });
+        }
+        
+        const results = await Promise.allSettled(
+            addresses.map(addr => 
+                scanner.getTransactionHistory(network, addr, page, offset)
+            )
+        );
+        
+        const transactions = results.map((result, index) => ({
+            address: addresses[index],
+            ...(result.status === 'fulfilled' 
+                ? result.value 
+                : { error: result.reason.message })
+        }));
+        
+        res.json({
+            network,
+            transactions,
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+
+// Statistics endpoint
+app.get('/stats', adminAuth, (req, res) => {
+    try {
+        const stats = {
+            totalWallets: wallets.size,
+            activeSessions: sessions.size,
+            totalAccounts: Array.from(wallets.values()).reduce(
+                (sum, wallet) => sum + wallet.accounts.size, 
+                0
+            ),
+            supportedNetworks: Object.keys(SCANNERS).length,
+            cacheSize: scanner.cache.size,
+            uptime: process.uptime(),
+            memory: process.memoryUsage(),
+            timestamp: new Date().toISOString()
+        };
+        
+        res.json(stats);
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+
+// Clear cache
+app.post('/admin/clear-cache', adminAuth, (req, res) => {
+    try {
+        const cacheSize = scanner.cache.size;
+        scanner.cache.clear();
+        
+        logger.info('Cache cleared', { previousSize: cacheSize });
+        
+        res.json({
+            success: true,
+            message: 'Cache cleared',
+            clearedEntries: cacheSize
+        });
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+
+// Clean expired sessions
+app.post('/admin/clean-sessions', adminAuth, (req, res) => {
+    try {
+        let cleaned = 0;
+        const now = Date.now();
+        
+        for (const [sessionId, session] of sessions.entries()) {
+            if (now > session.expiresAt) {
+                sessions.delete(sessionId);
+                cleaned++;
+            }
+        }
+        
+        logger.info('Sessions cleaned', { cleaned });
+        
+        res.json({
+            success: true,
+            message: 'Expired sessions cleaned',
+            cleaned,
+            remaining: sessions.size
+        });
+    } catch (error) {
+        res.status(400).json({ error: error.message });
+    }
+});
+
+// Error handling middleware
+app.use((error, req, res, next) => {
+    logger.error('Unhandled error', { 
+        error: error.message, 
+        stack: error.stack,
+        path: req.path 
+    });
+    res.status(500).json({ error: 'Internal server error' });
+});
+
+// 404 handler
+app.use((req, res) => {
+    res.status(404).json({ 
+        error: 'Route not found',
+        path: req.path,
+        method: req.method
+    });
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+    logger.info('SIGTERM received, shutting down gracefully');
+    process.exit(0);
+});
+
+process.on('SIGINT', () => {
+    logger.info('SIGINT received, shutting down gracefully');
+    process.exit(0);
+});
+
+// Start server
+app.listen(PORT, () => {
+    logger.info(`HD Wallet Server running on port ${PORT}`);
+    logger.info(`Environment: ${process.env.NODE_ENV || 'development'}`);
+    logger.info('Available networks:', Object.keys(SCANNERS));
+    console.log('\n=== HD WALLET SERVER ===');
+    console.log(`Port: ${PORT}`);
+    console.log(`Version: 2.0.0`);
+    console.log('\nKey Endpoints:');
+    console.log('  Wallet Management:');
+    console.log('    POST   /wallet/create');
+    console.log('    POST   /wallet/import');
+    console.log('    GET    /wallets');
+    console.log('    GET    /wallet/:id');
+    console.log('    DELETE /wallet/:id');
+    console.log('\n  Account Operations:');
+    console.log('    POST   /wallet/:id/derive');
+    console.log('    POST   /wallet/:id/sign');
+    console.log('    POST   /wallet/:id/export');
+    console.log('\n  Blockchain:');
+    console.log('    GET    /balance/:network/:address');
+    console.log('    GET    /transactions/:network/:address');
+    console.log('    POST   /wallet/:id/send-transaction');
+    console.log('    GET    /gas-price/:network');
+    console.log('\n  Crypto Utils:');
+    console.log('    POST   /crypto/hash');
+    console.log('    POST   /crypto/generate-key');
+    console.log('    POST   /crypto/generate-mnemonic');
+    console.log('    POST   /crypto/encrypt');
+    console.log('=======================\n');
+});
+
+module.exports = app;
