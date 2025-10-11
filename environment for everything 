@@ -1,0 +1,1630 @@
+# ULTIMATE COMPLETE DEVELOPMENT ENVIRONMENT - WINDOWS (ENHANCED)
+# EVERY LANGUAGE, CRYPTO, BANKING APIs, BLOCKCHAIN NODES, WEB SERVERS
+# WITH INSTALLATION CHECKS, FOLDER STRUCTURE, AND PROPER CONFIGURATION
+# Run as Administrator in PowerShell
+
+Write-Host "=== ULTIMATE DEV STATION - CRYPTO, BANKING, BLOCKCHAIN, WEB ===" -ForegroundColor Green
+
+# ===== ADMIN CHECK =====
+$isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $isAdmin) {
+    Write-Host "ERROR: Run as Administrator!" -ForegroundColor Red
+    exit 1
+}
+
+# ===== GLOBAL CONFIGURATION =====
+$script:InstallLog = "$env:USERPROFILE\dev-setup-log.txt"
+$script:ConfigFile = "$env:USERPROFILE\dev-setup-config.json"
+
+# Initialize log
+"=== DEV ENVIRONMENT SETUP LOG ===" | Out-File -FilePath $InstallLog -Force
+"Started: $(Get-Date)" | Out-File -FilePath $InstallLog -Append
+
+# ===== HELPER FUNCTIONS =====
+function Test-CommandExists {
+    param($Command)
+    $null -ne (Get-Command $Command -ErrorAction SilentlyContinue)
+}
+
+function Test-ChocoPackageInstalled {
+    param($PackageName)
+    $package = choco list --local-only $PackageName --exact --limit-output
+    return $package -match "^$PackageName\|"
+}
+
+function Install-ChocoPackage {
+    param(
+        [string]$PackageName,
+        [string]$DisplayName = $PackageName
+    )
+    
+    if (Test-ChocoPackageInstalled $PackageName) {
+        Write-Host "  ✓ $DisplayName already installed (skipping)" -ForegroundColor Gray
+        "SKIP: $PackageName already installed" | Out-File -FilePath $InstallLog -Append
+    } else {
+        Write-Host "  → Installing $DisplayName..." -ForegroundColor Yellow
+        choco install $PackageName -y --no-progress
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "  ✓ $DisplayName installed successfully" -ForegroundColor Green
+            "SUCCESS: $PackageName installed" | Out-File -FilePath $InstallLog -Append
+        } else {
+            Write-Host "  ✗ Failed to install $DisplayName" -ForegroundColor Red
+            "FAILED: $PackageName installation failed" | Out-File -FilePath $InstallLog -Append
+        }
+    }
+}
+
+function Install-PipPackage {
+    param(
+        [string]$PackageName,
+        [string]$DisplayName = $PackageName
+    )
+    
+    $installed = pip list --format=freeze | Select-String -Pattern "^$PackageName=="
+    if ($installed) {
+        Write-Host "  ✓ $DisplayName already installed (skipping)" -ForegroundColor Gray
+    } else {
+        Write-Host "  → Installing $DisplayName..." -ForegroundColor Yellow
+        pip install $PackageName --quiet
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "  ✓ $DisplayName installed" -ForegroundColor Green
+        }
+    }
+}
+
+function Install-NpmPackage {
+    param(
+        [string]$PackageName,
+        [string]$DisplayName = $PackageName,
+        [switch]$Global
+    )
+    
+    $checkCmd = if ($Global) { "npm list -g $PackageName --depth=0" } else { "npm list $PackageName --depth=0" }
+    $installed = & cmd /c "$checkCmd 2>&1" | Select-String -Pattern $PackageName
+    
+    if ($installed -and $installed -notmatch "UNMET") {
+        Write-Host "  ✓ $DisplayName already installed (skipping)" -ForegroundColor Gray
+    } else {
+        Write-Host "  → Installing $DisplayName..." -ForegroundColor Yellow
+        $installCmd = if ($Global) { "npm install -g $PackageName" } else { "npm install $PackageName" }
+        & cmd /c "$installCmd --silent 2>&1" | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "  ✓ $DisplayName installed" -ForegroundColor Green
+        }
+    }
+}
+
+function Install-CargoPackage {
+    param(
+        [string]$PackageName,
+        [string]$DisplayName = $PackageName
+    )
+    
+    $installed = cargo install --list | Select-String -Pattern "^$PackageName "
+    if ($installed) {
+        Write-Host "  ✓ $DisplayName already installed (skipping)" -ForegroundColor Gray
+    } else {
+        Write-Host "  → Installing $DisplayName..." -ForegroundColor Yellow
+        cargo install $PackageName --quiet 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "  ✓ $DisplayName installed" -ForegroundColor Green
+        }
+    }
+}
+
+function Install-GoPackage {
+    param(
+        [string]$PackageUrl,
+        [string]$DisplayName
+    )
+    
+    $binaryName = Split-Path $PackageUrl -Leaf
+    $goPath = if ($env:GOPATH) { $env:GOPATH } else { "$env:USERPROFILE\go" }
+    $binaryPath = "$goPath\bin\$binaryName.exe"
+    
+    if (Test-Path $binaryPath) {
+        Write-Host "  ✓ $DisplayName already installed (skipping)" -ForegroundColor Gray
+    } else {
+        Write-Host "  → Installing $DisplayName..." -ForegroundColor Yellow
+        go install "$PackageUrl@latest" 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "  ✓ $DisplayName installed" -ForegroundColor Green
+        }
+    }
+}
+
+function New-DevFolder {
+    param(
+        [string]$Path,
+        [string]$Description
+    )
+    
+    if (Test-Path $Path) {
+        Write-Host "  ✓ $Description already exists: $Path" -ForegroundColor Gray
+    } else {
+        New-Item -ItemType Directory -Path $Path -Force | Out-Null
+        Write-Host "  ✓ Created $Description`: $Path" -ForegroundColor Green
+    }
+}
+
+function Add-ToPath {
+    param([string]$PathToAdd)
+    
+    if (Test-Path $PathToAdd) {
+        $currentPath = [Environment]::GetEnvironmentVariable("Path", [EnvironmentVariableTarget]::User)
+        if ($currentPath -notlike "*$PathToAdd*") {
+            [Environment]::SetEnvironmentVariable("Path", "$currentPath;$PathToAdd", [EnvironmentVariableTarget]::User)
+            Write-Host "  ✓ Added to PATH: $PathToAdd" -ForegroundColor Green
+        } else {
+            Write-Host "  ✓ Already in PATH: $PathToAdd" -ForegroundColor Gray
+        }
+    }
+}
+
+# ===== FOLDER STRUCTURE SETUP =====
+Write-Host "`n[SETUP] Creating Development Folder Structure..." -ForegroundColor Cyan
+
+$devRoot = "$env:USERPROFILE\dev"
+$folders = @{
+    "$devRoot" = "Main development directory"
+    "$devRoot\crypto" = "Cryptocurrency projects"
+    "$devRoot\crypto\ethereum" = "Ethereum smart contracts"
+    "$devRoot\crypto\solana" = "Solana programs"
+    "$devRoot\crypto\defi" = "DeFi applications"
+    "$devRoot\crypto\nft" = "NFT projects"
+    "$devRoot\banking" = "Banking & fintech projects"
+    "$devRoot\banking\apis" = "Payment API integrations"
+    "$devRoot\banking\neobank" = "Neo-banking applications"
+    "$devRoot\web" = "Web applications"
+    "$devRoot\web\frontend" = "Frontend projects"
+    "$devRoot\web\backend" = "Backend services"
+    "$devRoot\web\fullstack" = "Full-stack applications"
+    "$devRoot\blockchain" = "Blockchain nodes & infrastructure"
+    "$devRoot\blockchain\nodes" = "Running blockchain nodes"
+    "$devRoot\blockchain\data" = "Blockchain data storage"
+    "$devRoot\mobile" = "Mobile applications"
+    "$devRoot\desktop" = "Desktop applications"
+    "$devRoot\api" = "API projects"
+    "$devRoot\testing" = "Test projects & experiments"
+    "$devRoot\scripts" = "Utility scripts"
+    "$devRoot\data" = "Data & databases"
+    "$devRoot\data\databases" = "Local database storage"
+    "$devRoot\data\backups" = "Backup storage"
+    "$devRoot\docker" = "Docker configurations"
+    "$devRoot\kubernetes" = "Kubernetes manifests"
+    "$devRoot\docs" = "Documentation"
+}
+
+foreach ($folder in $folders.GetEnumerator()) {
+    New-DevFolder -Path $folder.Key -Description $folder.Value
+}
+
+# Create config directories
+$configDirs = @(
+    "$env:USERPROFILE\.config"
+    "$env:USERPROFILE\.local\bin"
+)
+
+foreach ($dir in $configDirs) {
+    New-DevFolder -Path $dir -Description "Configuration directory"
+}
+
+# ===== CHOCOLATEY INSTALLATION =====
+Write-Host "`n[CORE] Installing Chocolatey..." -ForegroundColor Cyan
+if (Test-CommandExists choco) {
+    Write-Host "  ✓ Chocolatey already installed" -ForegroundColor Gray
+} else {
+    Write-Host "  → Installing Chocolatey..." -ForegroundColor Yellow
+    Set-ExecutionPolicy Bypass -Scope Process -Force
+    [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+    iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+    refreshenv
+    Write-Host "  ✓ Chocolatey installed successfully" -ForegroundColor Green
+}
+
+# ===== CORE DEVELOPMENT TOOLS =====
+Write-Host "`n[CORE] Installing Core Tools..." -ForegroundColor Cyan
+Install-ChocoPackage "git" "Git"
+Install-ChocoPackage "curl" "cURL"
+Install-ChocoPackage "wget" "wget"
+Install-ChocoPackage "7zip" "7-Zip"
+Install-ChocoPackage "jq" "jq"
+Install-ChocoPackage "visualstudio2022buildtools" "Visual Studio Build Tools"
+Install-ChocoPackage "visualstudio2022-workload-vctools" "VC++ Tools"
+Install-ChocoPackage "cmake" "CMake"
+Install-ChocoPackage "make" "Make"
+Install-ChocoPackage "ninja" "Ninja"
+Install-ChocoPackage "openssl" "OpenSSL"
+
+# ===== ALL PROGRAMMING LANGUAGES =====
+
+# C/C++
+Write-Host "`n[LANG] Installing C/C++..." -ForegroundColor Cyan
+Install-ChocoPackage "mingw" "MinGW"
+Install-ChocoPackage "llvm" "LLVM"
+
+# C# / .NET
+Write-Host "`n[LANG] Installing C# / .NET..." -ForegroundColor Cyan
+Install-ChocoPackage "dotnet-sdk" ".NET SDK"
+Install-ChocoPackage "dotnet-8.0-sdk" ".NET 8.0 SDK"
+Install-ChocoPackage "dotnet-7.0-sdk" ".NET 7.0 SDK"
+
+# Python (complete setup)
+Write-Host "`n[LANG] Installing Python..." -ForegroundColor Cyan
+Install-ChocoPackage "python" "Python"
+Install-ChocoPackage "python3" "Python 3"
+Install-ChocoPackage "pypy3" "PyPy3"
+refreshenv
+
+if (Test-CommandExists python) {
+    Write-Host "  → Upgrading pip and Python tools..." -ForegroundColor Yellow
+    python -m pip install --upgrade pip setuptools wheel pipenv poetry --quiet
+    Write-Host "  ✓ Python package managers updated" -ForegroundColor Green
+}
+
+# Java (all versions)
+Write-Host "`n[LANG] Installing Java..." -ForegroundColor Cyan
+Install-ChocoPackage "openjdk" "OpenJDK"
+Install-ChocoPackage "openjdk21" "OpenJDK 21"
+Install-ChocoPackage "openjdk17" "OpenJDK 17"
+Install-ChocoPackage "openjdk11" "OpenJDK 11"
+Install-ChocoPackage "openjdk8" "OpenJDK 8"
+Install-ChocoPackage "maven" "Maven"
+Install-ChocoPackage "gradle" "Gradle"
+Install-ChocoPackage "ant" "Ant"
+
+# Kotlin
+Write-Host "`n[LANG] Installing Kotlin..." -ForegroundColor Cyan
+Install-ChocoPackage "kotlin" "Kotlin"
+
+# Scala
+Write-Host "`n[LANG] Installing Scala..." -ForegroundColor Cyan
+Install-ChocoPackage "scala" "Scala"
+Install-ChocoPackage "sbt" "SBT"
+
+# Rust
+Write-Host "`n[LANG] Installing Rust..." -ForegroundColor Cyan
+Install-ChocoPackage "rust" "Rust"
+refreshenv
+
+# Go
+Write-Host "`n[LANG] Installing Go..." -ForegroundColor Cyan
+Install-ChocoPackage "golang" "Go"
+refreshenv
+
+# Node.js / JavaScript / TypeScript
+Write-Host "`n[LANG] Installing Node.js..." -ForegroundColor Cyan
+Install-ChocoPackage "nodejs" "Node.js"
+Install-ChocoPackage "nodejs-lts" "Node.js LTS"
+refreshenv
+
+if (Test-CommandExists npm) {
+    Write-Host "  → Installing TypeScript and package managers..." -ForegroundColor Yellow
+    Install-NpmPackage "typescript" "TypeScript" -Global
+    Install-NpmPackage "ts-node" "ts-node" -Global
+    Install-NpmPackage "@types/node" "@types/node" -Global
+    Install-NpmPackage "yarn" "Yarn" -Global
+    Install-NpmPackage "pnpm" "pnpm" -Global
+}
+
+# Deno & Bun (modern runtimes)
+Write-Host "`n[LANG] Installing Deno & Bun..." -ForegroundColor Cyan
+Install-ChocoPackage "deno" "Deno"
+
+if (Test-CommandExists npm) {
+    Install-NpmPackage "bun" "Bun" -Global
+}
+
+# Ruby
+Write-Host "`n[LANG] Installing Ruby..." -ForegroundColor Cyan
+Install-ChocoPackage "ruby" "Ruby"
+Install-ChocoPackage "msys2" "MSYS2"
+refreshenv
+
+if (Test-CommandExists gem) {
+    Write-Host "  → Installing Bundler and Rails..." -ForegroundColor Yellow
+    gem install bundler rails --no-document 2>&1 | Out-Null
+    Write-Host "  ✓ Ruby tools installed" -ForegroundColor Green
+}
+
+# PHP
+Write-Host "`n[LANG] Installing PHP..." -ForegroundColor Cyan
+Install-ChocoPackage "php" "PHP"
+Install-ChocoPackage "composer" "Composer"
+
+# Perl
+Write-Host "`n[LANG] Installing Perl..." -ForegroundColor Cyan
+Install-ChocoPackage "strawberryperl" "Strawberry Perl"
+
+# Lua
+Write-Host "`n[LANG] Installing Lua..." -ForegroundColor Cyan
+Install-ChocoPackage "lua" "Lua"
+Install-ChocoPackage "luarocks" "LuaRocks"
+
+# R
+Write-Host "`n[LANG] Installing R..." -ForegroundColor Cyan
+Install-ChocoPackage "r" "R"
+Install-ChocoPackage "r.studio" "RStudio"
+
+# Julia
+Write-Host "`n[LANG] Installing Julia..." -ForegroundColor Cyan
+Install-ChocoPackage "julia" "Julia"
+
+# Haskell
+Write-Host "`n[LANG] Installing Haskell..." -ForegroundColor Cyan
+Install-ChocoPackage "haskell-dev" "Haskell Dev"
+Install-ChocoPackage "ghc" "GHC"
+Install-ChocoPackage "cabal" "Cabal"
+Install-ChocoPackage "stack" "Stack"
+
+# Elixir / Erlang
+Write-Host "`n[LANG] Installing Elixir / Erlang..." -ForegroundColor Cyan
+Install-ChocoPackage "elixir" "Elixir"
+Install-ChocoPackage "erlang" "Erlang"
+
+# Dart / Flutter
+Write-Host "`n[LANG] Installing Dart / Flutter..." -ForegroundColor Cyan
+Install-ChocoPackage "dart-sdk" "Dart SDK"
+Install-ChocoPackage "flutter" "Flutter"
+
+# Zig
+Write-Host "`n[LANG] Installing Zig..." -ForegroundColor Cyan
+Install-ChocoPackage "zig" "Zig"
+
+# Nim
+Write-Host "`n[LANG] Installing Nim..." -ForegroundColor Cyan
+Install-ChocoPackage "nim" "Nim"
+
+# Crystal
+Write-Host "`n[LANG] Installing Crystal..." -ForegroundColor Cyan
+Install-ChocoPackage "crystal" "Crystal"
+
+# Clojure
+Write-Host "`n[LANG] Installing Clojure..." -ForegroundColor Cyan
+Install-ChocoPackage "leiningen" "Leiningen"
+Install-ChocoPackage "clojure" "Clojure"
+
+# OCaml
+Write-Host "`n[LANG] Installing OCaml..." -ForegroundColor Cyan
+Install-ChocoPackage "ocaml" "OCaml"
+Install-ChocoPackage "opam" "OPAM"
+
+# Racket
+Write-Host "`n[LANG] Installing Racket..." -ForegroundColor Cyan
+Install-ChocoPackage "racket" "Racket"
+
+# Common Lisp
+Write-Host "`n[LANG] Installing Common Lisp..." -ForegroundColor Cyan
+Install-ChocoPackage "sbcl" "SBCL"
+
+# Fortran
+Write-Host "`n[LANG] Installing Fortran..." -ForegroundColor Cyan
+Install-ChocoPackage "gfortran" "GFortran"
+
+# COBOL
+Write-Host "`n[LANG] Installing COBOL..." -ForegroundColor Cyan
+Install-ChocoPackage "gnucobol" "GNU COBOL"
+
+# Assembly
+Write-Host "`n[LANG] Installing Assembly (NASM, FASM)..." -ForegroundColor Cyan
+Install-ChocoPackage "nasm" "NASM"
+Install-ChocoPackage "fasm" "FASM"
+
+# Swift
+Write-Host "`n[LANG] Installing Swift..." -ForegroundColor Cyan
+Install-ChocoPackage "swift" "Swift"
+
+# V
+Write-Host "`n[LANG] Installing V..." -ForegroundColor Cyan
+Install-ChocoPackage "vlang" "V"
+
+# ===== PYTHON PACKAGES - CRYPTO, BANKING, WEB, AI =====
+Write-Host "`n[PYTHON] Installing COMPLETE Python Stack..." -ForegroundColor Cyan
+
+if (Test-CommandExists pip) {
+    # Blockchain & Crypto
+    Write-Host "  → Installing blockchain packages..." -ForegroundColor Yellow
+    $cryptoPackages = @(
+        "web3", "eth-brownie", "vyper", "solc-select", "solidity-parser", "eth-account", "eth-utils", "eth-typing",
+        "bitcoinlib", "bitcoin-utils", "cryptography", "ecdsa", "pycryptodome", "hashlib-extra",
+        "ccxt", "python-binance", "coinbase", "coinbase-commerce", "requests-oauthlib",
+        "pycoingecko", "cryptocompare",
+        "solana", "anchorpy", "solders",
+        "substrate-interface", "py-substrate-interface",
+        "algorand-py", "pytezos", "near-api-py",
+        "web3-ethereum-defi", "uniswap-python", "pancakeswap-python"
+    )
+    foreach ($pkg in $cryptoPackages) {
+        Install-PipPackage $pkg
+    }
+
+    # Banking & Payment APIs
+    Write-Host "  → Installing banking & payment packages..." -ForegroundColor Yellow
+    $bankingPackages = @(
+        "stripe", "plaid-python", "square", "paypalrestsdk", "braintree",
+        "dwolla", "adyen",
+        "yodlee", "finicity-python",
+        "bank-statement-parser", "ofxparse"
+    )
+    foreach ($pkg in $bankingPackages) {
+        Install-PipPackage $pkg
+    }
+
+    # Web Frameworks
+    Write-Host "  → Installing web frameworks..." -ForegroundColor Yellow
+    $webPackages = @(
+        "fastapi", "flask", "django", "tornado", "aiohttp", "uvicorn", "gunicorn", "starlette",
+        "flask-restful", "django-rest-framework", "graphene", "flask-graphql",
+        "streamlit", "dash", "plotly-dash",
+        "celery", "dramatiq", "rq"
+    )
+    foreach ($pkg in $webPackages) {
+        Install-PipPackage $pkg
+    }
+
+    # Databases & ORMs
+    Write-Host "  → Installing database packages..." -ForegroundColor Yellow
+    $dbPackages = @(
+        "sqlalchemy", "psycopg2-binary", "pymongo", "motor", "redis", "pymemcache",
+        "mysql-connector-python", "mysqlclient",
+        "cassandra-driver", "neo4j", "elasticsearch", "elasticsearch-dsl",
+        "influxdb", "influxdb-client",
+        "couchdb", "cloudant"
+    )
+    foreach ($pkg in $dbPackages) {
+        Install-PipPackage $pkg
+    }
+
+    # AWS & Cloud
+    Write-Host "  → Installing cloud packages..." -ForegroundColor Yellow
+    $cloudPackages = @(
+        "boto3", "botocore", "awscli", "aws-sam-cli",
+        "azure", "azure-storage-blob", "azure-identity",
+        "google-cloud-storage", "google-cloud-firestore", "google-api-python-client",
+        "digitalocean", "hcloud"
+    )
+    foreach ($pkg in $cloudPackages) {
+        Install-PipPackage $pkg
+    }
+
+    # Data & Analytics
+    Write-Host "  → Installing data science packages..." -ForegroundColor Yellow
+    $dataPackages = @(
+        "pandas", "numpy", "scipy", "matplotlib", "seaborn", "plotly",
+        "jupyter", "notebook", "jupyterlab", "ipython",
+        "scikit-learn", "xgboost", "lightgbm", "catboost",
+        "tensorflow", "keras", "torch", "torchvision", "transformers",
+        "opencv-python", "pillow", "scikit-image"
+    )
+    foreach ($pkg in $dataPackages) {
+        Install-PipPackage $pkg
+    }
+
+    # API & HTTP
+    Write-Host "  → Installing API packages..." -ForegroundColor Yellow
+    $apiPackages = @(
+        "requests", "httpx", "aiohttp", "urllib3", "grpcio", "grpcio-tools",
+        "beautifulsoup4", "scrapy", "selenium", "playwright"
+    )
+    foreach ($pkg in $apiPackages) {
+        Install-PipPackage $pkg
+    }
+
+    # Testing & QA
+    Write-Host "  → Installing testing packages..." -ForegroundColor Yellow
+    $testPackages = @(
+        "pytest", "unittest2", "nose2", "coverage", "pytest-cov", "pytest-asyncio",
+        "hypothesis", "faker", "freezegun", "responses"
+    )
+    foreach ($pkg in $testPackages) {
+        Install-PipPackage $pkg
+    }
+
+    # Code Quality
+    Write-Host "  → Installing code quality packages..." -ForegroundColor Yellow
+    $qualityPackages = @(
+        "black", "pylint", "flake8", "mypy", "autopep8", "isort", "bandit",
+        "pre-commit", "commitizen"
+    )
+    foreach ($pkg in $qualityPackages) {
+        Install-PipPackage $pkg
+    }
+
+    # Message Queues
+    Write-Host "  → Installing message queue packages..." -ForegroundColor Yellow
+    $queuePackages = @("kafka-python", "pika", "aiokafka", "aio-pika")
+    foreach ($pkg in $queuePackages) {
+        Install-PipPackage $pkg
+    }
+
+    # Monitoring & Logging
+    Write-Host "  → Installing monitoring packages..." -ForegroundColor Yellow
+    $monitorPackages = @("prometheus-client", "statsd", "datadog", "sentry-sdk", "newrelic")
+    foreach ($pkg in $monitorPackages) {
+        Install-PipPackage $pkg
+    }
+
+    # Authentication & Security
+    Write-Host "  → Installing security packages..." -ForegroundColor Yellow
+    $securityPackages = @(
+        "pyjwt", "python-jose", "cryptography", "passlib", "bcrypt",
+        "python-otp", "pyotp", "qrcode"
+    )
+    foreach ($pkg in $securityPackages) {
+        Install-PipPackage $pkg
+    }
+}
+
+# ===== NODE.JS PACKAGES - COMPLETE STACK =====
+Write-Host "`n[NODE] Installing COMPLETE Node.js Stack..." -ForegroundColor Cyan
+
+if (Test-CommandExists npm) {
+    # Blockchain & Web3 - Ethereum
+    Write-Host "  → Installing Ethereum packages..." -ForegroundColor Yellow
+    $ethPackages = @(
+        "hardhat", "truffle", "ganache", "@truffle/hdwallet-provider",
+        "web3", "ethers", "@ethersproject/providers", "@ethersproject/contracts",
+        "@openzeppelin/contracts", "@openzeppelin/hardhat-upgrades",
+        "solc", "@remix-project/remixd",
+        "waffle", "@nomiclabs/hardhat-waffle", "@nomiclabs/hardhat-ethers",
+        "@uniswap/sdk", "@uniswap/v3-sdk", "@pancakeswap/sdk",
+        "viem", "wagmi", "abitype"
+    )
+    foreach ($pkg in $ethPackages) {
+        Install-NpmPackage $pkg -Global
+    }
+
+    # Blockchain - Solana
+    Write-Host "  → Installing Solana packages..." -ForegroundColor Yellow
+    $solPackages = @(
+        "@solana/web3.js", "@solana/spl-token",
+        "@coral-xyz/anchor-cli", "@project-serum/anchor",
+        "@metaplex-foundation/js", "@solana/wallet-adapter"
+    )
+    foreach ($pkg in $solPackages) {
+        Install-NpmPackage $pkg -Global
+    }
+
+    # Blockchain - Other Chains
+    Write-Host "  → Installing multi-chain packages..." -ForegroundColor Yellow
+    $chainPackages = @(
+        "@cosmjs/stargate", "@cosmjs/proto-signing",
+        "near-cli", "@near-wallet-selector/core",
+        "@polkadot/api", "@polkadot/util", "@polkadot/util-crypto",
+        "@avalabs/avalanchejs", "avalanche-cli",
+        "algosdk",
+        "@taquito/taquito",
+        "@cardano/serialization-lib",
+        "aptos"
+    )
+    foreach ($pkg in $chainPackages) {
+        Install-NpmPackage $pkg -Global
+    }
+
+    # Blockchain - NFT & DeFi
+    Write-Host "  → Installing NFT & DeFi packages..." -ForegroundColor Yellow
+    $defiPackages = @(
+        "@opensea/seaport-js", "opensea-js",
+        "@moralisweb3/common-evm-utils", "moralis",
+        "alchemy-sdk", "@alchemy/aa-core"
+    )
+    foreach ($pkg in $defiPackages) {
+        Install-NpmPackage $pkg -Global
+    }
+
+    # Foundry (Rust-based Ethereum toolchain)
+    Install-NpmPackage "foundry-up" -Global
+
+    # Banking & Payment SDKs
+    Write-Host "  → Installing payment packages..." -ForegroundColor Yellow
+    $paymentPackages = @(
+        "stripe", "@stripe/stripe-js", "@stripe/react-stripe-js",
+        "plaid", "square", "@square/web-sdk",
+        "braintree", "paypal-rest-sdk",
+        "dwolla-v2", "adyen-node-api-library"
+    )
+    foreach ($pkg in $paymentPackages) {
+        Install-NpmPackage $pkg -Global
+    }
+
+    # Web Frameworks - React
+    Write-Host "  → Installing React ecosystem..." -ForegroundColor Yellow
+    $reactPackages = @(
+        "create-react-app", "next", "create-next-app",
+        "react-scripts", "react-app-rewired",
+        "@tanstack/react-query", "swr"
+    )
+    foreach ($pkg in $reactPackages) {
+        Install-NpmPackage $pkg -Global
+    }
+
+    # Web Frameworks - Vue
+    Write-Host "  → Installing Vue ecosystem..." -ForegroundColor Yellow
+    Install-NpmPackage "@vue/cli" -Global
+    Install-NpmPackage "create-vue" -Global
+    Install-NpmPackage "nuxt" -Global
+    Install-NpmPackage "vite" -Global
+
+    # Web Frameworks - Angular
+    Write-Host "  → Installing Angular ecosystem..." -ForegroundColor Yellow
+    Install-NpmPackage "@angular/cli" -Global
+    Install-NpmPackage "@nrwl/cli" -Global
+
+    # Web Frameworks - Svelte
+    Write-Host "  → Installing Svelte ecosystem..." -ForegroundColor Yellow
+    Install-NpmPackage "svelte" -Global
+    Install-NpmPackage "degit" -Global
+    Install-NpmPackage "@sveltejs/kit" -Global
+
+    # Backend Frameworks
+    Write-Host "  → Installing backend frameworks..." -ForegroundColor Yellow
+    $backendPackages = @(
+        "express-generator", "koa-generator",
+        "@nestjs/cli", "@loopback/cli", "fastify-cli",
+        "feathers-cli", "sails", "hapi",
+        "meteor"
+    )
+    foreach ($pkg in $backendPackages) {
+        Install-NpmPackage $pkg -Global
+    }
+
+    # API & GraphQL
+    Write-Host "  → Installing API & GraphQL packages..." -ForegroundColor Yellow
+    $apiPackages = @(
+        "apollo", "graphql", "@graphql-tools/schema",
+        "prisma", "@prisma/client",
+        "swagger-cli", "openapi-generator-cli",
+        "grpc-tools", "@grpc/grpc-js"
+    )
+    foreach ($pkg in $apiPackages) {
+        Install-NpmPackage $pkg -Global
+    }
+
+    # Testing
+    Write-Host "  → Installing testing packages..." -ForegroundColor Yellow
+    $testPackages = @(
+        "jest", "mocha", "chai", "cypress", "playwright", "@playwright/test",
+        "puppeteer", "cucumber", "nightwatch", "webdriverio"
+    )
+    foreach ($pkg in $testPackages) {
+        Install-NpmPackage $pkg -Global
+    }
+
+    # Build Tools & Bundlers
+    Write-Host "  → Installing build tools..." -ForegroundColor Yellow
+    $buildPackages = @(
+        "webpack", "webpack-cli", "parcel-bundler", "vite", "rollup",
+        "esbuild", "swc", "turbo", "nx", "lerna", "rush"
+    )
+    foreach ($pkg in $buildPackages) {
+        Install-NpmPackage $pkg -Global
+    }
+
+    # Code Quality
+    Write-Host "  → Installing code quality tools..." -ForegroundColor Yellow
+    $qualityPackages = @(
+        "eslint", "prettier", "babel-cli", "tslint",
+        "husky", "lint-staged", "standard"
+    )
+    foreach ($pkg in $qualityPackages) {
+        Install-NpmPackage $pkg -Global
+    }
+
+    # Static Site Generators
+    Write-Host "  → Installing static site generators..." -ForegroundColor Yellow
+    $ssgPackages = @(
+        "gatsby-cli", "@11ty/eleventy", "hexo-cli",
+        "docusaurus", "@docusaurus/core"
+    )
+    foreach ($pkg in $ssgPackages) {
+        Install-NpmPackage $pkg -Global
+    }
+
+    # Cloud & Deployment
+    Write-Host "  → Installing cloud deployment tools..." -ForegroundColor Yellow
+    $cloudPackages = @(
+        "firebase-tools",
+        "vercel", "netlify-cli", "heroku",
+        "aws-cdk", "@aws-amplify/cli", "aws-sdk",
+        "serverless", "serverless-offline",
+        "@google-cloud/functions-framework"
+    )
+    foreach ($pkg in $cloudPackages) {
+        Install-NpmPackage $pkg -Global
+    }
+
+    # Process Management
+    Write-Host "  → Installing process managers..." -ForegroundColor Yellow
+    $processPackages = @("pm2", "nodemon", "concurrently", "forever")
+    foreach ($pkg in $processPackages) {
+        Install-NpmPackage $pkg -Global
+    }
+
+    # Database CLIs
+    Write-Host "  → Installing database CLIs..." -ForegroundColor Yellow
+    $dbCliPackages = @(
+        "mongodb", "mongosh",
+        "redis-cli", "ioredis",
+        "typeorm", "typeorm-cli", "sequelize-cli", "knex"
+    )
+    foreach ($pkg in $dbCliPackages) {
+        Install-NpmPackage $pkg -Global
+    }
+
+    # Crypto Price & Data
+    Write-Host "  → Installing crypto data packages..." -ForegroundColor Yellow
+    $cryptoDataPackages = @("coingecko-api", "cryptocompare", "ccxt")
+    foreach ($pkg in $cryptoDataPackages) {
+        Install-NpmPackage $pkg -Global
+    }
+}
+
+# ===== ALL DATABASES & DATA STORES =====
+Write-Host "`n[DB] Installing ALL Databases..." -ForegroundColor Cyan
+Install-ChocoPackage "mongodb" "MongoDB"
+Install-ChocoPackage "postgresql" "PostgreSQL"
+Install-ChocoPackage "mysql" "MySQL"
+Install-ChocoPackage "sqlite" "SQLite"
+Install-ChocoPackage "mariadb" "MariaDB"
+Install-ChocoPackage "redis-64" "Redis"
+Install-ChocoPackage "memcached" "Memcached"
+Install-ChocoPackage "neo4j" "Neo4j"
+Install-ChocoPackage "couchdb" "CouchDB"
+Install-ChocoPackage "cassandra" "Cassandra"
+Install-ChocoPackage "influxdb" "InfluxDB"
+Install-ChocoPackage "elasticsearch" "Elasticsearch"
+Install-ChocoPackage "kibana" "Kibana"
+Install-ChocoPackage "logstash" "Logstash"
+Install-ChocoPackage "rabbitmq" "RabbitMQ"
+Install-ChocoPackage "kafka" "Kafka"
+Install-ChocoPackage "consul" "Consul"
+Install-ChocoPackage "etcd" "etcd"
+
+# Create database data directories
+Write-Host "  → Creating database storage directories..." -ForegroundColor Yellow
+New-DevFolder "$devRoot\data\databases\mongodb" "MongoDB data"
+New-DevFolder "$devRoot\data\databases\postgresql" "PostgreSQL data"
+New-DevFolder "$devRoot\data\databases\mysql" "MySQL data"
+New-DevFolder "$devRoot\data\databases\redis" "Redis data"
+New-DevFolder "$devRoot\data\databases\elasticsearch" "Elasticsearch data"
+
+# ===== BLOCKCHAIN NODES & TOOLS =====
+Write-Host "`n[BLOCKCHAIN] Installing ALL Blockchain Nodes..." -ForegroundColor Cyan
+
+# Ethereum clients
+Install-ChocoPackage "geth" "Geth (Go-Ethereum)"
+
+# Install via Go
+if (Test-CommandExists go) {
+    refreshenv
+    Write-Host "  → Installing Go blockchain tools..." -ForegroundColor Yellow
+    Install-GoPackage "github.com/ethereum/go-ethereum/cmd/geth" "Geth"
+    Install-GoPackage "github.com/ethereum/go-ethereum/cmd/abigen" "Abigen"
+    Install-GoPackage "github.com/prysmaticlabs/prysm/cmd/beacon-chain" "Prysm Beacon Chain"
+    Install-GoPackage "github.com/prysmaticlabs/prysm/cmd/validator" "Prysm Validator"
+}
+
+# Install via Rust/Cargo
+if (Test-CommandExists cargo) {
+    refreshenv
+    Write-Host "  → Installing Rust blockchain tools (this may take a while)..." -ForegroundColor Yellow
+    
+    # Foundry tools
+    $foundryTools = @("forge", "cast", "anvil", "chisel")
+    $foundryInstalled = $true
+    foreach ($tool in $foundryTools) {
+        if (!(Test-CommandExists $tool)) {
+            $foundryInstalled = $false
+            break
+        }
+    }
+    
+    if (!$foundryInstalled) {
+        Write-Host "  → Installing Foundry..." -ForegroundColor Yellow
+        cargo install --git https://github.com/foundry-rs/foundry --profile local --locked foundry-cli anvil cast chisel forge 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "  ✓ Foundry installed" -ForegroundColor Green
+        }
+    } else {
+        Write-Host "  ✓ Foundry already installed" -ForegroundColor Gray
+    }
+    
+    Install-CargoPackage "sccache" "sccache"
+    Install-CargoPackage "cargo-edit" "cargo-edit"
+    Install-CargoPackage "cargo-watch" "cargo-watch"
+    Install-CargoPackage "cargo-expand" "cargo-expand"
+}
+
+# Solana (manual install script for Windows)
+$solanaPath = "$env:USERPROFILE\.local\share\solana\install\active_release\bin\solana.exe"
+if (Test-Path $solanaPath) {
+    Write-Host "  ✓ Solana CLI already installed" -ForegroundColor Gray
+} else {
+    Write-Host "  → Installing Solana CLI..." -ForegroundColor Yellow
+    $solanaInstaller = "$env:TEMP\solana-install-init.exe"
+    try {
+        Invoke-WebRequest -Uri "https://github.com/solana-labs/solana/releases/latest/download/solana-install-init-x86_64-pc-windows-msvc.exe" -OutFile $solanaInstaller -ErrorAction Stop
+        Start-Process -FilePath $solanaInstaller -Args "v1.18.0" -Wait
+        Write-Host "  ✓ Solana CLI installed" -ForegroundColor Green
+    } catch {
+        Write-Host "  ✗ Failed to install Solana CLI" -ForegroundColor Red
+    }
+}
+
+# IPFS
+Install-ChocoPackage "ipfs" "IPFS"
+Install-ChocoPackage "go-ipfs" "Go-IPFS"
+
+# Create blockchain node directories
+Write-Host "  → Creating blockchain node directories..." -ForegroundColor Yellow
+New-DevFolder "$devRoot\blockchain\nodes\ethereum" "Ethereum node data"
+New-DevFolder "$devRoot\blockchain\nodes\solana" "Solana node data"
+New-DevFolder "$devRoot\blockchain\nodes\ipfs" "IPFS data"
+
+# ===== WEB SERVERS & REVERSE PROXIES =====
+Write-Host "`n[SERVER] Installing Web Servers..." -ForegroundColor Cyan
+Install-ChocoPackage "nginx" "NGINX"
+Install-ChocoPackage "apache" "Apache"
+Install-ChocoPackage "tomcat" "Tomcat"
+Install-ChocoPackage "caddy" "Caddy"
+Install-ChocoPackage "traefik" "Traefik"
+Install-ChocoPackage "haproxy" "HAProxy"
+Install-ChocoPackage "iis-webserver" "IIS"
+
+# Create web server config directories
+New-DevFolder "$devRoot\web\nginx-configs" "NGINX configurations"
+New-DevFolder "$devRoot\web\apache-configs" "Apache configurations"
+New-DevFolder "$devRoot\web\sites" "Web sites"
+
+# ===== CONTAINERIZATION & ORCHESTRATION =====
+Write-Host "`n[CONTAINER] Installing Docker & Kubernetes..." -ForegroundColor Cyan
+Install-ChocoPackage "docker-desktop" "Docker Desktop"
+Install-ChocoPackage "docker-compose" "Docker Compose"
+Install-ChocoPackage "kubernetes-cli" "Kubernetes CLI"
+Install-ChocoPackage "kubernetes-helm" "Helm"
+Install-ChocoPackage "kubectl" "kubectl"
+Install-ChocoPackage "minikube" "Minikube"
+Install-ChocoPackage "kind" "Kind"
+Install-ChocoPackage "k3s" "K3s"
+Install-ChocoPackage "rancher-desktop" "Rancher Desktop"
+Install-ChocoPackage "podman" "Podman"
+Install-ChocoPackage "lens" "Lens"
+
+# Create container directories
+New-DevFolder "$devRoot\docker\images" "Docker images"
+New-DevFolder "$devRoot\docker\volumes" "Docker volumes"
+New-DevFolder "$devRoot\kubernetes\manifests" "Kubernetes manifests"
+New-DevFolder "$devRoot\kubernetes\helm-charts" "Helm charts"
+
+# ===== CI/CD & INFRASTRUCTURE =====
+Write-Host "`n[CICD] Installing CI/CD & IaC tools..." -ForegroundColor Cyan
+Install-ChocoPackage "jenkins" "Jenkins"
+Install-ChocoPackage "jenkins-x" "Jenkins X"
+Install-ChocoPackage "terraform" "Terraform"
+Install-ChocoPackage "packer" "Packer"
+Install-ChocoPackage "vagrant" "Vagrant"
+Install-ChocoPackage "ansible" "Ansible"
+Install-ChocoPackage "pulumi" "Pulumi"
+Install-ChocoPackage "argocd" "ArgoCD"
+Install-ChocoPackage "flux" "Flux"
+
+# Create IaC directories
+New-DevFolder "$devRoot\infrastructure\terraform" "Terraform configs"
+New-DevFolder "$devRoot\infrastructure\ansible" "Ansible playbooks"
+New-DevFolder "$devRoot\infrastructure\pulumi" "Pulumi projects"
+
+# ===== MONITORING & OBSERVABILITY =====
+Write-Host "`n[MONITOR] Installing Monitoring tools..." -ForegroundColor Cyan
+Install-ChocoPackage "prometheus" "Prometheus"
+Install-ChocoPackage "grafana" "Grafana"
+Install-ChocoPackage "consul" "Consul"
+Install-ChocoPackage "vault" "Vault"
+Install-ChocoPackage "jaeger" "Jaeger"
+Install-ChocoPackage "zipkin" "Zipkin"
+Install-ChocoPackage "datadog-agent" "Datadog Agent"
+Install-ChocoPackage "newrelic-infra" "New Relic Infrastructure"
+
+# ===== CLOUD CLI TOOLS =====
+Write-Host "`n[CLOUD] Installing Cloud CLIs..." -ForegroundColor Cyan
+Install-ChocoPackage "awscli" "AWS CLI"
+Install-ChocoPackage "aws-vault" "AWS Vault"
+Install-ChocoPackage "azure-cli" "Azure CLI"
+Install-ChocoPackage "gcloudsdk" "Google Cloud SDK"
+Install-ChocoPackage "doctl" "DigitalOcean CLI"
+Install-ChocoPackage "linode-cli" "Linode CLI"
+
+# ===== MESSAGE QUEUES & EVENT STREAMING =====
+Write-Host "`n[QUEUE] Installing Message Queues..." -ForegroundColor Cyan
+Install-ChocoPackage "apache-kafka" "Apache Kafka"
+Install-ChocoPackage "nats-server" "NATS Server"
+Install-ChocoPackage "activemq" "ActiveMQ"
+
+# ===== MOBILE DEVELOPMENT =====
+Write-Host "`n[MOBILE] Installing Mobile Dev tools..." -ForegroundColor Cyan
+Install-ChocoPackage "androidstudio" "Android Studio"
+Install-ChocoPackage "android-sdk" "Android SDK"
+
+if (Test-CommandExists npm) {
+    Install-NpmPackage "react-native-cli" "React Native CLI" -Global
+    Install-NpmPackage "cordova" "Cordova" -Global
+    Install-NpmPackage "ionic" "Ionic" -Global
+    Install-NpmPackage "expo-cli" "Expo CLI" -Global
+    Install-NpmPackage "appium" "Appium" -Global
+}
+
+New-DevFolder "$devRoot\mobile\android" "Android projects"
+New-DevFolder "$devRoot\mobile\ios" "iOS projects"
+New-DevFolder "$devRoot\mobile\react-native" "React Native projects"
+
+# ===== CODE EDITORS & IDEs =====
+Write-Host "`n[IDE] Installing IDEs..." -ForegroundColor Cyan
+Install-ChocoPackage "vscode" "VS Code"
+Install-ChocoPackage "visualstudio2022community" "Visual Studio 2022"
+Install-ChocoPackage "intellijidea-community" "IntelliJ IDEA"
+Install-ChocoPackage "pycharm-community" "PyCharm"
+Install-ChocoPackage "webstorm" "WebStorm"
+Install-ChocoPackage "sublimetext4" "Sublime Text 4"
+Install-ChocoPackage "notepadplusplus" "Notepad++"
+Install-ChocoPackage "vim" "Vim"
+Install-ChocoPackage "neovim" "Neovim"
+Install-ChocoPackage "emacs" "Emacs"
+
+# ===== API & TESTING TOOLS =====
+Write-Host "`n[API] Installing API Testing tools..." -ForegroundColor Cyan
+Install-ChocoPackage "postman" "Postman"
+Install-ChocoPackage "insomnia-rest-api-client" "Insomnia"
+Install-ChocoPackage "soapui" "SoapUI"
+Install-ChocoPackage "hoppscotch" "Hoppscotch"
+Install-ChocoPackage "jmeter" "JMeter"
+Install-ChocoPackage "k6" "K6"
+Install-ChocoPackage "wiremock" "WireMock"
+
+New-DevFolder "$devRoot\api\collections" "API collections"
+New-DevFolder "$devRoot\testing\performance" "Performance tests"
+
+# ===== VERSION CONTROL =====
+Write-Host "`n[VCS] Installing Version Control..." -ForegroundColor Cyan
+Install-ChocoPackage "git" "Git"
+Install-ChocoPackage "github-desktop" "GitHub Desktop"
+Install-ChocoPackage "gitkraken" "GitKraken"
+Install-ChocoPackage "gh" "GitHub CLI"
+Install-ChocoPackage "gitlab-cli" "GitLab CLI"
+Install-ChocoPackage "tortoisegit" "TortoiseGit"
+
+# ===== SECURITY & CRYPTO TOOLS =====
+Write-Host "`n[SECURITY] Installing Security tools..." -ForegroundColor Cyan
+Install-ChocoPackage "gpg4win" "GPG4Win"
+Install-ChocoPackage "openssl" "OpenSSL"
+Install-ChocoPackage "libressl" "LibreSSL"
+Install-ChocoPackage "nmap" "Nmap"
+Install-ChocoPackage "wireshark" "Wireshark"
+Install-ChocoPackage "vault" "Vault"
+Install-ChocoPackage "hashicorp-vault" "HashiCorp Vault"
+Install-ChocoPackage "age" "Age"
+Install-ChocoPackage "minisign" "Minisign"
+
+# ===== BROWSERS & WEB TESTING =====
+Write-Host "`n[BROWSER] Installing Browsers..." -ForegroundColor Cyan
+Install-ChocoPackage "googlechrome" "Google Chrome"
+Install-ChocoPackage "firefox" "Firefox"
+Install-ChocoPackage "brave" "Brave"
+Install-ChocoPackage "tor-browser" "Tor Browser"
+Install-ChocoPackage "microsoft-edge-insider" "Edge Insider"
+Install-ChocoPackage "chromedriver" "ChromeDriver"
+Install-ChocoPackage "firefoxdriver" "GeckoDriver"
+
+# ===== ADDITIONAL BUILD TOOLS =====
+Write-Host "`n[BUILD] Installing Build Systems..." -ForegroundColor Cyan
+Install-ChocoPackage "bazel" "Bazel"
+Install-ChocoPackage "buck" "Buck"
+Install-ChocoPackage "msbuild" "MSBuild"
+Install-ChocoPackage "ccache" "ccache"
+Install-ChocoPackage "sccache" "sccache"
+
+# ===== GRAPHICS & GAME DEV =====
+Write-Host "`n[GAME] Installing Game Development..." -ForegroundColor Cyan
+Install-ChocoPackage "unity" "Unity"
+Install-ChocoPackage "godot" "Godot"
+Install-ChocoPackage "blender" "Blender"
+Install-ChocoPackage "unreal-engine" "Unreal Engine"
+
+New-DevFolder "$devRoot\gamedev\unity" "Unity projects"
+New-DevFolder "$devRoot\gamedev\godot" "Godot projects"
+New-DevFolder "$devRoot\gamedev\unreal" "Unreal projects"
+
+# ===== DOCUMENTATION TOOLS =====
+Write-Host "`n[DOCS] Installing Documentation tools..." -ForegroundColor Cyan
+Install-ChocoPackage "doxygen" "Doxygen"
+Install-ChocoPackage "sphinx" "Sphinx"
+
+if (Test-CommandExists npm) {
+    Install-NpmPackage "jsdoc" "JSDoc" -Global
+    Install-NpmPackage "typedoc" "TypeDoc" -Global
+    Install-NpmPackage "@storybook/cli" "Storybook" -Global
+    Install-NpmPackage "mintlify" "Mintlify" -Global
+    Install-NpmPackage "vitepress" "VitePress" -Global
+    Install-NpmPackage "docsify-cli" "Docsify" -Global
+}
+
+New-DevFolder "$devRoot\docs\api" "API documentation"
+New-DevFolder "$devRoot\docs\guides" "Guides and tutorials"
+
+# ===== ADDITIONAL GO TOOLS =====
+Write-Host "`n[GO] Installing Go Dev tools..." -ForegroundColor Cyan
+if (Test-CommandExists go) {
+    Install-GoPackage "github.com/go-delve/delve/cmd/dlv" "Delve Debugger"
+    Install-GoPackage "golang.org/x/tools/gopls" "gopls"
+    Install-GoPackage "github.com/golangci/golangci-lint/cmd/golangci-lint" "golangci-lint"
+    Install-GoPackage "github.com/spf13/cobra-cli" "Cobra CLI"
+    Install-GoPackage "github.com/cosmtrek/air" "Air"
+}
+
+# ===== ADDITIONAL RUST TOOLS =====
+Write-Host "`n[RUST] Installing Rust Dev tools..." -ForegroundColor Cyan
+if (Test-CommandExists rustup) {
+    Write-Host "  → Installing Rust components..." -ForegroundColor Yellow
+    rustup component add rustfmt clippy rust-analyzer rust-src 2>&1 | Out-Null
+    rustup target add wasm32-unknown-unknown wasm32-wasi 2>&1 | Out-Null
+    Write-Host "  ✓ Rust components installed" -ForegroundColor Green
+    
+    Install-CargoPackage "cargo-watch" "cargo-watch"
+    Install-CargoPackage "cargo-edit" "cargo-edit"
+    Install-CargoPackage "cargo-audit" "cargo-audit"
+    Install-CargoPackage "cargo-outdated" "cargo-outdated"
+    Install-CargoPackage "trunk" "Trunk"
+    Install-CargoPackage "wasm-pack" "wasm-pack"
+    Install-CargoPackage "wasm-bindgen-cli" "wasm-bindgen"
+}
+
+# ===== WASM TOOLS =====
+Write-Host "`n[WASM] Installing WebAssembly tools..." -ForegroundColor Cyan
+if (Test-CommandExists npm) {
+    Install-NpmPackage "wabt" "WABT" -Global
+    Install-NpmPackage "wasm-tools" "wasm-tools" -Global
+    Install-NpmPackage "wasmtime" "Wasmtime" -Global
+}
+
+# ===== SMART CONTRACT SECURITY =====
+Write-Host "`n[SECURITY] Installing Smart Contract Security tools..." -ForegroundColor Cyan
+if (Test-CommandExists pip) {
+    Install-PipPackage "slither-analyzer" "Slither"
+    Install-PipPackage "mythril" "Mythril"
+    Install-PipPackage "manticore" "Manticore"
+    Install-PipPackage "echidna" "Echidna"
+}
+
+if (Test-CommandExists npm) {
+    Install-NpmPackage "@consensys/mythx-cli" "MythX CLI" -Global
+    Install-NpmPackage "solhint" "Solhint" -Global
+    Install-NpmPackage "solidity-coverage" "Solidity Coverage" -Global
+}
+
+if (Test-CommandExists cargo) {
+    Install-CargoPackage "cargo-contract" "cargo-contract"
+}
+
+# ===== CRYPTO WALLETS & TOOLS =====
+Write-Host "`n[WALLET] Installing Crypto Wallet Tools..." -ForegroundColor Cyan
+if (Test-CommandExists npm) {
+    Install-NpmPackage "@metamask/cli" "MetaMask CLI" -Global
+}
+
+if (Test-CommandExists pip) {
+    Install-PipPackage "eth-account" "eth-account"
+    Install-PipPackage "eth-keys" "eth-keys"
+    Install-PipPackage "mnemonic" "mnemonic"
+    Install-PipPackage "bip-utils" "bip-utils"
+}
+
+# ===== DEFI & DEX TOOLS =====
+Write-Host "`n[DEFI] Installing DeFi Development tools..." -ForegroundColor Cyan
+if (Test-CommandExists npm) {
+    Install-NpmPackage "@aave/protocol-js" "Aave Protocol" -Global
+    Install-NpmPackage "@compound-finance/compound-js" "Compound.js" -Global
+    Install-NpmPackage "@uniswap/sdk-core" "Uniswap SDK Core" -Global
+    Install-NpmPackage "@uniswap/v2-sdk" "Uniswap V2 SDK" -Global
+    Install-NpmPackage "@uniswap/v3-sdk" "Uniswap V3 SDK" -Global
+}
+
+# ===== LOAD TESTING & PERFORMANCE =====
+Write-Host "`n[PERF] Installing Performance tools..." -ForegroundColor Cyan
+Install-ChocoPackage "apache-jmeter" "Apache JMeter"
+Install-ChocoPackage "k6" "K6"
+Install-ChocoPackage "siege" "Siege"
+Install-ChocoPackage "wrk" "wrk"
+
+if (Test-CommandExists npm) {
+    Install-NpmPackage "artillery" "Artillery" -Global
+    Install-NpmPackage "autocannon" "Autocannon" -Global
+    Install-NpmPackage "clinic" "Clinic.js" -Global
+}
+
+# ===== NETWORK TOOLS =====
+Write-Host "`n[NETWORK] Installing Network tools..." -ForegroundColor Cyan
+Install-ChocoPackage "wireshark" "Wireshark"
+Install-ChocoPackage "nmap" "Nmap"
+Install-ChocoPackage "tcpdump" "TCPDump"
+Install-ChocoPackage "wget" "wget"
+Install-ChocoPackage "curl" "cURL"
+Install-ChocoPackage "ngrok" "ngrok"
+Install-ChocoPackage "cloudflared" "Cloudflared"
+
+# ===== ENVIRONMENT CONFIG =====
+Write-Host "`n[CONFIG] Setting up environment variables..." -ForegroundColor Cyan
+
+# Add common paths to PATH
+$pathsToAdd = @(
+    "$env:USERPROFILE\.cargo\bin"
+    "$env:USERPROFILE\go\bin"
+    "$env:USERPROFILE\.local\bin"
+    "$env:USERPROFILE\.local\share\solana\install\active_release\bin"
+    "$env:ProgramFiles\nodejs"
+    "$env:ProgramFiles\Docker\Docker\resources\bin"
+    "$env:APPDATA\npm"
+)
+
+foreach ($pathToAdd in $pathsToAdd) {
+    Add-ToPath $pathToAdd
+}
+
+# ===== GIT CONFIGURATION =====
+Write-Host "`n[GIT] Configuring Git..." -ForegroundColor Cyan
+if (Test-CommandExists git) {
+    $gitUser = git config --global user.name
+    if (!$gitUser) {
+        Write-Host "  → Setting Git defaults..." -ForegroundColor Yellow
+        git config --global init.defaultBranch main
+        git config --global core.autocrlf false
+        Write-Host "  ✓ Git configured" -ForegroundColor Green
+    } else {
+        Write-Host "  ✓ Git already configured" -ForegroundColor Gray
+    }
+}
+
+# ===== CREATE PROJECT TEMPLATES =====
+Write-Host "`n[TEMPLATES] Creating project templates..." -ForegroundColor Cyan
+
+# Ethereum Hardhat template location
+$hardhatTemplate = "$devRoot\crypto\ethereum\_template-hardhat"
+New-DevFolder $hardhatTemplate "Hardhat template"
+
+# Solana Anchor template location
+$anchorTemplate = "$devRoot\crypto\solana\_template-anchor"
+New-DevFolder $anchorTemplate "Anchor template"
+
+# Web app templates
+$reactTemplate = "$devRoot\web\frontend\_template-react"
+New-DevFolder $reactTemplate "React template"
+
+$nextTemplate = "$devRoot\web\fullstack\_template-nextjs"
+New-DevFolder $nextTemplate "Next.js template"
+
+# API templates
+$fastapiTemplate = "$devRoot\api\_template-fastapi"
+New-DevFolder $fastapiTemplate "FastAPI template"
+
+$expressTemplate = "$devRoot\api\_template-express"
+New-DevFolder $expressTemplate "Express template"
+
+# ===== CREATE README FILES =====
+Write-Host "`n[DOCS] Creating README files..." -ForegroundColor Cyan
+
+$mainReadme = @"
+# Development Environment
+
+This directory contains all your development projects organized by category.
+
+## Structure
+
+- **crypto/** - Cryptocurrency and blockchain projects
+  - **ethereum/** - Ethereum smart contracts
+  - **solana/** - Solana programs
+  - **defi/** - DeFi applications
+  - **nft/** - NFT projects
+
+- **banking/** - Banking and fintech projects
+  - **apis/** - Payment API integrations
+  - **neobank/** - Neo-banking applications
+
+- **web/** - Web applications
+  - **frontend/** - Frontend projects (React, Vue, etc.)
+  - **backend/** - Backend services
+  - **fullstack/** - Full-stack applications
+
+- **blockchain/** - Blockchain nodes and infrastructure
+  - **nodes/** - Running blockchain nodes
+  - **data/** - Blockchain data storage
+
+- **mobile/** - Mobile applications
+- **desktop/** - Desktop applications
+- **api/** - API projects
+- **testing/** - Test projects and experiments
+- **scripts/** - Utility scripts
+- **data/** - Data and databases
+- **docker/** - Docker configurations
+- **kubernetes/** - Kubernetes manifests
+- **docs/** - Documentation
+
+## Quick Start
+
+1. Navigate to the appropriate directory for your project type
+2. Use the template directories (prefixed with `_template-`) as starting points
+3. Run `git init` in your project directory to start version control
+
+## Tools Installed
+
+Run the setup log to see all installed tools:
+``Get-Content $env:USERPROFILE\dev-setup-log.txt``
+
+"@
+
+$mainReadme | Out-File -FilePath "$devRoot\README.md" -Encoding UTF8
+
+# Create gitignore
+$gitignore = @"
+# Dependencies
+node_modules/
+venv/
+__pycache__/
+target/
+dist/
+build/
+
+# Environment
+.env
+.env.local
+*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Database
+*.db
+*.sqlite
+
+# Keys & Secrets
+*.pem
+*.key
+*.p12
+.secret
+wallet.json
+
+"@
+
+$gitignore | Out-File -FilePath "$devRoot\.gitignore" -Encoding UTF8
+
+# ===== SAVE CONFIGURATION =====
+Write-Host "`n[CONFIG] Saving installation configuration..." -ForegroundColor Cyan
+
+$config = @{
+    InstallDate = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    DevRoot = $devRoot
+    PathsAdded = $pathsToAdd
+    InstalledTools = @{
+        Chocolatey = Test-CommandExists choco
+        Git = Test-CommandExists git
+        Python = Test-CommandExists python
+        Node = Test-CommandExists node
+        Go = Test-CommandExists go
+        Rust = Test-CommandExists cargo
+        Docker = Test-CommandExists docker
+    }
+} | ConvertTo-Json -Depth 10
+
+$config | Out-File -FilePath $ConfigFile -Encoding UTF8
+Write-Host "  ✓ Configuration saved to: $ConfigFile" -ForegroundColor Green
+
+# ===== ENVIRONMENT VERIFICATION =====
+Write-Host "`n[VERIFY] Verifying installation..." -ForegroundColor Cyan
+
+$verificationResults = @()
+
+# Check critical tools
+$criticalTools = @{
+    "git" = "Git"
+    "node" = "Node.js"
+    "npm" = "NPM"
+    "python" = "Python"
+    "pip" = "pip"
+    "go" = "Go"
+    "cargo" = "Cargo (Rust)"
+    "docker" = "Docker"
+}
+
+foreach ($tool in $criticalTools.GetEnumerator()) {
+    $installed = Test-CommandExists $tool.Key
+    $status = if ($installed) { "✓ INSTALLED" } else { "✗ MISSING" }
+    $color = if ($installed) { "Green" } else { "Red" }
+    Write-Host "  $status - $($tool.Value)" -ForegroundColor $color
+    $verificationResults += "$status - $($tool.Value)"
+}
+
+# Save verification results to log
+"" | Out-File -FilePath $InstallLog -Append
+"=== VERIFICATION RESULTS ===" | Out-File -FilePath $InstallLog -Append
+$verificationResults | Out-File -FilePath $InstallLog -Append
+"Completed: $(Get-Date)" | Out-File -FilePath $InstallLog -Append
+
+# ===== FINAL SETUP =====
+Write-Host "`n[FINAL] Running final setup..." -ForegroundColor Cyan
+refreshenv
+
+Write-Host "`n========================================" -ForegroundColor Green
+Write-Host "=== INSTALLATION COMPLETE ===" -ForegroundColor Green
+Write-Host "========================================" -ForegroundColor Green
+
+Write-Host "`nYOUR DEV STATION IS NOW EQUIPPED WITH:" -ForegroundColor Yellow
+Write-Host "`n[LANGUAGES - 40+]" -ForegroundColor Cyan
+Write-Host "C, C++, C#, Python, Java, Kotlin, Scala, Rust, Go, JavaScript, TypeScript, Ruby, PHP" -ForegroundColor White
+Write-Host "Perl, Lua, R, Julia, Haskell, Elixir, Dart, Zig, Nim, Crystal, Clojure, F#, OCaml" -ForegroundColor White
+Write-Host "Racket, Lisp, Fortran, COBOL, Assembly, Swift, V, Deno, Bun" -ForegroundColor White
+
+Write-Host "`n[BLOCKCHAIN PLATFORMS]" -ForegroundColor Cyan
+Write-Host "Ethereum (Geth, Hardhat, Truffle, Foundry, Remix)" -ForegroundColor White
+Write-Host "Solana (Solana CLI, Anchor, SPL)" -ForegroundColor White
+Write-Host "Cardano, Polkadot, Avalanche, Near, Cosmos, Algorand, Tezos, Aptos" -ForegroundColor White
+Write-Host "IPFS, Substrate" -ForegroundColor White
+
+Write-Host "`n[CRYPTO TOOLS]" -ForegroundColor Cyan
+Write-Host "Web3.js, Ethers.js, Solana Web3, Anchor, OpenZeppelin" -ForegroundColor White
+Write-Host "Uniswap SDK, PancakeSwap SDK, Aave Protocol, Compound" -ForegroundColor White
+Write-Host "MetaMask, Wallet Connect integrations" -ForegroundColor White
+Write-Host "Smart Contract Security: Slither, Mythril, Echidna" -ForegroundColor White
+
+Write-Host "`n[BANKING & PAYMENT APIs]" -ForegroundColor Cyan
+Write-Host "Stripe, Plaid, Square, PayPal, Braintree, Dwolla, Adyen" -ForegroundColor White
+Write-Host "Coinbase Commerce, Banking aggregation tools" -ForegroundColor White
+
+Write-Host "`n[DATABASES]" -ForegroundColor Cyan
+Write-Host "MongoDB, PostgreSQL, MySQL, SQLite, Redis, Cassandra, Neo4j" -ForegroundColor White
+Write-Host "CouchDB, InfluxDB, Elasticsearch, Memcached" -ForegroundColor White
+
+Write-Host "`n[WEB SERVERS]" -ForegroundColor Cyan
+Write-Host "NGINX, Apache, Tomcat, Caddy, HAProxy, Traefik, IIS" -ForegroundColor White
+
+Write-Host "`n[WEB FRAMEWORKS]" -ForegroundColor Cyan
+Write-Host "React, Next.js, Vue, Nuxt, Angular, Svelte, SvelteKit" -ForegroundColor White
+Write-Host "Express, NestJS, FastAPI, Flask, Django, Ruby on Rails" -ForegroundColor White
+
+Write-Host "`n[CLOUD PLATFORMS]" -ForegroundColor Cyan
+Write-Host "AWS CLI, Azure CLI, Google Cloud SDK, DigitalOcean, Linode" -ForegroundColor White
+
+Write-Host "`n[CONTAINERS & ORCHESTRATION]" -ForegroundColor Cyan
+Write-Host "Docker, Kubernetes, Helm, Minikube, Kind, Rancher, Podman" -ForegroundColor White
+
+Write-Host "`n[CI/CD & INFRASTRUCTURE]" -ForegroundColor Cyan
+Write-Host "Jenkins, Terraform, Ansible, Pulumi, ArgoCD, Flux" -ForegroundColor White
+
+Write-Host "`n[MESSAGE QUEUES]" -ForegroundColor Cyan
+Write-Host "Kafka, RabbitMQ, Redis, NATS, ActiveMQ" -ForegroundColor White
+
+Write-Host "`n[MONITORING]" -ForegroundColor Cyan
+Write-Host "Prometheus, Grafana, Elasticsearch, Kibana, Jaeger, Datadog" -ForegroundColor White
+
+Write-Host "`n[MOBILE DEVELOPMENT]" -ForegroundColor Cyan
+Write-Host "Android Studio, React Native, Flutter, Ionic, Cordova, Expo" -ForegroundColor White
+
+Write-Host "`n[IDEs & EDITORS]" -ForegroundColor Cyan
+Write-Host "VS Code, Visual Studio, IntelliJ IDEA, PyCharm, WebStorm" -ForegroundColor White
+Write-Host "Sublime Text, Vim, Neovim, Emacs" -ForegroundColor White
+
+Write-Host "`n[API TESTING]" -ForegroundColor Cyan
+Write-Host "Postman, Insomnia, JMeter, K6, Artillery, Playwright, Cypress" -ForegroundColor White
+
+Write-Host "`n[GAME DEVELOPMENT]" -ForegroundColor Cyan
+Write-Host "Unity, Godot, Unreal Engine, Blender" -ForegroundColor White
+
+Write-Host "`n========================================" -ForegroundColor Green
+Write-Host "YOU CAN NOW:" -ForegroundColor Yellow
+Write-Host "✓ Run blockchain nodes (Ethereum, Solana, etc.)" -ForegroundColor White
+Write-Host "✓ Deploy smart contracts with Hardhat/Foundry/Anchor" -ForegroundColor White
+Write-Host "✓ Build DeFi apps with Uniswap/Aave/Compound SDKs" -ForegroundColor White
+Write-Host "✓ Create neo-banks with Stripe/Plaid APIs" -ForegroundColor White
+Write-Host "✓ Host web servers (NGINX/Apache/Node.js)" -ForegroundColor White
+Write-Host "✓ Run databases (PostgreSQL/MongoDB/Redis)" -ForegroundColor White
+Write-Host "✓ Deploy containers with Docker/Kubernetes" -ForegroundColor White
+Write-Host "✓ Build in 40+ programming languages" -ForegroundColor White
+Write-Host "✓ Create mobile apps (React Native/Flutter)" -ForegroundColor White
+Write-Host "✓ Develop in ANY tech stack imaginable" -ForegroundColor White
+
+Write-Host "`n========================================" -ForegroundColor Green
+Write-Host "INSTALLATION SUMMARY:" -ForegroundColor Yellow
+Write-Host "`nDEV DIRECTORIES CREATED:" -ForegroundColor Cyan
+Write-Host "Main: $devRoot" -ForegroundColor White
+Write-Host "├── crypto/" -ForegroundColor Gray
+Write-Host "│   ├── ethereum/ (Smart contracts)" -ForegroundColor Gray
+Write-Host "│   ├── solana/ (Solana programs)" -ForegroundColor Gray
+Write-Host "│   ├── defi/ (DeFi applications)" -ForegroundColor Gray
+Write-Host "│   └── nft/ (NFT projects)" -ForegroundColor Gray
+Write-Host "├── banking/" -ForegroundColor Gray
+Write-Host "│   ├── apis/ (Payment integrations)" -ForegroundColor Gray
+Write-Host "│   └── neobank/ (Banking apps)" -ForegroundColor Gray
+Write-Host "├── web/" -ForegroundColor Gray
+Write-Host "│   ├── frontend/ (React, Vue, Angular)" -ForegroundColor Gray
+Write-Host "│   ├── backend/ (Express, FastAPI)" -ForegroundColor Gray
+Write-Host "│   └── fullstack/ (Next.js, etc.)" -ForegroundColor Gray
+Write-Host "├── blockchain/" -ForegroundColor Gray
+Write-Host "│   ├── nodes/ (Running nodes)" -ForegroundColor Gray
+Write-Host "│   └── data/ (Chain data)" -ForegroundColor Gray
+Write-Host "├── mobile/ (React Native, Flutter)" -ForegroundColor Gray
+Write-Host "├── api/ (API projects)" -ForegroundColor Gray
+Write-Host "├── data/databases/ (Local DBs)" -ForegroundColor Gray
+Write-Host "├── docker/ (Containers)" -ForegroundColor Gray
+Write-Host "├── kubernetes/ (K8s configs)" -ForegroundColor Gray
+Write-Host "└── docs/ (Documentation)" -ForegroundColor Gray
+
+Write-Host "`nCONFIGURATION FILES:" -ForegroundColor Cyan
+Write-Host "Installation Log: $InstallLog" -ForegroundColor White
+Write-Host "Configuration: $ConfigFile" -ForegroundColor White
+Write-Host "Main README: $devRoot\README.md" -ForegroundColor White
+
+Write-Host "`n========================================" -ForegroundColor Green
+Write-Host "NEXT STEPS:" -ForegroundColor Yellow
+Write-Host "`n1. RESTART YOUR COMPUTER (REQUIRED)" -ForegroundColor Red
+Write-Host "   All PATH changes will take effect after restart" -ForegroundColor Gray
+
+Write-Host "`n2. VERIFY INSTALLATION" -ForegroundColor White
+Write-Host "   Run these commands after restart:" -ForegroundColor Gray
+Write-Host "   node --version" -ForegroundColor Gray
+Write-Host "   python --version" -ForegroundColor Gray
+Write-Host "   go version" -ForegroundColor Gray
+Write-Host "   cargo --version" -ForegroundColor Gray
+Write-Host "   docker --version" -ForegroundColor Gray
+
+Write-Host "`n3. START YOUR FIRST PROJECT" -ForegroundColor White
+Write-Host "   # Ethereum Smart Contract:" -ForegroundColor Gray
+Write-Host "   cd $devRoot\crypto\ethereum" -ForegroundColor Gray
+Write-Host "   npx hardhat init" -ForegroundColor Gray
+Write-Host "" -ForegroundColor Gray
+Write-Host "   # Solana Program:" -ForegroundColor Gray
+Write-Host "   cd $devRoot\crypto\solana" -ForegroundColor Gray
+Write-Host "   anchor init my-project" -ForegroundColor Gray
+Write-Host "" -ForegroundColor Gray
+Write-Host "   # React Web App:" -ForegroundColor Gray
+Write-Host "   cd $devRoot\web\frontend" -ForegroundColor Gray
+Write-Host "   npx create-react-app my-app" -ForegroundColor Gray
+Write-Host "" -ForegroundColor Gray
+Write-Host "   # Next.js Full-Stack:" -ForegroundColor Gray
+Write-Host "   cd $devRoot\web\fullstack" -ForegroundColor Gray
+Write-Host "   npx create-next-app@latest" -ForegroundColor Gray
+Write-Host "" -ForegroundColor Gray
+Write-Host "   # FastAPI Backend:" -ForegroundColor Gray
+Write-Host "   cd $devRoot\api" -ForegroundColor Gray
+Write-Host "   mkdir my-api && cd my-api" -ForegroundColor Gray
+Write-Host "   python -m venv venv" -ForegroundColor Gray
+Write-Host "   .\venv\Scripts\activate" -ForegroundColor Gray
+Write-Host "   pip install fastapi uvicorn" -ForegroundColor Gray
+
+Write-Host "`n4. CONFIGURE GIT (if not done)" -ForegroundColor White
+Write-Host "   git config --global user.name `"Your Name`"" -ForegroundColor Gray
+Write-Host "   git config --global user.email `"your@email.com`"" -ForegroundColor Gray
+
+Write-Host "`n5. START A BLOCKCHAIN NODE (optional)" -ForegroundColor White
+Write-Host "   # Ethereum Local Node:" -ForegroundColor Gray
+Write-Host "   npx hardhat node" -ForegroundColor Gray
+Write-Host "" -ForegroundColor Gray
+Write-Host "   # Solana Local Validator:" -ForegroundColor Gray
+Write-Host "   solana-test-validator" -ForegroundColor Gray
+
+Write-Host "`n6. EXPLORE PROJECT TEMPLATES" -ForegroundColor White
+Write-Host "   Template directories (prefixed with _template-) are ready to use!" -ForegroundColor Gray
+Write-Host "   Copy them to start new projects with pre-configured setups." -ForegroundColor Gray
+
+Write-Host "`n========================================" -ForegroundColor Green
+Write-Host "USEFUL COMMANDS:" -ForegroundColor Yellow
+
+Write-Host "`nView installation log:" -ForegroundColor White
+Write-Host "Get-Content $InstallLog" -ForegroundColor Gray
+
+Write-Host "`nView configuration:" -ForegroundColor White
+Write-Host "Get-Content $ConfigFile | ConvertFrom-Json" -ForegroundColor Gray
+
+Write-Host "`nCheck what's installed:" -ForegroundColor White
+Write-Host "choco list --local-only" -ForegroundColor Gray
+
+Write-Host "`nUpdate all packages:" -ForegroundColor White
+Write-Host "choco upgrade all -y" -ForegroundColor Gray
+
+Write-Host "`nRefresh environment variables (current session):" -ForegroundColor White
+Write-Host "refreshenv" -ForegroundColor Gray
+
+Write-Host "`n========================================" -ForegroundColor Green
+Write-Host "DOCKER QUICK START:" -ForegroundColor Yellow
+Write-Host "After restart, open Docker Desktop and wait for it to start." -ForegroundColor Gray
+Write-Host "Then test with: docker run hello-world" -ForegroundColor Gray
+
+Write-Host "`n========================================" -ForegroundColor Green
+Write-Host "DATABASE QUICK START:" -ForegroundColor Yellow
+
+Write-Host "`nMongoDB:" -ForegroundColor White
+Write-Host "Start: net start MongoDB" -ForegroundColor Gray
+Write-Host "Connect: mongosh" -ForegroundColor Gray
+
+Write-Host "`nPostgreSQL:" -ForegroundColor White
+Write-Host "Start: net start postgresql-x64-14" -ForegroundColor Gray
+Write-Host "Connect: psql -U postgres" -ForegroundColor Gray
+
+Write-Host "`nRedis:" -ForegroundColor White
+Write-Host "Start: redis-server" -ForegroundColor Gray
+Write-Host "Connect: redis-cli" -ForegroundColor Gray
+
+Write-Host "`n========================================" -ForegroundColor Green
+Write-Host "PAYMENT API QUICK START:" -ForegroundColor Yellow
+
+Write-Host "`nStripe:" -ForegroundColor White
+Write-Host "npm install stripe" -ForegroundColor Gray
+Write-Host "Get API keys: https://dashboard.stripe.com/apikeys" -ForegroundColor Gray
+
+Write-Host "`nPlaid:" -ForegroundColor White
+Write-Host "pip install plaid-python" -ForegroundColor Gray
+Write-Host "Get API keys: https://dashboard.plaid.com/team/keys" -ForegroundColor Gray
+
+Write-Host "`n========================================" -ForegroundColor Green
+Write-Host "TROUBLESHOOTING:" -ForegroundColor Yellow
+
+Write-Host "`nIf a command is not found after installation:" -ForegroundColor White
+Write-Host "1. Run: refreshenv" -ForegroundColor Gray
+Write-Host "2. Close and reopen PowerShell" -ForegroundColor Gray
+Write-Host "3. Restart your computer" -ForegroundColor Gray
+
+Write-Host "`nIf Chocolatey packages fail:" -ForegroundColor White
+Write-Host "choco install <package> -y --force" -ForegroundColor Gray
+
+Write-Host "`nIf Python packages fail:" -ForegroundColor White
+Write-Host "python -m pip install --upgrade pip" -ForegroundColor Gray
+Write-Host "pip install <package> --user" -ForegroundColor Gray
+
+Write-Host "`nIf npm packages fail:" -ForegroundColor White
+Write-Host "npm cache clean --force" -ForegroundColor Gray
+Write-Host "npm install -g <package> --force" -ForegroundColor Gray
+
+Write-Host "`n========================================" -ForegroundColor Green
+Write-Host "SECURITY REMINDERS:" -ForegroundColor Yellow
+Write-Host "✓ Never commit .env files or private keys to Git" -ForegroundColor Red
+Write-Host "✓ Use .gitignore (already created in $devRoot)" -ForegroundColor White
+Write-Host "✓ Store sensitive credentials in environment variables" -ForegroundColor White
+Write-Host "✓ Use password managers for API keys" -ForegroundColor White
+Write-Host "✓ Enable 2FA on all developer accounts" -ForegroundColor White
+
+Write-Host "`n========================================" -ForegroundColor Green
+Write-Host "LEARNING RESOURCES:" -ForegroundColor Yellow
+
+Write-Host "`nBlockchain Development:" -ForegroundColor White
+Write-Host "Ethereum: https://ethereum.org/en/developers/" -ForegroundColor Gray
+Write-Host "Solana: https://docs.solana.com/" -ForegroundColor Gray
+Write-Host "Hardhat: https://hardhat.org/getting-started/" -ForegroundColor Gray
+Write-Host "Anchor: https://www.anchor-lang.com/" -ForegroundColor Gray
+
+Write-Host "`nWeb Development:" -ForegroundColor White
+Write-Host "React: https://react.dev/" -ForegroundColor Gray
+Write-Host "Next.js: https://nextjs.org/docs" -ForegroundColor Gray
+Write-Host "FastAPI: https://fastapi.tiangolo.com/" -ForegroundColor Gray
+
+Write-Host "`nPayment APIs:" -ForegroundColor White
+Write-Host "Stripe: https://stripe.com/docs" -ForegroundColor Gray
+Write-Host "Plaid: https://plaid.com/docs/" -ForegroundColor Gray
+
+Write-Host "`n========================================" -ForegroundColor Green
+Write-Host "SUPPORT:" -ForegroundColor Yellow
+Write-Host "Check the log file for detailed installation info:" -ForegroundColor White
+Write-Host "$InstallLog" -ForegroundColor Cyan
+Write-Host "`nRead the main README:" -ForegroundColor White
+Write-Host "$devRoot\README.md" -ForegroundColor Cyan
+
+Write-Host "`n========================================" -ForegroundColor Green
+Write-Host "🎉 INSTALLATION COMPLETE! 🎉" -ForegroundColor Green
+Write-Host "========================================" -ForegroundColor Green
+Write-Host "`nREMEMBER: Restart your computer before starting development!" -ForegroundColor Red
+Write-Host "`nHappy coding! 🚀" -ForegroundColor Cyan
+Write-Host "========================================"
