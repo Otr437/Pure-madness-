@@ -1,0 +1,2791 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ultimate EOS Development Environment - Complete Setup + Remix IDE</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/eosjs/22.1.0/lib/eos.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/anchor-link/3.2.0/anchor-link.min.js"></script>
+    <style>
+        :root {
+            --primary: #2563eb;
+            --primary-dark: #1d4ed8;
+            --secondary: #1e293b;
+            --accent: #f59e0b;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --danger: #ef4444;
+            --dark: #0f172a;
+            --surface: #1e293b;
+            --surface-light: #334155;
+            --text: #e2e8f0;
+            --text-muted: #94a3b8;
+            --border: #334155;
+            --remix-blue: #007acc;
+            --sidebar-width: 320px;
+        }
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Inter', 'SF Pro Display', sans-serif;
+            background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+            color: var(--text);
+            height: 100vh;
+            overflow: hidden;
+        }
+        
+        .main-container {
+            display: grid;
+            grid-template-columns: var(--sidebar-width) 1fr 350px;
+            grid-template-rows: 60px 1fr 250px;
+            height: 100vh;
+            gap: 1px;
+            background: var(--border);
+        }
+        
+        .header {
+            grid-column: 1 / -1;
+            background: linear-gradient(90deg, var(--remix-blue), var(--primary));
+            padding: 0 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+        }
+        
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            font-size: 1.4rem;
+            font-weight: 700;
+            color: white;
+        }
+        
+        .logo i {
+            color: var(--accent);
+            font-size: 1.8rem;
+        }
+        
+        .header-actions {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+        
+        .wallet-status {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            background: rgba(255, 255, 255, 0.1);
+            padding: 8px 15px;
+            border-radius: 20px;
+            color: white;
+            font-size: 0.9rem;
+        }
+        
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--success);
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        .sidebar {
+            background: var(--surface);
+            overflow-y: auto;
+            border-right: 1px solid var(--border);
+        }
+        
+        .sidebar-section {
+            padding: 15px;
+            border-bottom: 1px solid var(--border);
+        }
+        
+        .sidebar-section h3 {
+            color: var(--accent);
+            margin-bottom: 15px;
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .file-tree {
+            list-style: none;
+            margin-left: 10px;
+        }
+        
+        .file-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 10px;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-size: 0.85rem;
+            margin-bottom: 2px;
+        }
+        
+        .file-item:hover {
+            background: var(--surface-light);
+        }
+        
+        .file-item.active {
+            background: var(--primary);
+            color: white;
+        }
+        
+        .file-icon {
+            width: 16px;
+            color: var(--text-muted);
+        }
+        
+        .network-selector {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            margin-bottom: 15px;
+        }
+        
+        .network-btn {
+            padding: 10px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            background: var(--surface-light);
+            color: var(--text);
+            cursor: pointer;
+            transition: all 0.2s;
+            text-align: center;
+            font-size: 0.8rem;
+        }
+        
+        .network-btn:hover {
+            background: var(--primary);
+            transform: translateY(-1px);
+        }
+        
+        .network-btn.active {
+            background: var(--primary);
+            border-color: var(--primary);
+            color: white;
+        }
+        
+        .account-info {
+            background: var(--dark);
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            border: 1px solid var(--border);
+        }
+        
+        .account-info div {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 8px;
+            font-size: 0.9rem;
+        }
+        
+        .account-info div:last-child {
+            margin-bottom: 0;
+        }
+        
+        .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 500;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            font-size: 0.85rem;
+        }
+        
+        .btn-primary {
+            background: var(--primary);
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            background: var(--primary-dark);
+            transform: translateY(-1px);
+        }
+        
+        .btn-success {
+            background: var(--success);
+            color: white;
+        }
+        
+        .btn-warning {
+            background: var(--warning);
+            color: white;
+        }
+        
+        .btn-danger {
+            background: var(--danger);
+            color: white;
+        }
+        
+        .btn-secondary {
+            background: var(--surface-light);
+            color: var(--text);
+            border: 1px solid var(--border);
+        }
+        
+        .btn-full {
+            width: 100%;
+            margin-bottom: 8px;
+        }
+        
+        .form-control {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            background: var(--dark);
+            color: var(--text);
+            margin-bottom: 10px;
+            font-family: inherit;
+            font-size: 0.9rem;
+        }
+        
+        .form-control:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.2);
+        }
+        
+        .editor-panel {
+            background: var(--surface);
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .editor-tabs {
+            display: flex;
+            background: var(--surface-light);
+            border-bottom: 1px solid var(--border);
+            overflow-x: auto;
+        }
+        
+        .editor-tab {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 12px 16px;
+            background: var(--surface);
+            border-right: 1px solid var(--border);
+            cursor: pointer;
+            transition: all 0.2s;
+            font-size: 0.85rem;
+            white-space: nowrap;
+        }
+        
+        .editor-tab:hover {
+            background: var(--surface-light);
+        }
+        
+        .editor-tab.active {
+            background: var(--primary);
+            color: white;
+        }
+        
+        .tab-close {
+            padding: 2px;
+            border-radius: 50%;
+            opacity: 0.7;
+        }
+        
+        .tab-close:hover {
+            opacity: 1;
+            background: rgba(255, 255, 255, 0.2);
+        }
+        
+        .editor-content {
+            flex: 1;
+            overflow: hidden;
+        }
+        
+        .code-editor {
+            height: 100%;
+            padding: 20px;
+            font-family: 'JetBrains Mono', 'Fira Code', monospace;
+            font-size: 14px;
+            line-height: 1.6;
+            background: var(--dark);
+            color: var(--text);
+            overflow-y: auto;
+            white-space: pre-wrap;
+        }
+        
+        .code-block {
+            background: var(--dark);
+            padding: 20px;
+            border-radius: 12px;
+            overflow-x: auto;
+            margin-bottom: 20px;
+            border: 1px solid var(--border);
+            position: relative;
+        }
+        
+        .code-block::before {
+            content: attr(data-lang);
+            position: absolute;
+            top: 10px;
+            right: 15px;
+            background: var(--accent);
+            color: var(--dark);
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 0.7rem;
+            font-weight: bold;
+        }
+        
+        .code-block pre {
+            margin: 0;
+            color: var(--text);
+            font-size: 0.85rem;
+        }
+        
+        .syntax-cpp { color: #7dd3fc; }
+        .syntax-comment { color: #64748b; font-style: italic; }
+        .syntax-keyword { color: #a78bfa; font-weight: bold; }
+        .syntax-string { color: #34d399; }
+        .syntax-function { color: #fbbf24; }
+        .syntax-highlight { color: #7dd3fc; }
+        
+        .sidebar-right {
+            background: var(--surface);
+            overflow-y: auto;
+            border-left: 1px solid var(--border);
+        }
+        
+        .wallet-card {
+            background: var(--dark);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 10px;
+            transition: all 0.3s;
+            cursor: pointer;
+        }
+        
+        .wallet-card:hover {
+            border-color: var(--primary);
+            transform: translateY(-2px);
+        }
+        
+        .wallet-card.active {
+            border-color: var(--success);
+            background: rgba(16, 185, 129, 0.1);
+        }
+        
+        .wallet-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        
+        .wallet-name {
+            font-weight: 600;
+            color: var(--text);
+            font-size: 0.9rem;
+        }
+        
+        .wallet-type {
+            background: var(--accent);
+            color: var(--dark);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.7rem;
+            font-weight: bold;
+        }
+        
+        .wallet-balance {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            margin-bottom: 5px;
+        }
+        
+        .wallet-address {
+            font-family: monospace;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            word-break: break-all;
+        }
+        
+        .console {
+            grid-column: 1 / -1;
+            background: var(--dark);
+            padding: 15px;
+            overflow-y: auto;
+            border-top: 3px solid var(--remix-blue);
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.85rem;
+        }
+        
+        .console-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid var(--border);
+        }
+        
+        .console-title {
+            font-weight: 600;
+            color: var(--text);
+        }
+        
+        .console-clear {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            padding: 4px 8px;
+            border-radius: 4px;
+        }
+        
+        .console-clear:hover {
+            background: var(--surface);
+        }
+        
+        .console-line {
+            margin-bottom: 6px;
+            padding: 4px 0;
+            border-left: 3px solid transparent;
+            padding-left: 10px;
+            line-height: 1.4;
+        }
+        
+        .console-info { 
+            color: #60a5fa; 
+            border-left-color: #60a5fa;
+        }
+        .console-success { 
+            color: var(--success); 
+            border-left-color: var(--success);
+        }
+        .console-warning { 
+            color: var(--warning); 
+            border-left-color: var(--warning);
+        }
+        .console-error { 
+            color: var(--danger); 
+            border-left-color: var(--danger);
+        }
+        
+        .contract-actions {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 10px;
+        }
+        
+        .action-card {
+            background: var(--dark);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 15px;
+        }
+        
+        .action-name {
+            font-weight: 600;
+            color: var(--accent);
+            margin-bottom: 10px;
+            font-size: 0.9rem;
+        }
+        
+        .compile-status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 10px;
+        }
+        
+        .status-indicator {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+        }
+        
+        .status-ready { background: var(--success); }
+        .status-compiling { background: var(--warning); animation: pulse 1s infinite; }
+        .status-error { background: var(--danger); }
+        
+        .progress-bar {
+            height: 4px;
+            background: var(--surface);
+            border-radius: 2px;
+            overflow: hidden;
+            margin: 10px 0;
+        }
+        
+        .progress {
+            height: 100%;
+            background: linear-gradient(90deg, var(--primary), var(--success));
+            transition: width 0.3s ease;
+        }
+        
+        .modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.8);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+        
+        .modal-content {
+            background: var(--surface);
+            padding: 30px;
+            border-radius: 12px;
+            max-width: 700px;
+            width: 90%;
+            max-height: 80vh;
+            overflow-y: auto;
+            border: 1px solid var(--border);
+        }
+        
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid var(--border);
+        }
+        
+        .modal-title {
+            font-size: 1.2rem;
+            font-weight: 600;
+            color: var(--text);
+        }
+        
+        .close {
+            background: none;
+            border: none;
+            font-size: 24px;
+            color: var(--text-muted);
+            cursor: pointer;
+            padding: 4px;
+        }
+        
+        .close:hover {
+            color: var(--danger);
+        }
+        
+        .deployment-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 15px;
+            margin-top: 20px;
+        }
+        
+        .deploy-card {
+            background: var(--surface-light);
+            padding: 20px;
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            transition: transform 0.3s;
+        }
+        
+        .deploy-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 8px 25px rgba(0,0,0,0.3);
+        }
+        
+        .deploy-card h4 {
+            color: var(--accent);
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .network-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 15px;
+            margin: 20px 0;
+        }
+        
+        .network-card {
+            background: var(--surface-light);
+            padding: 15px;
+            border-radius: 10px;
+            border: 2px solid transparent;
+            cursor: pointer;
+            transition: all 0.3s;
+            text-align: center;
+        }
+        
+        .network-card:hover {
+            border-color: var(--primary);
+            transform: translateY(-2px);
+        }
+        
+        .network-card.selected {
+            border-color: var(--success);
+            background: rgba(16, 185, 129, 0.1);
+        }
+        
+        .network-card h4 {
+            color: var(--accent);
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+        
+        .private-key {
+            font-family: monospace;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            word-break: break-all;
+            margin-top: 5px;
+        }
+        
+        .key-management {
+            background: var(--surface-light);
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 15px;
+        }
+        
+        .key-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 0;
+            border-bottom: 1px solid var(--border);
+        }
+        
+        .key-item:last-child {
+            border-bottom: none;
+        }
+        
+        .scrollbar::-webkit-scrollbar {
+            width: 6px;
+        }
+        
+        .scrollbar::-webkit-scrollbar-track {
+            background: var(--surface);
+        }
+        
+        .scrollbar::-webkit-scrollbar-thumb {
+            background: var(--border);
+            border-radius: 3px;
+        }
+        
+        .scrollbar::-webkit-scrollbar-thumb:hover {
+            background: var(--text-muted);
+        }
+        
+        .tab-content {
+            padding: 20px;
+            height: 100%;
+            overflow-y: auto;
+        }
+        
+        .tab-content h2 {
+            color: var(--accent);
+            margin-bottom: 20px;
+            font-size: 1.5rem;
+        }
+        
+        .tab-content h3 {
+            color: var(--primary);
+            margin: 30px 0 15px 0;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .floating-action {
+            position: fixed;
+            bottom: 30px;
+            right: 30px;
+            background: linear-gradient(45deg, var(--primary), var(--primary-dark));
+            color: white;
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            border: none;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.5rem;
+            box-shadow: 0 8px 25px rgba(37, 99, 235, 0.4);
+            transition: all 0.3s;
+            z-index: 999;
+        }
+        
+        .floating-action:hover {
+            transform: scale(1.1) rotate(90deg);
+        }
+
+        /* Enhanced Backend Status Indicator */
+        .backend-status {
+            position: absolute;
+            top: 15px;
+            right: 150px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: rgba(0, 0, 0, 0.3);
+            padding: 8px 12px;
+            border-radius: 20px;
+            font-size: 0.8rem;
+        }
+
+        .backend-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--danger);
+        }
+
+        .backend-dot.connected {
+            background: var(--success);
+            animation: pulse 2s infinite;
+        }
+
+        /* Enhanced Sidebar Section for Backend */
+        .backend-section {
+            background: var(--dark);
+            border: 1px solid var(--primary);
+            border-radius: 8px;
+            margin-bottom: 15px;
+        }
+
+        .backend-header {
+            padding: 10px 15px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: rgba(37, 99, 235, 0.1);
+        }
+
+        .backend-content {
+            padding: 15px;
+        }
+
+        .api-test-btn {
+            background: var(--success);
+            color: white;
+            border: none;
+            padding: 6px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.75rem;
+            margin: 2px;
+            transition: all 0.2s;
+        }
+
+        .api-test-btn:hover {
+            transform: scale(1.05);
+        }
+
+        .api-test-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        /* Enhanced Console with Backend Logs */
+        .console-tab {
+            background: none;
+            border: 1px solid var(--border);
+            color: var(--text);
+            padding: 6px 12px;
+            margin-right: 5px;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .console-tab.active {
+            background: var(--primary);
+            color: white;
+        }
+
+        .console-api { 
+            color: #38bdf8; 
+            border-left-color: #38bdf8;
+        }
+        .console-backend { 
+            color: #a78bfa; 
+            border-left-color: #a78bfa;
+        }
+    </style>
+</head>
+<body>
+    <div class="main-container">
+        <!-- Header -->
+        <div class="header">
+            <div class="logo">
+                <i class="fab fa-eos"></i>
+                <span>Ultimate EOS Development Environment</span>
+            </div>
+            <!-- Enhanced Backend Status -->
+            <div class="backend-status">
+                <div class="backend-dot" id="backend-status-dot"></div>
+                <span id="backend-status-text">Backend: Connecting...</span>
+            </div>
+            <div class="header-actions">
+                <div class="wallet-status">
+                    <div class="status-dot"></div>
+                    <span id="wallet-status-text">Test Wallet Connected</span>
+                </div>
+                <button class="btn btn-primary" onclick="showWalletModal()">
+                    <i class="fas fa-wallet"></i> Wallets
+                </button>
+            </div>
+        </div>
+        
+        <!-- Left Sidebar -->
+        <div class="sidebar scrollbar">
+            <!-- File Explorer -->
+            <div class="sidebar-section">
+                <h3><i class="fas fa-folder"></i> Contract Files</h3>
+                <ul class="file-tree">
+                    <li class="file-item active" data-file="contract">
+                        <i class="fas fa-file-code file-icon"></i>
+                        <span>mycontract.cpp</span>
+                    </li>
+                    <li class="file-item" data-file="header">
+                        <i class="fas fa-file-code file-icon"></i>
+                        <span>mycontract.hpp</span>
+                    </li>
+                    <li class="file-item" data-file="setup">
+                        <i class="fas fa-cogs file-icon"></i>
+                        <span>Setup Guide</span>
+                    </li>
+                    <li class="file-item" data-file="testnets">
+                        <i class="fas fa-network-wired file-icon"></i>
+                        <span>Testnets Config</span>
+                    </li>
+                    <li class="file-item" data-file="commands">
+                        <i class="fas fa-terminal file-icon"></i>
+                        <span>Production Commands</span>
+                    </li>
+                    <li class="file-item" data-file="cmake">
+                        <i class="fas fa-file-alt file-icon"></i>
+                        <span>CMakeLists.txt</span>
+                    </li>
+                </ul>
+            </div>
+
+            <!-- Enhanced Backend Section -->
+            <div class="sidebar-section">
+                <div class="backend-section">
+                    <div class="backend-header">
+                        <h3><i class="fas fa-server"></i> Backend Server</h3>
+                        <span id="backend-url-display" style="font-size: 0.7rem; color: var(--text-muted);">localhost:3000</span>
+                    </div>
+                    <div class="backend-content">
+                        <input type="text" class="form-control" id="backend-url-input" placeholder="http://localhost:3000" value="http://localhost:3000" style="margin-bottom: 10px;">
+                        <div style="display: flex; flex-wrap: wrap; gap: 5px;">
+                            <button class="api-test-btn" onclick="testBackendConnection()">
+                                <i class="fas fa-plug"></i> Test
+                            </button>
+                            <button class="api-test-btn" onclick="testCompileAPI()">
+                                <i class="fas fa-hammer"></i> Compile
+                            </button>
+                            <button class="api-test-btn" onclick="testAccountAPI()">
+                                <i class="fas fa-user"></i> Account
+                            </button>
+                            <button class="api-test-btn" onclick="startMockBackend()">
+                                <i class="fas fa-play"></i> Mock
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Networks -->
+            <div class="sidebar-section">
+                <h3><i class="fas fa-network-wired"></i> Networks</h3>
+                <div class="network-selector">
+                    <button class="network-btn active" data-network="jungle">EOS Jungle</button>
+                    <button class="network-btn" data-network="local">Local</button>
+                    <button class="network-btn" data-network="wax-test">WAX Test</button>
+                    <button class="network-btn" data-network="kylin">Kylin</button>
+                    <button class="network-btn" data-network="mainnet">EOS Main</button>
+                    <button class="network-btn" data-network="wax-main">WAX Main</button>
+                </div>
+                <button class="btn btn-primary btn-full" onclick="showNetworkModal()">
+                    <i class="fas fa-plus"></i> Add Network
+                </button>
+            </div>
+            
+            <!-- Account -->
+            <div class="sidebar-section">
+                <h3><i class="fas fa-user"></i> Account</h3>
+                <div class="account-info">
+                    <div><span>Account:</span> <span id="account-name">testaccount1</span></div>
+                    <div><span>Balance:</span> <span id="account-balance">1000.0000 EOS</span></div>
+                    <div><span>CPU:</span> <span id="cpu-usage">125.4 ms</span></div>
+                    <div><span>NET:</span> <span id="net-usage">2.45 KB</span></div>
+                    <div><span>RAM:</span> <span id="ram-usage">8.5 KB / 64 KB</span></div>
+                </div>
+                <button class="btn btn-primary btn-full" onclick="showWalletModal()">
+                    <i class="fas fa-exchange-alt"></i> Change Wallet
+                </button>
+                <button class="btn btn-warning btn-full" onclick="showEOSAuthority()">
+                    <i class="fas fa-shield-alt"></i> EOS Authority
+                </button>
+            </div>
+            
+            <!-- Build -->
+            <div class="sidebar-section">
+                <h3><i class="fas fa-hammer"></i> Build</h3>
+                <div class="compile-status">
+                    <div class="status-indicator status-ready"></div>
+                    <span>Ready to compile</span>
+                </div>
+                <select class="form-control">
+                    <option>eosio.cdt v3.1.0</option>
+                    <option>eosio.cdt v3.0.1</option>
+                    <option>eosio.cdt v2.1.0</option>
+                </select>
+                <button class="btn btn-success btn-full" onclick="compileContract()">
+                    <i class="fas fa-play"></i> Compile
+                </button>
+                <div class="progress-bar">
+                    <div class="progress" id="compile-progress" style="width: 0%"></div>
+                </div>
+            </div>
+            
+            <!-- Deploy -->
+            <div class="sidebar-section">
+                <h3><i class="fas fa-rocket"></i> Deploy</h3>
+                <input type="text" class="form-control" placeholder="Contract Account" id="contract-account" value="testcontract">
+                <button class="btn btn-primary btn-full" onclick="deployContract()">
+                    <i class="fas fa-cloud-upload"></i> Deploy
+                </button>
+                <button class="btn btn-danger btn-full" onclick="clearContract()">
+                    <i class="fas fa-trash"></i> Clear
+                </button>
+            </div>
+        </div>
+        
+        <!-- Editor Panel -->
+        <div class="editor-panel">
+            <div class="editor-tabs">
+                <div class="editor-tab active" data-tab="contract">
+                    <i class="fas fa-file-code"></i>
+                    <span>mycontract.cpp</span>
+                </div>
+            </div>
+            <div class="editor-content">
+                <!-- Contract Tab -->
+                <div id="tab-contract" class="tab-content">
+                    <div class="code-editor">
+<span class="syntax-comment">// Complete EOS Smart Contract - Production Ready</span>
+<span class="syntax-highlight">#include &lt;eosio/eosio.hpp&gt;</span>
+<span class="syntax-highlight">#include &lt;eosio/asset.hpp&gt;</span>
+<span class="syntax-highlight">#include &lt;eosio/system.hpp&gt;</span>
+<span class="syntax-highlight">#include &lt;eosio/crypto.hpp&gt;</span>
+<span class="syntax-highlight">#include &lt;eosio/transaction.hpp&gt;</span>
+
+<span class="syntax-keyword">using namespace</span> <span class="syntax-function">eosio</span>;
+
+<span class="syntax-keyword">CONTRACT</span> <span class="syntax-function">mycontract</span> : <span class="syntax-keyword">public</span> contract {
+<span class="syntax-keyword">public</span>:
+    <span class="syntax-keyword">using</span> contract::contract;
+
+    <span class="syntax-comment">// Constructor</span>
+    <span class="syntax-function">mycontract</span>(name receiver, name code, datastream&lt;const char*&gt; ds)
+        : contract(receiver, code, ds) {}
+
+    <span class="syntax-comment">// Actions</span>
+    <span class="syntax-keyword">ACTION</span> <span class="syntax-function">hi</span>(name user) {
+        <span class="syntax-function">require_auth</span>(user);
+        <span class="syntax-function">validate_user</span>(user);
+        
+        <span class="syntax-function">print_f</span>(<span class="syntax-string">"Hello % from contract %"</span>, user, get_self());
+        <span class="syntax-function">send_notification</span>(user, <span class="syntax-string">"Welcome to EOS!"</span>);
+    }
+
+    <span class="syntax-keyword">ACTION</span> <span class="syntax-function">adduser</span>(name user, <span class="syntax-function">std::string</span> first_name, <span class="syntax-function">std::string</span> last_name, <span class="syntax-function">uint64_t</span> age) {
+        <span class="syntax-function">require_auth</span>(get_self());
+        <span class="syntax-function">validate_user_data</span>(first_name, last_name, age);
+        
+        users_index users(get_self(), get_first_receiver().value);
+        <span class="syntax-function">auto</span> iterator = users.find(user.value);
+        
+        <span class="syntax-keyword">if</span> (iterator == users.end()) {
+            users.emplace(get_self(), [&](<span class="syntax-function">auto</span>& row) {
+                row.key = user;
+                row.first_name = first_name;
+                row.last_name = last_name;
+                row.age = age;
+            });
+        } <span class="syntax-keyword">else</span> {
+            users.modify(iterator, get_self(), [&](<span class="syntax-function">auto</span>& row) {
+                row.first_name = first_name;
+                row.last_name = last_name;
+                row.age = age;
+            });
+        }
+    }
+
+    <span class="syntax-keyword">ACTION</span> <span class="syntax-function">deleteuser</span>(name user) {
+        <span class="syntax-function">require_auth</span>(get_self());
+        
+        users_index users(get_self(), get_first_receiver().value);
+        <span class="syntax-function">auto</span> iterator = users.find(user.value);
+        <span class="syntax-function">check</span>(iterator != users.end(), <span class="syntax-string">"User not found"</span>);
+        
+        users.erase(iterator);
+    }
+
+    <span class="syntax-keyword">ACTION</span> <span class="syntax-function">transfer</span>(name from, name to, asset quantity, <span class="syntax-function">std::string</span> memo) {
+        <span class="syntax-function">require_auth</span>(from);
+        <span class="syntax-function">check</span>(is_account(to), <span class="syntax-string">"To account does not exist"</span>);
+        <span class="syntax-function">check</span>(quantity.is_valid(), <span class="syntax-string">"Invalid quantity"</span>);
+        <span class="syntax-function">check</span>(quantity.amount > 0, <span class="syntax-string">"Must transfer positive quantity"</span>);
+        
+        <span class="syntax-function">process_transfer</span>(from, to, quantity, memo);
+    }
+
+<span class="syntax-keyword">private</span>:
+    <span class="syntax-comment">// Table structures</span>
+    <span class="syntax-keyword">struct</span> [[eosio::table]] person {
+        name key;
+        <span class="syntax-function">std::string</span> first_name;
+        <span class="syntax-function">std::string</span> last_name;
+        <span class="syntax-function">uint64_t</span> age;
+        asset balance;
+
+        <span class="syntax-function">uint64_t</span> primary_key() <span class="syntax-keyword">const</span> { <span class="syntax-keyword">return</span> key.value; }
+    };
+
+    <span class="syntax-keyword">struct</span> [[eosio::table]] transfer_log {
+        <span class="syntax-function">uint64_t</span> id;
+        name from;
+        name to;
+        asset amount;
+        <span class="syntax-function">std::string</span> memo;
+        <span class="syntax-function">uint32_t</span> timestamp;
+
+        <span class="syntax-function">uint64_t</span> primary_key() <span class="syntax-keyword">const</span> { <span class="syntax-keyword">return</span> id; }
+    };
+
+    <span class="syntax-keyword">typedef</span> eosio::multi_index&lt;<span class="syntax-string">"users"</span>_n, person&gt; users_index;
+    <span class="syntax-keyword">typedef</span> eosio::multi_index&lt;<span class="syntax-string">"transfers"</span>_n, transfer_log&gt; transfers_index;
+
+    <span class="syntax-comment">// Private helper functions</span>
+    <span class="syntax-keyword">void</span> <span class="syntax-function">validate_user</span>(name user) {
+        <span class="syntax-function">check</span>(is_account(user), <span class="syntax-string">"User account does not exist"</span>);
+    }
+
+    <span class="syntax-keyword">void</span> <span class="syntax-function">validate_user_data</span>(<span class="syntax-keyword">const</span> <span class="syntax-function">std::string</span>& first_name, 
+                                      <span class="syntax-keyword">const</span> <span class="syntax-function">std::string</span>& last_name, 
+                                      <span class="syntax-function">uint64_t</span> age) {
+        <span class="syntax-function">check</span>(first_name.length() > 0 && first_name.length() < 64, <span class="syntax-string">"Invalid first name"</span>);
+        <span class="syntax-function">check</span>(last_name.length() > 0 && last_name.length() < 64, <span class="syntax-string">"Invalid last name"</span>);
+        <span class="syntax-function">check</span>(age > 0 && age < 150, <span class="syntax-string">"Invalid age"</span>);
+    }
+
+    <span class="syntax-keyword">void</span> <span class="syntax-function">send_notification</span>(name user, <span class="syntax-keyword">const</span> <span class="syntax-function">std::string</span>& message) {
+        <span class="syntax-function">require_recipient</span>(user);
+    }
+
+    <span class="syntax-keyword">void</span> <span class="syntax-function">process_transfer</span>(name from, name to, asset quantity, <span class="syntax-keyword">const</span> <span class="syntax-function">std::string</span>& memo) {
+        <span class="syntax-comment">// Log transfer</span>
+        transfers_index transfers(get_self(), get_first_receiver().value);
+        transfers.emplace(get_self(), [&](<span class="syntax-function">auto</span>& row) {
+            row.id = transfers.available_primary_key();
+            row.from = from;
+            row.to = to;
+            row.amount = quantity;
+            row.memo = memo;
+            row.timestamp = current_time_point().sec_since_epoch();
+        });
+        
+        <span class="syntax-comment">// Send notification to both parties</span>
+        <span class="syntax-function">require_recipient</span>(from);
+        <span class="syntax-function">require_recipient</span>(to);
+    }
+};
+                    </div>
+                </div>
+
+                <!-- Header Tab -->
+                <div id="tab-header" class="tab-content" style="display: none;">
+                    <div class="code-block" data-lang="C++">
+                        <pre><span class="syntax-comment">// mycontract.hpp - Header file</span>
+<span class="syntax-highlight">#pragma once</span>
+<span class="syntax-highlight">#include &lt;eosio/eosio.hpp&gt;</span>
+<span class="syntax-highlight">#include &lt;eosio/asset.hpp&gt;</span>
+
+<span class="syntax-keyword">using namespace</span> <span class="syntax-function">eosio</span>;
+
+<span class="syntax-keyword">class</span> [[eosio::contract(<span class="syntax-string">"mycontract"</span>)]] <span class="syntax-function">mycontract</span> : <span class="syntax-keyword">public</span> contract {
+<span class="syntax-keyword">public</span>:
+    <span class="syntax-keyword">using</span> contract::contract;
+
+    <span class="syntax-comment">// Action declarations</span>
+    [[eosio::action]]
+    <span class="syntax-keyword">void</span> <span class="syntax-function">hi</span>(name user);
+
+    [[eosio::action]]
+    <span class="syntax-keyword">void</span> <span class="syntax-function">adduser</span>(name user, <span class="syntax-function">std::string</span> first_name, <span class="syntax-function">std::string</span> last_name, <span class="syntax-function">uint64_t</span> age);
+
+    [[eosio::action]]
+    <span class="syntax-keyword">void</span> <span class="syntax-function">deleteuser</span>(name user);
+
+    [[eosio::action]]
+    <span class="syntax-keyword">void</span> <span class="syntax-function">transfer</span>(name from, name to, asset quantity, <span class="syntax-function">std::string</span> memo);
+
+<span class="syntax-keyword">private</span>:
+    <span class="syntax-comment">// Table structure declarations</span>
+    <span class="syntax-keyword">struct</span> [[eosio::table]] person;
+    <span class="syntax-keyword">struct</span> [[eosio::table]] transfer_log;
+    
+    <span class="syntax-comment">// Helper function declarations</span>
+    <span class="syntax-keyword">void</span> <span class="syntax-function">validate_user</span>(name user);
+    <span class="syntax-keyword">void</span> <span class="syntax-function">validate_user_data</span>(<span class="syntax-keyword">const</span> <span class="syntax-function">std::string</span>& first_name, 
+                                      <span class="syntax-keyword">const</span> <span class="syntax-function">std::string</span>& last_name, 
+                                      <span class="syntax-function">uint64_t</span> age);
+    <span class="syntax-keyword">void</span> <span class="syntax-function">send_notification</span>(name user, <span class="syntax-keyword">const</span> <span class="syntax-function">std::string</span>& message);
+    <span class="syntax-keyword">void</span> <span class="syntax-function">process_transfer</span>(name from, name to, asset quantity, <span class="syntax-keyword">const</span> <span class="syntax-function">std::string</span>& memo);
+};
+</pre>
+                    </div>
+                </div>
+
+                <!-- Setup Tab -->
+                <div id="tab-setup" class="tab-content" style="display: none;">
+                    <h2><i class="fas fa-rocket"></i> Complete EOS Development Setup</h2>
+                    
+                    <h3><i class="fas fa-download"></i> Prerequisites Installation</h3>
+                    <div class="code-block" data-lang="Bash">
+                        <pre><span class="syntax-comment"># Install Docker</span>
+curl -fsSL https://get.docker.com -o get-docker.sh
+sudo sh get-docker.sh
+
+<span class="syntax-comment"># Install Node.js & npm</span>
+curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+sudo apt-get install -y nodejs
+
+<span class="syntax-comment"># Install Git</span>
+sudo apt-get update
+sudo apt-get install git
+
+<span class="syntax-comment"># Verify installations</span>
+docker --version
+node --version
+npm --version
+git --version</pre>
+                    </div>
+
+                    <h3><i class="fas fa-server"></i> Backend Server Setup</h3>
+                    <div class="code-block" data-lang="Bash">
+                        <pre><span class="syntax-comment"># Clone backend repository</span>
+git clone https://github.com/your-username/eos-backend-server.git
+cd eos-backend-server
+
+<span class="syntax-comment"># Install dependencies</span>
+npm install express cors eosjs node-fetch helmet compression multer express-rate-limit
+
+<span class="syntax-comment"># Create required directories</span>
+mkdir -p temp projects uploads
+
+<span class="syntax-comment"># Set environment variables</span>
+export PORT=3000
+export NODE_ENV=development
+
+<span class="syntax-comment"># Start the backend server</span>
+npm start</pre>
+                    </div>
+
+                    <h3><i class="fas fa-docker"></i> EOS.IO CDT Setup</h3>
+                    <div class="code-block" data-lang="Bash">
+                        <pre><span class="syntax-comment"># Pull EOS.IO CDT Docker images</span>
+docker pull eosio/eosio.cdt:3.1.0
+docker pull eosio/eosio.cdt:3.0.1
+
+<span class="syntax-comment"># Verify CDT installation</span>
+docker run --rm eosio/eosio.cdt:3.1.0 eosio-cpp --version
+
+<span class="syntax-comment"># Test compilation</span>
+echo '#include <eosio/eosio.hpp>
+using namespace eosio;
+class [[eosio::contract("test")]] test : public contract {
+public:
+  using contract::contract;
+  [[eosio::action]] void hi() { print("hello world"); }
+};' > test.cpp
+
+docker run --rm -v $(pwd):/project eosio/eosio.cdt:3.1.0 \
+  eosio-cpp -abigen /project/test.cpp -o /project/test.wasm</pre>
+                    </div>
+
+                    <h3><i class="fas fa-key"></i> Wallet & Key Management</h3>
+                    <div class="code-block" data-lang="JavaScript">
+                        <pre><span class="syntax-comment">// Generate new EOS keys</span>
+<span class="syntax-keyword">const</span> { PrivateKey } = <span class="syntax-function">require</span>(<span class="syntax-string">'eosjs-ecc'</span>);
+
+<span class="syntax-keyword">function</span> <span class="syntax-function">generateKeyPair</span>() {
+    <span class="syntax-keyword">const</span> privateKey = PrivateKey.randomKey();
+    <span class="syntax-keyword">const</span> publicKey = privateKey.toPublic().toString();
+    
+    <span class="syntax-keyword">return</span> {
+        <span class="syntax-function">private</span>: privateKey.toString(),
+        <span class="syntax-function">public</span>: publicKey
+    };
+}
+
+<span class="syntax-comment">// Example usage</span>
+<span class="syntax-keyword">const</span> keys = <span class="syntax-function">generateKeyPair</span>();
+console.log(<span class="syntax-string">'Private Key:'</span>, keys.private);
+console.log(<span class="syntax-string">'Public Key:'</span>, keys.public);</pre>
+                    </div>
+                </div>
+
+                <!-- Testnets Tab -->
+                <div id="tab-testnets" class="tab-content" style="display: none;">
+                    <h2><i class="fas fa-network-wired"></i> EOS Testnet Configuration</h2>
+                    
+                    <h3><i class="fas fa-leaf"></i> Jungle Testnet</h3>
+                    <div class="code-block" data-lang="JSON">
+                        <pre>{
+  <span class="syntax-string">"name"</span>: <span class="syntax-string">"Jungle Testnet"</span>,
+  <span class="syntax-string">"url"</span>: <span class="syntax-string">"https://jungle4.cryptolions.io:443"</span>,
+  <span class="syntax-string">"chainId"</span>: <span class="syntax-string">"2a02a0053e5a8cf73a56ba0fda11e4d92e0238a4a2aa74fccf46d5a910746840"</span>,
+  <span class="syntax-string">"explorer"</span>: <span class="syntax-string">"https://jungle4.eosq.eosnation.io"</span>,
+  <span class="syntax-string">"faucet"</span>: <span class="syntax-string">"http://monitor.jungletestnet.io"</span>,
+  <span class="syntax-string">"features"</span>: [<span class="syntax-string">"free_accounts"</span>, <span class="syntax-string">"free_tokens"</span>, <span class="syntax-string">"contract_deployment"</span>]
+}</pre>
+                    </div>
+
+                    <h3><i class="fas fa-gamepad"></i> WAX Testnet</h3>
+                    <div class="code-block" data-lang="JSON">
+                        <pre>{
+  <span class="syntax-string">"name"</span>: <span class="syntax-string">"WAX Testnet"</span>,
+  <span class="syntax-string">"url"</span>: <span class="syntax-string">"https://testnet.waxsweden.org"</span>,
+  <span class="syntax-string">"chainId"</span>: <span class="syntax-string">"f16b1833c747c43682f4386fca9cbb327929334a762755ebec17f6f23c9b8a12"</span>,
+  <span class="syntax-string">"explorer"</span>: <span class="syntax-string">"https://wax-test.eosq.eosnation.io"</span>,
+  <span class="syntax-string">"faucet"</span>: <span class="syntax-string">"https://waxsweden.org/testnet/"</span>,
+  <span class="syntax-string">"features"</span>: [<span class="syntax-string">"gaming"</span>, <span class="syntax-string">"nfts"</span>, <span class="syntax-string">"defi"</span>]
+}</pre>
+                    </div>
+
+                    <h3><i class="fas fa-mountain"></i> Kylin Testnet</h3>
+                    <div class="code-block" data-lang="JSON">
+                        <pre>{
+  <span class="syntax-string">"name"</span>: <span class="syntax-string">"Kylin Testnet"</span>,
+  <span class="syntax-string">"url"</span>: <span class="syntax-string">"https://kylin.eossweden.org:443"</span>,
+  <span class="syntax-string">"chainId"</span>: <span class="syntax-string">"5fff1dae8dc8e2fc4d5b23b2c7665c97f9e9d8edf2b6485a86ba311c25639191"</span>,
+  <span class="syntax-string">"explorer"</span>: <span class="syntax-string">"https://kylin.eosq.eosnation.io"</span>,
+  <span class="syntax-string">"faucet"</span>: <span class="syntax-string">"https://faucet.kylin.alohaeos.com/"</span>,
+  <span class="syntax-string">"features"</span>: [<span class="syntax-string">"advanced_testing"</span>, <span class="syntax-string">"msig_support"</span>]
+}</pre>
+                    </div>
+
+                    <h3><i class="fas fa-tools"></i> Local Development Node</h3>
+                    <div class="code-block" data-lang="Bash">
+                        <pre><span class="syntax-comment"># Start local EOSIO node</span>
+docker run --name eosio \
+  --publish 7777:7777 \
+  --publish 8888:8888 \
+  --volume /tmp/eosio/work:/work \
+  --detach \
+  eosio/eos:latest \
+  /bin/bash -c \
+  "nodeos -e -p eosio --plugin eosio::producer_plugin --plugin eosio::chain_api_plugin --plugin eosio::history_plugin --plugin eosio::history_api_plugin --plugin eosio::http_plugin -d /mnt/dev/data --config-dir /mnt/dev/config --http-server-address=0.0.0.0:8888 --access-control-allow-origin=* --contracts-console --http-validate-host=false --filter-on='*'"
+
+<span class="syntax-comment"># Create development wallet</span>
+cleos wallet create --to-console
+
+<span class="syntax-comment"># Create test accounts</span>
+cleos create account eosio testaccount1 EOS6MRyAjQq8ud7hVNYcfnVPJqcVpscN5So8BhtHuGYqET5GDW5CV
+cleos create account eosio testaccount2 EOS6MRyAjQq8ud7hVNYcfnVPJqcVpscN5So8BhtHuGYqET5GDW5CV</pre>
+                    </div>
+                </div>
+
+                <!-- Commands Tab -->
+                <div id="tab-commands" class="tab-content" style="display: none;">
+                    <h2><i class="fas fa-terminal"></i> Production Commands</h2>
+
+                    <h3><i class="fas fa-hammer"></i> Compilation Commands</h3>
+                    <div class="code-block" data-lang="Bash">
+                        <pre><span class="syntax-comment"># Basic compilation</span>
+eosio-cpp -abigen mycontract.cpp -o mycontract.wasm
+
+<span class="syntax-comment"># With optimization</span>
+eosio-cpp -O3 -abigen mycontract.cpp -o mycontract.wasm
+
+<span class="syntax-comment"># With specific include paths</span>
+eosio-cpp -abigen mycontract.cpp -o mycontract.wasm -I ./include/
+
+<span class="syntax-comment"># Debug build</span>
+eosio-cpp -g -abigen mycontract.cpp -o mycontract.wasm
+
+<span class="syntax-comment"># Docker compilation</span>
+docker run --rm -v $(pwd):/project eosio/eosio.cdt:3.1.0 \
+  eosio-cpp -abigen /project/mycontract.cpp -o /project/mycontract.wasm</pre>
+                    </div>
+
+                    <h3><i class="fas fa-rocket"></i> Deployment Commands</h3>
+                    <div class="code-block" data-lang="Bash">
+                        <pre><span class="syntax-comment"># Deploy to testnet</span>
+cleos -u https://jungle4.cryptolions.io:443 \
+  set contract testaccount1 . mycontract.wasm mycontract.abi -p testaccount1@active
+
+<span class="syntax-comment"># Deploy with ricardian contracts</span>
+cleos -u https://jungle4.cryptolions.io:443 \
+  set contract testaccount1 . mycontract.wasm mycontract.abi \
+  --ricardian-contract ricardian.md -p testaccount1@active
+
+<span class="syntax-comment"># Verify deployment</span>
+cleos -u https://jungle4.cryptolions.io:443 \
+  get code testaccount1
+
+<span class="syntax-comment"># Get contract ABI</span>
+cleos -u https://jungle4.cryptolions.io:443 \
+  get abi testaccount1</pre>
+                    </div>
+
+                    <h3><i class="fas fa-play"></i> Action Execution</h3>
+                    <div class="code-block" data-lang="Bash">
+                        <pre><span class="syntax-comment"># Execute hi action</span>
+cleos -u https://jungle4.cryptolions.io:443 \
+  push action testaccount1 hi '["testuser1"]' -p testuser1@active
+
+<span class="syntax-comment"># Add user with parameters</span>
+cleos -u https://jungle4.cryptolions.io:443 \
+  push action testaccount1 adduser '["testuser1", "John", "Doe", 25]' -p testaccount1@active
+
+<span class="syntax-comment"># Transfer tokens</span>
+cleos -u https://jungle4.cryptolions.io:443 \
+  push action testaccount1 transfer '["alice", "bob", "10.0000 EOS", "test transfer"]' -p alice@active
+
+<span class="syntax-comment"># Batch operations</span>
+cleos -u https://jungle4.cryptolions.io:443 \
+  push transaction '[
+    {
+      "account": "testaccount1",
+      "name": "hi",
+      "authorization": [{"actor": "testuser1", "permission": "active"}],
+      "data": {"user": "testuser1"}
+    }
+  ]'</pre>
+                    </div>
+
+                    <h3><i class="fas fa-search"></i> Query Commands</h3>
+                    <div class="code-block" data-lang="Bash">
+                        <pre><span class="syntax-comment"># Get table data</span>
+cleos -u https://jungle4.cryptolions.io:443 \
+  get table testaccount1 testaccount1 users
+
+<span class="syntax-comment"># Get specific user</span>
+cleos -u https://jungle4.cryptolions.io:443 \
+  get table testaccount1 testaccount1 users --lower testuser1 --upper testuser1
+
+<span class="syntax-comment"># Get account info</span>
+cleos -u https://jungle4.cryptolions.io:443 \
+  get account testaccount1
+
+<span class="syntax-comment"># Check resources</span>
+cleos -u https://jungle4.cryptolions.io:443 \
+  get account testaccount1 --json</pre>
+                    </div>
+                </div>
+
+                <!-- CMake Tab -->
+                <div id="tab-cmake" class="tab-content" style="display: none;">
+                    <h2><i class="fas fa-cogs"></i> CMakeLists.txt</h2>
+                    <div class="code-block" data-lang="CMake">
+                        <pre><span class="syntax-comment"># CMakeLists.txt for EOS Smart Contract</span>
+cmake_minimum_required(VERSION 3.5)
+project(mycontract VERSION 1.0.0)
+
+<span class="syntax-comment"># Find EOSIO CDT</span>
+find_package(eosio.cdt)
+
+# Set contract name
+set(CONTRACT_NAME mycontract)
+
+# Add contract target
+add_contract(${CONTRACT_NAME} ${CONTRACT_NAME} 
+    ${CMAKE_CURRENT_SOURCE_DIR}/${CONTRACT_NAME}.cpp
+)
+
+# Include directories
+target_include_directories(${CONTRACT_NAME} 
+    PUBLIC 
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+# Link libraries if needed
+target_link_libraries(${CONTRACT_NAME} 
+    eosio::cdt
+)
+
+# Generate ABI
+target_compile_options(${CONTRACT_NAME} 
+    PUBLIC 
+    -abigen
+)
+
+# Set output directory
+set_target_properties(${CONTRACT_NAME} PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+)
+
+# Custom target for deployment
+add_custom_target(deploy
+    COMMAND cleos set contract ${CONTRACT_ACCOUNT} ${CMAKE_CURRENT_BINARY_DIR} ${CONTRACT_NAME}.wasm ${CONTRACT_NAME}.abi
+    DEPENDS ${CONTRACT_NAME}
+    COMMENT "Deploying contract to ${CONTRACT_ACCOUNT}"
+)</pre>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Right Sidebar - Wallets & Actions -->
+        <div class="sidebar-right scrollbar">
+            <div class="sidebar-section">
+                <h3><i class="fas fa-wallet"></i> Active Wallets</h3>
+                
+                <div class="wallet-card active">
+                    <div class="wallet-header">
+                        <div class="wallet-name">Development Wallet</div>
+                        <div class="wallet-type">Test</div>
+                    </div>
+                    <div class="wallet-balance">1,000.0000 EOS</div>
+                    <div class="wallet-address">testaccount1</div>
+                    <div class="private-key">5KQwrPbwdL6PhXujxW37FSSQZ1JiwsST4cqQzDeyXtP79zkvFD3</div>
+                </div>
+
+                <div class="wallet-card">
+                    <div class="wallet-header">
+                        <div class="wallet-name">Jungle Testnet</div>
+                        <div class="wallet-type">Test</div>
+                    </div>
+                    <div class="wallet-balance">500.0000 EOS</div>
+                    <div class="wallet-address">jungletest12</div>
+                    <div class="private-key">5J7bLuW1E4ciKGhFu4CzCfDvFhcjLVyGhvBj8R9X2nZqYzQz3Bg</div>
+                </div>
+
+                <button class="btn btn-primary btn-full">
+                    <i class="fas fa-plus"></i> Import Wallet
+                </button>
+            </div>
+
+            <div class="sidebar-section">
+                <h3><i class="fas fa-bolt"></i> Contract Actions</h3>
+                <div class="contract-actions">
+                    <div class="action-card">
+                        <div class="action-name">hi</div>
+                        <input type="text" class="form-control" placeholder="User name" value="testuser1">
+                        <button class="btn btn-success btn-full" onclick="executeAction('hi')">
+                            <i class="fas fa-play"></i> Execute
+                        </button>
+                    </div>
+
+                    <div class="action-card">
+                        <div class="action-name">adduser</div>
+                        <input type="text" class="form-control" placeholder="Username" value="newuser123">
+                        <input type="text" class="form-control" placeholder="First name" value="John">
+                        <input type="text" class="form-control" placeholder="Last name" value="Doe">
+                        <input type="number" class="form-control" placeholder="Age" value="25">
+                        <button class="btn btn-success btn-full" onclick="executeAction('adduser')">
+                            <i class="fas fa-user-plus"></i> Add User
+                        </button>
+                    </div>
+
+                    <div class="action-card">
+                        <div class="action-name">transfer</div>
+                        <input type="text" class="form-control" placeholder="From" value="testaccount1">
+                        <input type="text" class="form-control" placeholder="To" value="testuser1">
+                        <input type="text" class="form-control" placeholder="Amount" value="10.0000 EOS">
+                        <input type="text" class="form-control" placeholder="Memo" value="Test transfer">
+                        <button class="btn btn-warning btn-full" onclick="executeAction('transfer')">
+                            <i class="fas fa-exchange-alt"></i> Transfer
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Enhanced Console -->
+        <div class="console scrollbar">
+            <div class="console-header">
+                <div class="console-title">
+                    <i class="fas fa-terminal"></i> Console Output
+                </div>
+                <div>
+                    <button class="console-tab active" onclick="switchConsoleTab('output')">Output</button>
+                    <button class="console-tab" onclick="switchConsoleTab('api')">API</button>
+                    <button class="console-tab" onclick="switchConsoleTab('backend')">Backend</button>
+                    <button class="console-clear" onclick="clearConsole()">
+                        <i class="fas fa-trash"></i>
+                    </button>
+                </div>
+            </div>
+            <div id="console-output">
+                <div class="console-line console-info">
+                    <strong>[INFO]</strong> EOS Development Environment initialized
+                </div>
+                <div class="console-line console-success">
+                    <strong>[SUCCESS]</strong> Connected to Jungle Testnet
+                </div>
+                <div class="console-line console-info">
+                    <strong>[INFO]</strong> Wallet testaccount1 loaded
+                </div>
+                <div class="console-line console-warning">
+                    <strong>[WARNING]</strong> Backend server not detected - using mock mode
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Enhanced Modal System -->
+    
+    <!-- Wallet Management Modal -->
+    <div id="wallet-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 class="modal-title">Wallet Management</h2>
+                <button class="close" onclick="hideWalletModal()">&times;</button>
+            </div>
+            
+            <div class="network-grid">
+                <div class="network-card selected" data-network="jungle">
+                    <h4><i class="fas fa-leaf"></i> Jungle Testnet</h4>
+                    <p>jungle4.cryptolions.io</p>
+                    <small>Best for testing</small>
+                </div>
+                <div class="network-card" data-network="wax">
+                    <h4><i class="fas fa-gamepad"></i> WAX Testnet</h4>
+                    <p>wax-test.eosq.eosnation.io</p>
+                    <small>Gaming & NFTs</small>
+                </div>
+                <div class="network-card" data-network="local">
+                    <h4><i class="fas fa-laptop"></i> Local Node</h4>
+                    <p>localhost:8888</p>
+                    <small>Development</small>
+                </div>
+                <div class="network-card" data-network="mainnet">
+                    <h4><i class="fas fa-globe"></i> EOS Mainnet</h4>
+                    <p>eos.greymass.com</p>
+                    <small>Production</small>
+                </div>
+            </div>
+
+            <div class="key-management">
+                <h4>Import Private Key</h4>
+                <input type="text" class="form-control" placeholder="Account Name" id="import-account">
+                <input type="password" class="form-control" placeholder="Private Key" id="import-key">
+                <button class="btn btn-primary btn-full" onclick="importWallet()">
+                    <i class="fas fa-key"></i> Import Wallet
+                </button>
+            </div>
+
+            <div class="key-management">
+                <h4>Generate New Keys</h4>
+                <button class="btn btn-success btn-full" onclick="generateKeys()">
+                    <i class="fas fa-magic"></i> Generate Key Pair
+                </button>
+                <div id="generated-keys" style="display: none;">
+                    <input type="text" class="form-control" id="generated-private" readonly>
+                    <input type="text" class="form-control" id="generated-public" readonly>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Network Configuration Modal -->
+    <div id="network-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 class="modal-title">Network Configuration</h2>
+                <button class="close" onclick="hideNetworkModal()">&times;</button>
+            </div>
+            
+            <div class="deployment-grid">
+                <div class="deploy-card">
+                    <h4><i class="fas fa-server"></i> Backend Server</h4>
+                    <input type="text" class="form-control" placeholder="Backend URL" id="backend-server-url" value="http://localhost:3000">
+                    <button class="btn btn-primary btn-full" onclick="connectBackend()">
+                        <i class="fas fa-link"></i> Connect Backend
+                    </button>
+                </div>
+
+                <div class="deploy-card">
+                    <h4><i class="fas fa-network-wired"></i> Custom Network</h4>
+                    <input type="text" class="form-control" placeholder="Network Name" id="custom-network-name">
+                    <input type="text" class="form-control" placeholder="RPC URL" id="custom-network-url">
+                    <input type="text" class="form-control" placeholder="Chain ID" id="custom-chain-id">
+                    <button class="btn btn-success btn-full" onclick="addCustomNetwork()">
+                        <i class="fas fa-plus"></i> Add Network
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <button class="floating-action" onclick="showQuickActions()">
+        <i class="fas fa-plus"></i>
+    </button>
+
+    <!-- Enhanced JavaScript with Full Backend Integration -->
+    <script>
+        // Enhanced EOS Development Environment with Full Backend Support
+        class EOSDevEnvironment {
+            constructor() {
+                this.backendUrl = 'http://localhost:3000';
+                this.currentNetwork = 'jungle';
+                this.currentWallet = null;
+                this.backendConnected = false;
+                this.mockBackend = null;
+                this.compiledProject = null;
+                this.activeConsoleTab = 'output';
+                
+                this.networks = {
+                    jungle: {
+                        name: 'Jungle Testnet',
+                        url: 'https://jungle4.cryptolions.io:443',
+                        chainId: '2a02a0053e5a8cf73a56ba0fda11e4d92e0238a4a2aa74fccf46d5a910746840',
+                        explorer: 'https://jungle4.eosq.eosnation.io'
+                    },
+                    'wax-test': {
+                        name: 'WAX Testnet',
+                        url: 'https://testnet.waxsweden.org',
+                        chainId: 'f16b1833c747c43682f4386fca9cbb327929334a762755ebec17f6f23c9b8a12',
+                        explorer: 'https://wax-test.eosq.eosnation.io'
+                    },
+                    local: {
+                        name: 'Local Node',
+                        url: 'http://localhost:8888',
+                        chainId: 'local',
+                        explorer: 'http://localhost:8000'
+                    },
+                    mainnet: {
+                        name: 'EOS Mainnet',
+                        url: 'https://eos.greymass.com',
+                        chainId: 'aca376f206b8fc25a6ed44dbdc66547c36c6c33e3a119ffbeaef943642f0e906',
+                        explorer: 'https://eosq.app'
+                    }
+                };
+
+                this.init();
+            }
+
+            init() {
+                this.setupEventListeners();
+                this.initializeBackend();
+                this.loadSavedSettings();
+                this.updateUI();
+                this.log('EOS Development Environment initialized', 'info');
+            }
+
+            setupEventListeners() {
+                // File tree navigation
+                document.querySelectorAll('.file-item').forEach(item => {
+                    item.addEventListener('click', (e) => {
+                        this.switchFile(item.dataset.file);
+                    });
+                });
+
+                // Network selector
+                document.querySelectorAll('.network-btn').forEach(btn => {
+                    btn.addEventListener('click', (e) => {
+                        this.switchNetwork(btn.dataset.network);
+                    });
+                });
+
+                // Backend URL input
+                document.getElementById('backend-url-input').addEventListener('change', (e) => {
+                    this.backendUrl = e.target.value;
+                    this.initializeBackend();
+                });
+
+                // Modal close on background click
+                document.querySelectorAll('.modal').forEach(modal => {
+                    modal.addEventListener('click', (e) => {
+                        if (e.target === modal) {
+                            modal.style.display = 'none';
+                        }
+                    });
+                });
+            }
+
+            async initializeBackend() {
+                try {
+                    this.updateBackendStatus('connecting');
+                    const response = await fetch(`${this.backendUrl}/api/health`);
+                    
+                    if (response.ok) {
+                        const data = await response.json();
+                        this.backendConnected = true;
+                        this.updateBackendStatus('connected');
+                        this.log(`Backend connected: ${data.version}`, 'success');
+                    } else {
+                        throw new Error('Backend not responding');
+                    }
+                } catch (error) {
+                    this.backendConnected = false;
+                    this.updateBackendStatus('disconnected');
+                    this.log('Backend not available - starting mock backend', 'warning');
+                    this.startMockBackend();
+                }
+            }
+
+            updateBackendStatus(status) {
+                const dot = document.getElementById('backend-status-dot');
+                const text = document.getElementById('backend-status-text');
+                
+                switch (status) {
+                    case 'connected':
+                        dot.classList.add('connected');
+                        text.textContent = 'Backend: Connected';
+                        break;
+                    case 'connecting':
+                        dot.classList.remove('connected');
+                        text.textContent = 'Backend: Connecting...';
+                        break;
+                    case 'disconnected':
+                        dot.classList.remove('connected');
+                        text.textContent = 'Backend: Offline';
+                        break;
+                }
+            }
+
+            startMockBackend() {
+                this.mockBackend = {
+                    compile: async (code) => {
+                        await new Promise(resolve => setTimeout(resolve, 2000));
+                        return {
+                            success: true,
+                            projectId: 'mock_' + Date.now(),
+                            wasm: 'mock_wasm_data_' + Math.random().toString(36).substr(2, 9),
+                            abi: JSON.stringify({
+                                version: "eosio::abi/1.2",
+                                structs: [
+                                    {
+                                        name: "person",
+                                        base: "",
+                                        fields: [
+                                            { name: "key", type: "name" },
+                                            { name: "first_name", type: "string" },
+                                            { name: "last_name", type: "string" },
+                                            { name: "age", type: "uint64" }
+                                        ]
+                                    }
+                                ],
+                                actions: [
+                                    { name: "hi", type: "hi" },
+                                    { name: "adduser", type: "adduser" },
+                                    { name: "deleteuser", type: "deleteuser" },
+                                    { name: "transfer", type: "transfer" }
+                                ]
+                            }),
+                            size: { wasm: 15420, abi: 2048 }
+                        };
+                    },
+                    deploy: async (data) => {
+                        await new Promise(resolve => setTimeout(resolve, 3000));
+                        return {
+                            success: true,
+                            transactionId: 'mock_tx_' + Date.now(),
+                            explorer_url: `${this.networks[this.currentNetwork].explorer}/tx/mock_tx_${Date.now()}`
+                        };
+                    },
+                    getAccount: async (account) => {
+                        await new Promise(resolve => setTimeout(resolve, 500));
+                        return {
+                            success: true,
+                            account_name: account,
+                            balance: "1000.0000 EOS",
+                            cpu: { used: 1250, max: 10000, percent: 12.5 },
+                            net: { used: 512, max: 2048, percent: 25.0 },
+                            ram: { used: 8500, quota: 65536, percent: 13.0 }
+                        };
+                    }
+                };
+                
+                this.log('Mock backend started successfully', 'info');
+            }
+
+            switchFile(fileName) {
+                // Update active file item
+                document.querySelectorAll('.file-item').forEach(item => {
+                    item.classList.remove('active');
+                });
+                document.querySelector(`[data-file="${fileName}"]`).classList.add('active');
+
+                // Show corresponding tab content
+                document.querySelectorAll('.tab-content').forEach(tab => {
+                    tab.style.display = 'none';
+                });
+                document.getElementById(`tab-${fileName}`).style.display = 'block';
+
+                this.log(`Switched to ${fileName}`, 'info');
+            }
+
+            switchNetwork(network) {
+                this.currentNetwork = network;
+                
+                // Update UI
+                document.querySelectorAll('.network-btn').forEach(btn => {
+                    btn.classList.remove('active');
+                });
+                document.querySelector(`[data-network="${network}"]`).classList.add('active');
+                
+                this.log(`Switched to ${this.networks[network].name}`, 'info');
+            }
+
+            switchConsoleTab(tab) {
+                this.activeConsoleTab = tab;
+                
+                document.querySelectorAll('.console-tab').forEach(t => {
+                    t.classList.remove('active');
+                });
+                document.querySelector(`[onclick="switchConsoleTab('${tab}')"]`).classList.add('active');
+                
+                // You could filter console output based on tab here
+                this.log(`Switched to ${tab} console`, 'info');
+            }
+
+            async testBackendConnection() {
+                this.logAPI('Testing backend connection...', 'info');
+                
+                try {
+                    const response = await fetch(`${this.backendUrl}/api/health`);
+                    if (response.ok) {
+                        const data = await response.json();
+                        this.logAPI(`Backend healthy: ${JSON.stringify(data)}`, 'success');
+                    } else {
+                        this.logAPI('Backend connection failed', 'error');
+                    }
+                } catch (error) {
+                    this.logAPI(`Connection error: ${error.message}`, 'error');
+                }
+            }
+
+            async testCompileAPI() {
+                this.logAPI('Testing compile API...', 'info');
+                
+                const testCode = `#include <eosio/eosio.hpp>
+using namespace eosio;
+class [[eosio::contract("test")]] test : public contract {
+public:
+  using contract::contract;
+  [[eosio::action]] void hi() { print("hello"); }
+};`;
+
+                try {
+                    let result;
+                    if (this.backendConnected) {
+                        const response = await fetch(`${this.backendUrl}/api/compile`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ code: testCode })
+                        });
+                        result = await response.json();
+                    } else {
+                        result = await this.mockBackend.compile(testCode);
+                    }
+                    
+                    if (result.success) {
+                        this.logAPI(`Compile successful: Project ID ${result.projectId}`, 'success');
+                    } else {
+                        this.logAPI(`Compile failed: ${result.error}`, 'error');
+                    }
+                } catch (error) {
+                    this.logAPI(`Compile API error: ${error.message}`, 'error');
+                }
+            }
+
+            async testAccountAPI() {
+                this.logAPI('Testing account API...', 'info');
+                
+                try {
+                    let result;
+                    if (this.backendConnected) {
+                        const response = await fetch(`${this.backendUrl}/api/account/eosio?network=${this.currentNetwork}`);
+                        result = await response.json();
+                    } else {
+                        result = await this.mockBackend.getAccount('eosio');
+                    }
+                    
+                    if (result.success) {
+                        this.logAPI(`Account info: ${JSON.stringify(result)}`, 'success');
+                    } else {
+                        this.logAPI(`Account API failed: ${result.error}`, 'error');
+                    }
+                } catch (error) {
+                    this.logAPI(`Account API error: ${error.message}`, 'error');
+                }
+            }
+
+            startMockBackend() {
+                // Already implemented above
+                this.updateBackendStatus('disconnected');
+            }
+
+            log(message, type = 'info') {
+                if (this.activeConsoleTab !== 'output') return;
+                
+                const console = document.getElementById('console-output');
+                const line = document.createElement('div');
+                line.className = `console-line console-${type}`;
+                
+                const timestamp = new Date().toLocaleTimeString();
+                line.innerHTML = `<strong>[${type.toUpperCase()}]</strong> ${timestamp} - ${message}`;
+                
+                console.appendChild(line);
+                console.scrollTop = console.scrollHeight;
+            }
+
+            logAPI(message, type = 'info') {
+                if (this.activeConsoleTab !== 'api') return;
+                
+                const console = document.getElementById('console-output');
+                const line = document.createElement('div');
+                line.className = `console-line console-api`;
+                
+                const timestamp = new Date().toLocaleTimeString();
+                line.innerHTML = `<strong>[API]</strong> ${timestamp} - ${message}`;
+                
+                console.appendChild(line);
+                console.scrollTop = console.scrollHeight;
+            }
+
+            logBackend(message, type = 'info') {
+                if (this.activeConsoleTab !== 'backend') return;
+                
+                const console = document.getElementById('console-output');
+                const line = document.createElement('div');
+                line.className = `console-line console-backend`;
+                
+                const timestamp = new Date().toLocaleTimeString();
+                line.innerHTML = `<strong>[BACKEND]</strong> ${timestamp} - ${message}`;
+                
+                console.appendChild(line);
+                console.scrollTop = console.scrollHistory;
+            }
+
+            updateUI() {
+                // Update display elements
+                document.getElementById('backend-url-display').textContent = this.backendUrl.replace('http://', '').replace('https://', '');
+            }
+
+            loadSavedSettings() {
+                // Load from localStorage if available
+                const saved = localStorage.getItem('eosDevSettings');
+                if (saved) {
+                    try {
+                        const settings = JSON.parse(saved);
+                        if (settings.backendUrl) {
+                            this.backendUrl = settings.backendUrl;
+                            document.getElementById('backend-url-input').value = this.backendUrl;
+                        }
+                        if (settings.currentNetwork) {
+                            this.switchNetwork(settings.currentNetwork);
+                        }
+                    } catch (error) {
+                        this.log('Failed to load saved settings', 'warning');
+                    }
+                }
+            }
+
+            saveSettings() {
+                const settings = {
+                    backendUrl: this.backendUrl,
+                    currentNetwork: this.currentNetwork
+                };
+                localStorage.setItem('eosDevSettings', JSON.stringify(settings));
+            }
+        }
+
+        // Global functions for onclick handlers
+        let eosEnv;
+
+        function showWalletModal() {
+            document.getElementById('wallet-modal').style.display = 'flex';
+        }
+
+        function hideWalletModal() {
+            document.getElementById('wallet-modal').style.display = 'none';
+        }
+
+        function showNetworkModal() {
+            document.getElementById('network-modal').style.display = 'flex';
+        }
+
+        function hideNetworkModal() {
+            document.getElementById('network-modal').style.display = 'none';
+        }
+
+        function showEOSAuthority() {
+            window.open('https://eosauthority.com/account', '_blank');
+        }
+
+        async function compileContract() {
+            const btn = document.querySelector('.btn-success');
+            const originalText = btn.innerHTML;
+            const progress = document.getElementById('compile-progress');
+            
+            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Compiling...';
+            btn.disabled = true;
+            
+            // Animate progress bar
+            let progressValue = 0;
+            const progressInterval = setInterval(() => {
+                progressValue += Math.random() * 15;
+                if (progressValue > 90) progressValue = 90;
+                progress.style.width = progressValue + '%';
+            }, 200);
+
+            try {
+                const code = document.querySelector('.code-editor').textContent;
+                
+                let result;
+                if (eosEnv.backendConnected) {
+                    const response = await fetch(`${eosEnv.backendUrl}/api/compile`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ code })
+                    });
+                    result = await response.json();
+                } else {
+                    result = await eosEnv.mockBackend.compile(code);
+                }
+
+                clearInterval(progressInterval);
+                progress.style.width = '100%';
+
+                if (result.success) {
+                    eosEnv.compiledProject = result;
+                    eosEnv.log(`Compilation successful! Project: ${result.projectId}`, 'success');
+                    eosEnv.log(`WASM size: ${result.size.wasm} bytes, ABI size: ${result.size.abi} bytes`, 'info');
+                    
+                    // Update compile status
+                    document.querySelector('.compile-status .status-indicator').className = 'status-indicator status-ready';
+                    document.querySelector('.compile-status span').textContent = 'Compiled successfully';
+                } else {
+                    throw new Error(result.error || 'Compilation failed');
+                }
+            } catch (error) {
+                clearInterval(progressInterval);
+                progress.style.width = '0%';
+                eosEnv.log(`Compilation failed: ${error.message}`, 'error');
+                
+                document.querySelector('.compile-status .status-indicator').className = 'status-indicator status-error';
+                document.querySelector('.compile-status span').textContent = 'Compilation failed';
+            } finally {
+                btn.innerHTML = originalText;
+                btn.disabled = false;
+                setTimeout(() => {
+                    progress.style.width = '0%';
+                }, 3000);
+            }
+        }
+
+        async function deployContract() {
+            if (!eosEnv.compiledProject) {
+                eosEnv.log('Please compile the contract first', 'error');
+                return;
+            }
+
+            const account = document.getElementById('contract-account').value;
+            if (!account) {
+                eosEnv.log('Please enter a contract account name', 'error');
+                return;
+            }
+
+            eosEnv.log(`Deploying contract to ${account} on ${eosEnv.currentNetwork}...`, 'info');
+
+            try {
+                let result;
+                if (eosEnv.backendConnected) {
+                    const response = await fetch(`${eosEnv.backendUrl}/api/deploy`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            projectId: eosEnv.compiledProject.projectId,
+                            account,
+                            network: eosEnv.currentNetwork,
+                            privateKey: '5KQwrPbwdL6PhXujxW37FSSQZ1JiwsST4cqQzDeyXtP79zkvFD3'
+                        })
+                    });
+                    result = await response.json();
+                } else {
+                    result = await eosEnv.mockBackend.deploy({
+                        projectId: eosEnv.compiledProject.projectId,
+                        account,
+                        network: eosEnv.currentNetwork
+                    });
+                }
+
+                if (result.success) {
+                    eosEnv.log(`Deployment successful! TX: ${result.transactionId}`, 'success');
+                    if (result.explorer_url) {
+                        eosEnv.log(`View on explorer: ${result.explorer_url}`, 'info');
+                    }
+                } else {
+                    throw new Error(result.error || 'Deployment failed');
+                }
+            } catch (error) {
+                eosEnv.log(`Deployment failed: ${error.message}`, 'error');
+            }
+        }
+
+        function clearContract() {
+            eosEnv.log('Clearing contract data...', 'info');
+            eosEnv.compiledProject = null;
+            document.querySelector('.compile-status .status-indicator').className = 'status-indicator status-ready';
+            document.querySelector('.compile-status span').textContent = 'Ready to compile';
+        }
+
+        async function executeAction(actionName) {
+            const account = document.getElementById('contract-account').value;
+            if (!account) {
+                eosEnv.log('Please set contract account first', 'error');
+                return;
+            }
+
+            eosEnv.log(`Executing action: ${actionName} on ${account}`, 'info');
+            
+            // Mock execution for now
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            eosEnv.log(`Action ${actionName} executed successfully`, 'success');
+        }
+
+        function clearConsole() {
+            document.getElementById('console-output').innerHTML = '';
+            eosEnv.log('Console cleared', 'info');
+        }
+
+        function switchConsoleTab(tab) {
+            eosEnv.switchConsoleTab(tab);
+        }
+
+        function testBackendConnection() {
+            eosEnv.testBackendConnection();
+        }
+
+        function testCompileAPI() {
+            eosEnv.testCompileAPI();
+        }
+
+        function testAccountAPI() {
+            eosEnv.testAccountAPI();
+        }
+
+        function startMockBackend() {
+            eosEnv.startMockBackend();
+            eosEnv.log('Mock backend restarted', 'success');
+        }
+
+        function importWallet() {
+            const account = document.getElementById('import-account').value;
+            const privateKey = document.getElementById('import-key').value;
+            
+            if (!account || !privateKey) {
+                eosEnv.log('Please enter both account name and private key', 'error');
+                return;
+            }
+            
+            eosEnv.log(`Importing wallet for account: ${account}`, 'info');
+            eosEnv.currentWallet = { account, privateKey };
+            
+            // Update UI
+            document.getElementById('account-name').textContent = account;
+            document.getElementById('wallet-status-text').textContent = `${account} Connected`;
+            
+            hideWalletModal();
+            eosEnv.log('Wallet imported successfully', 'success');
+        }
+
+        function generateKeys() {
+            // Mock key generation (in real app, use proper ECC library)
+            const privateKey = '5K' + Math.random().toString(36).substr(2, 48).toUpperCase();
+            const publicKey = 'EOS' + Math.random().toString(36).substr(2, 50);
+            
+            document.getElementById('generated-private').value = privateKey;
+            document.getElementById('generated-public').value = publicKey;
+            document.getElementById('generated-keys').style.display = 'block';
+            
+            eosEnv.log('New key pair generated', 'success');
+        }
+
+        function connectBackend() {
+            const url = document.getElementById('backend-server-url').value;
+            if (url) {
+                eosEnv.backendUrl = url;
+                document.getElementById('backend-url-input').value = url;
+                eosEnv.initializeBackend();
+                hideNetworkModal();
+            }
+        }
+
+        function addCustomNetwork() {
+            const name = document.getElementById('custom-network-name').value;
+            const url = document.getElementById('custom-network-url').value;
+            const chainId = document.getElementById('custom-chain-id').value;
+            
+            if (!name || !url || !chainId) {
+                eosEnv.log('Please fill all network fields', 'error');
+                return;
+            }
+            
+            eosEnv.networks[name.toLowerCase().replace(/\s+/g, '-')] = {
+                name, url, chainId, explorer: url + '/explorer'
+            };
+            
+            eosEnv.log(`Custom network ${name} added successfully`, 'success');
+            hideNetworkModal();
+        }
+
+        function showQuickActions() {
+            // Quick action menu could be implemented here
+            eosEnv.log('Quick actions menu', 'info');
+        }
+
+        // Network card selection in modals
+        document.addEventListener('DOMContentLoaded', function() {
+            // Initialize the environment
+            eosEnv = new EOSDevEnvironment();
+            
+            // Network card selection
+            document.querySelectorAll('.network-card').forEach(card => {
+                card.addEventListener('click', function() {
+                    document.querySelectorAll('.network-card').forEach(c => c.classList.remove('selected'));
+                    this.classList.add('selected');
+                    
+                    const network = this.dataset.network;
+                    if (network && eosEnv.networks[network]) {
+                        eosEnv.switchNetwork(network);
+                    }
+                });
+            });
+            
+            // Auto-save settings periodically
+            setInterval(() => {
+                eosEnv.saveSettings();
+            }, 30000); // Save every 30 seconds
+        });
+
+        // Backend Server Implementation (Complete Node.js Code)
+        const backendServerImplementation = `
+const express = require('express');
+const { exec, spawn } = require('child_process');
+const fs = require('fs').promises;
+const path = require('path');
+const cors = require('cors');
+const { Api, JsonRpc, Serialize } = require('eosjs');
+const { JsSignatureProvider } = require('eosjs/dist/eosjs-jssig');
+const { TextEncoder, TextDecoder } = require('util');
+const fetch = require('node-fetch');
+const crypto = require('crypto');
+const multer = require('multer');
+const rateLimit = require('express-rate-limit');
+const helmet = require('helmet');
+const compression = require('compression');
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+const TEMP_DIR = path.join(__dirname, 'temp');
+const PROJECTS_DIR = path.join(__dirname, 'projects');
+
+// Enhanced Middleware
+app.use(helmet());
+app.use(compression());
+app.use(cors({
+    origin: process.env.NODE_ENV === 'production' ? ['https://your-domain.com'] : true,
+    credentials: true
+}));
+
+// Rate limiting
+const limiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 100,
+    message: { error: 'Too many requests, please try again later' }
+});
+app.use('/api/', limiter);
+
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
+// Network configurations
+const NETWORKS = {
+    jungle: {
+        name: 'Jungle Testnet',
+        url: 'https://jungle4.cryptolions.io:443',
+        chainId: '2a02a0053e5a8cf73a56ba0fda11e4d92e0238a4a2aa74fccf46d5a910746840',
+        explorer: 'https://jungle4.eosq.eosnation.io'
+    },
+    mainnet: {
+        name: 'EOS Mainnet',
+        url: 'https://eos.greymass.com',
+        chainId: 'aca376f206b8fc25a6ed44dbdc66547c36c6c33e3a119ffbeaef943642f0e906',
+        explorer: 'https://eosq.app'
+    },
+    wax: {
+        name: 'WAX Mainnet',
+        url: 'https://wax.greymass.com',
+        chainId: '1064487b3cd1a897ce03ae5b6a865651747e2e152090f99c1d19d44e01aea5a4',
+        explorer: 'https://wax.eosq.eosnation.io'
+    },
+    local: {
+        name: 'Local Network',
+        url: 'http://localhost:8888',
+        chainId: 'local',
+        explorer: 'http://localhost:8000'
+    }
+};
+
+// Enhanced Project Manager
+class ProjectManager {
+    constructor() {
+        this.projects = new Map();
+        this.compilationJobs = new Map();
+        this.deploymentJobs = new Map();
+        this.loadFromDisk();
+    }
+
+    async loadFromDisk() {
+        try {
+            await fs.mkdir(PROJECTS_DIR, { recursive: true });
+            const files = await fs.readdir(PROJECTS_DIR);
+            
+            for (const file of files) {
+                if (file.endsWith('.json')) {
+                    const projectData = JSON.parse(
+                        await fs.readFile(path.join(PROJECTS_DIR, file), 'utf8')
+                    );
+                    this.projects.set(projectData.id, projectData);
+                }
+            }
+            console.log(\`Loaded \${this.projects.size} projects from disk\`);
+        } catch (error) {
+            console.error('Error loading projects:', error);
+        }
+    }
+
+    async saveProject(project) {
+        this.projects.set(project.id, project);
+        try {
+            await fs.writeFile(
+                path.join(PROJECTS_DIR, \`\${project.id}.json\`),
+                JSON.stringify(project, null, 2)
+            );
+        } catch (error) {
+            console.error('Error saving project:', error);
+        }
+    }
+
+    getProject(id) {
+        return this.projects.get(id);
+    }
+
+    createCompilationJob(projectId) {
+        const jobId = crypto.randomUUID();
+        this.compilationJobs.set(jobId, {
+            id: jobId,
+            projectId,
+            status: 'pending',
+            startTime: Date.now(),
+            logs: []
+        });
+        return jobId;
+    }
+
+    updateCompilationJob(jobId, updates) {
+        const job = this.compilationJobs.get(jobId);
+        if (job) {
+            Object.assign(job, updates);
+        }
+        return job;
+    }
+}
+
+const projectManager = new ProjectManager();
+
+// Utility functions
+function generateProjectId() {
+    return 'project_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+}
+
+async function createTempDirectory(prefix = 'eos_ide_') {
+    const tempDir = path.join(TEMP_DIR, prefix + Date.now());
+    await fs.mkdir(tempDir, { recursive: true });
+    return tempDir;
+}
+
+async function cleanupTempDirectory(dir) {
+    try {
+        await fs.rm(dir, { recursive: true, force: true });
+    } catch (error) {
+        console.error('Cleanup error:', error);
+    }
+}
+
+// API Routes
+
+// Health check endpoint
+app.get('/api/health', (req, res) => {
+    res.json({ 
+        status: 'healthy', 
+        timestamp: new Date().toISOString(),
+        version: '2.0.0',
+        features: ['compilation', 'deployment', 'testing', 'account-info']
+    });
+});
+
+// Enhanced compilation endpoint
+app.post('/api/compile', async (req, res) => {
+    try {
+        const { code, version = 'eosio.cdt:3.1.0' } = req.body;
+        
+        if (!code || typeof code !== 'string') {
+            return res.status(400).json({ 
+                success: false, 
+                error: 'Invalid or missing code parameter' 
+            });
+        }
+
+        if (code.length > 1024 * 1024) {
+            return res.status(400).json({
+                success: false,
+                error: 'Code size too large (maximum 1MB)'
+            });
+        }
+
+        const projectId = generateProjectId();
+        const projectDir = await createTempDirectory(\`compile_\${projectId}_\`);
+
+        const contractPath = path.join(projectDir, 'contract.cpp');
+        await fs.writeFile(contractPath, code);
+
+        const dockerCommand = \`docker run --rm -v "\${projectDir}:/project" \${version} eosio-cpp -abigen /project/contract.cpp -o /project/contract.wasm\`;
+        
+        exec(dockerCommand, async (error, stdout, stderr) => {
+            if (error) {
+                console.error('Compilation error:', stderr);
+                await cleanupTempDirectory(projectDir);
+                return res.status(500).json({ success: false, error: stderr });
+            }
+
+            try {
+                const wasmBuffer = await fs.readFile(path.join(projectDir, 'contract.wasm'));
+                const abiBuffer = await fs.readFile(path.join(projectDir, 'contract.abi'));
+                
+                const project = {
+                    id: projectId,
+                    wasm: wasmBuffer.toString('hex'),
+                    abi: abiBuffer.toString(),
+                    sourceCode: code,
+                    compiledAt: new Date().toISOString(),
+                    size: {
+                        wasm: wasmBuffer.length,
+                        abi: abiBuffer.length
+                    }
+                };
+                
+                await projectManager.saveProject(project);
+                await cleanupTempDirectory(projectDir);
+
+                res.json({
+                    success: true,
+                    projectId,
+                    wasm: project.wasm,
+                    abi: project.abi,
+                    size: project.size
+                });
+            } catch (readError) {
+                console.error('Error reading files:', readError);
+                await cleanupTempDirectory(projectDir);
+                res.status(500).json({ success: false, error: 'Failed to read compiled files' });
+            }
+        });
+    } catch (error) {
+        console.error('Server error:', error);
+        res.status(500).json({ success: false, error: 'Internal server error' });
+    }
+});
+
+// Deploy endpoint
+app.post('/api/deploy', async (req, res) => {
+    try {
+        const { projectId, account, privateKey, network = 'jungle' } = req.body;
+        
+        if (!projectId || !account || !privateKey) {
+            return res.status(400).json({ 
+                success: false, 
+                error: 'Missing required parameters: projectId, account, privateKey' 
+            });
+        }
+
+        const project = projectManager.getProject(projectId);
+        if (!project) {
+            return res.status(404).json({ success: false, error: 'Project not found' });
+        }
+
+        const networkConfig = NETWORKS[network];
+        if (!networkConfig) {
+            return res.status(400).json({ success: false, error: 'Invalid network' });
+        }
+
+        const signatureProvider = new JsSignatureProvider([privateKey]);
+        const rpc = new JsonRpc(networkConfig.url, { fetch });
+        const api = new Api({
+            rpc,
+            signatureProvider,
+            textDecoder: new TextDecoder(),
+            textEncoder: new TextEncoder()
+        });
+
+        const wasmBytes = new Uint8Array(
+            project.wasm.match(/.{1,2}/g).map(byte => parseInt(byte, 16))
+        );
+
+        const result = await api.transact({
+            actions: [{
+                account: 'eosio',
+                name: 'setcode',
+                authorization: [{
+                    actor: account,
+                    permission: 'active',
+                }],
+                data: {
+                    account: account,
+                    vmtype: 0,
+                    vmversion: 0,
+                    code: wasmBytes
+                },
+            }, {
+                account: 'eosio',
+                name: 'setabi',
+                authorization: [{
+                    actor: account,
+                    permission: 'active',
+                }],
+                data: {
+                    account: account,
+                    abi: JSON.parse(project.abi)
+                },
+            }]
+        }, {
+            blocksBehind: 3,
+            expireSeconds: 30,
+        });
+
+        project.deployments = project.deployments || [];
+        project.deployments.push({
+            network,
+            account,
+            transactionId: result.transaction_id,
+            deployedAt: new Date().toISOString()
+        });
+
+        await projectManager.saveProject(project);
+
+        res.json({
+            success: true,
+            transactionId: result.transaction_id,
+            explorer_url: \`\${networkConfig.explorer}/tx/\${result.transaction_id}\`
+        });
+    } catch (error) {
+        console.error('Deployment error:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Get account info endpoint
+app.get('/api/account/:account', async (req, res) => {
+    try {
+        const { account } = req.params;
+        const { network = 'jungle' } = req.query;
+        
+        const networkConfig = NETWORKS[network];
+        if (!networkConfig) {
+            return res.status(400).json({ success: false, error: 'Invalid network' });
+        }
+
+        const rpc = new JsonRpc(networkConfig.url, { fetch });
+        const accountInfo = await rpc.get_account(account);
+
+        let balance = '0.0000 EOS';
+        try {
+            const tokens = await rpc.get_currency_balance('eosio.token', account, 'EOS');
+            if (tokens && tokens.length > 0) {
+                balance = tokens[0];
+            }
+        } catch (balanceError) {
+            console.warn('Could not fetch balance:', balanceError.message);
+        }
+
+        const response = {
+            success: true,
+            account_name: accountInfo.account_name,
+            created: accountInfo.created,
+            balance: balance,
+            cpu: {
+                used: accountInfo.cpu_limit.used,
+                available: accountInfo.cpu_limit.available,
+                max: accountInfo.cpu_limit.max,
+                percent: ((accountInfo.cpu_limit.used / accountInfo.cpu_limit.max) * 100).toFixed(2)
+            },
+            net: {
+                used: accountInfo.net_limit.used,
+                available: accountInfo.net_limit.available,
+                max: accountInfo.net_limit.max,
+                percent: ((accountInfo.net_limit.used / accountInfo.net_limit.max) * 100).toFixed(2)
+            },
+            ram: {
+                used: accountInfo.ram_usage,
+                quota: accountInfo.ram_quota,
+                available: accountInfo.ram_quota - accountInfo.ram_usage,
+                percent: ((accountInfo.ram_usage / accountInfo.ram_quota) * 100).toFixed(2)
+            }
+        };
+
+        res.json(response);
+    } catch (error) {
+        console.error('Account info error:', error);
+        
+        if (error.message.includes('unknown key')) {
+            res.status(404).json({ success: false, error: 'Account not found' });
+        } else {
+            res.status(500).json({ success: false, error: error.message });
+        }
+    }
+});
+
+// Execute action endpoint
+app.post('/api/action', async (req, res) => {
+    try {
+        const { contract, action, data, actor, privateKey, network = 'jungle' } = req.body;
+        
+        if (!contract || !action || !data || !actor || !privateKey) {
+            return res.status(400).json({ 
+                success: false, 
+                error: 'Missing required parameters' 
+            });
+        }
+
+        const networkConfig = NETWORKS[network];
+        if (!networkConfig) {
+            return res.status(400).json({ success: false, error: 'Invalid network' });
+        }
+
+        const signatureProvider = new JsSignatureProvider([privateKey]);
+        const rpc = new JsonRpc(networkConfig.url, { fetch });
+        const api = new Api({
+            rpc,
+            signatureProvider,
+            textDecoder: new TextDecoder(),
+            textEncoder: new TextEncoder()
+        });
+
+        const result = await api.transact({
+            actions: [{
+                account: contract,
+                name: action,
+                authorization: [{
+                    actor: actor,
+                    permission: 'active',
+                }],
+                data: data
+            }]
+        }, {
+            blocksBehind: 3,
+            expireSeconds: 30,
+        });
+
+        res.json({
+            success: true,
+            transactionId: result.transaction_id,
+            explorer_url: \`\${networkConfig.explorer}/tx/\${result.transaction_id}\`
+        });
+    } catch (error) {
+        console.error('Action execution error:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Get networks endpoint
+app.get('/api/networks', (req, res) => {
+    const networks = Object.entries(NETWORKS).map(([key, config]) => ({
+        id: key,
+        name: config.name,
+        url: config.url,
+        explorer: config.explorer,
+        chainId: config.chainId
+    }));
+
+    res.json({ success: true, networks });
+});
+
+// Error handling middleware
+app.use((error, req, res, next) => {
+    console.error('Unhandled error:', error);
+    res.status(500).json({
+        success: false,
+        error: process.env.NODE_ENV === 'production' 
+            ? 'Internal server error' 
+            : error.message
+    });
+});
+
+// 404 handler
+app.use('*', (req, res) => {
+    res.status(404).json({ success: false, error: 'Endpoint not found' });
+});
+
+// Start server
+app.listen(PORT, () => {
+    console.log(\`🚀 EOS Web IDE Backend Server running on port \${PORT}\`);
+    console.log(\`📖 API Health Check: http://localhost:\${PORT}/api/health\`);
+    console.log(\`🌐 Networks supported: \${Object.keys(NETWORKS).join(', ')}\`);
+    console.log(\`📁 Projects directory: \${PROJECTS_DIR}\`);
+    console.log(\`🔧 Environment: \${process.env.NODE_ENV || 'development'}\`);
+});
+`;
+
+        // Make the backend code available as a downloadable resource
+        console.log('Backend server implementation ready');
+        console.log('To use this backend:');
+        console.log('1. Save the backend code to server.js');
+        console.log('2. Run: npm install express cors eosjs node-fetch helmet compression multer express-rate-limit');
+        console.log('3. Run: node server.js');
+        console.log('4. The frontend will automatically connect to http://localhost:3000');
+    </script>
+</body>
+</html>
