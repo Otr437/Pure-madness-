@@ -1,0 +1,1378 @@
+// production-relay/src/relay.ts
+import { ethers, Wallet, Contract, Provider } from 'ethers';
+import { Redis } from 'ioredis';
+import { Queue, Worker, Job } from 'bullmq';
+import { WebSocketServer, WebSocket } from 'ws';
+import express from 'express';
+import cors from 'cors';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
+import compression from 'compression';
+import { createProxyMiddleware } from 'http-proxy-middleware';
+import winston from 'winston';
+import { Gauge, Counter, Histogram, register } from 'prom-client';
+import { Database } from 'sqlite3';
+import { promisify } from 'util';
+import crypto from 'crypto';
+import { performance } from 'perf_hooks';
+
+// Types and Interfaces
+interface NetworkConfig {
+  name: string;
+  rpcUrl: string;
+  chainId: number;
+  contractAddress: string;
+  gasSettings: {
+    maxFeePerGas: bigint;
+    maxPriorityFeePerGas: bigint;
+    gasLimit: number;
+  };
+}
+
+interface RelayRequest {
+  id: string;
+  network: string;
+  type: 'setcode' | 'gasless' | 'batch' | 'emergency' | 'sweep' | 'multisig';
+  payload: any;
+  signature: string;
+  timestamp: number;
+  priority: number;
+}
+
+interface UserOperation {
+  sender: string;
+  nonce: bigint;
+  initCode: string;
+  callData: string;
+  callGasLimit: bigint;
+  verificationGasLimit: bigint;
+  preVerificationGas: bigint;
+  maxFeePerGas: bigint;
+  maxPriorityFeePerGas: bigint;
+  paymasterAndData: string;
+  signature: string;
+}
+
+interface Authorization {
+  chainId: number;
+  codeAddress: string;
+  nonce: number;
+  v: number;
+  r: string;
+  s: string;
+}
+
+// Metrics
+const relayMetrics = {
+  transactionsTotal: new Counter({
+    name: 'relay_transactions_total',
+    help: 'Total number of relay transactions',
+    labelNames: ['network', 'type', 'status']
+  }),
+  transactionDuration: new Histogram({
+    name: 'relay_transaction_duration_seconds',
+    help: 'Transaction processing duration',
+    labelNames: ['network', 'type']
+  }),
+  gasUsed: new Histogram({
+    name: 'relay_gas_used',
+    help: 'Gas used by transactions',
+    labelNames: ['network', 'type']
+  }),
+  queueSize: new Gauge({
+    name: 'relay_queue_size',
+    help: 'Current queue size',
+    labelNames: ['network', 'priority']
+  }),
+  activeConnections: new Gauge({
+    name: 'relay_active_websocket_connections',
+    help: 'Active WebSocket connections'
+  }),
+  errorCount: new Counter({
+    name: 'relay_errors_total',
+    help: 'Total relay errors',
+    labelNames: ['network', 'type', 'error_type']
+  })
+};
+
+// Logger configuration
+const logger = winston.createLogger({
+  level: process.env.LOG_LEVEL || 'info',
+  format: winston.format.combine(
+    winston.format.timestamp(),
+    winston.format.errors({ stack: true }),
+    winston.format.json()
+  ),
+  transports: [
+    new winston.transports.File({ 
+      filename: 'logs/relay-error.log', 
+      level: 'error',
+      maxsize: 50 * 1024 * 1024,
+      maxFiles: 10
+    }),
+    new winston.transports.File({ 
+      filename: 'logs/relay-combined.log',
+      maxsize: 100 * 1024 * 1024,
+      maxFiles: 20
+    }),
+    new winston.transports.Console({
+      format: winston.format.simple()
+    })
+  ]
+});
+
+class ProductionRelay {
+  private networks: Map<string, NetworkConfig> = new Map();
+  private providers: Map<string, Provider> = new Map();
+  private contracts: Map<string, Contract> = new Map();
+  private wallets: Map<string, Wallet> = new Map();
+  private redis: Redis;
+  private queues: Map<string, Queue> = new Map();
+  private workers: Map<string, Worker> = new Map();
+  private wsServer: WebSocketServer;
+  private app: express.Application;
+  private db: Database;
+  private isShuttingDown = false;
+  private heartbeatInterval: NodeJS.Timeout;
+  private gasTracker: NodeJS.Timeout;
+  private monitoringInterval: NodeJS.Timeout;
+
+  // Contract ABI - Ful ABI
+  private readonly CONTRACT_ABI = [
+    "function setCode(address account, address codeAddress, tuple(uint256 chainId, address codeAddress, uint256 nonce, uint8 v, bytes32 r, bytes32 s) authorization) external",
+    "function executeGaslessTransaction(tuple(address sender, uint256 nonce, bytes initCode, bytes callData, uint256 callGasLimit, uint256 verificationGasLimit, uint256 preVerificationGas, uint256 maxFeePerGas, uint256 maxPriorityFeePerGas, bytes paymasterAndData, bytes signature) userOp, bytes paymasterSignature) external",
+    "function depositForPaymaster() external payable",
+    "function withdrawPaymasterDeposit(uint256 amount) external",
+    "function batchExecute(address[] targets, uint256[] values, bytes[] datas, address delegatedWallet) external",
+    "function activateEmergencyMode(address compromisedWallet) external",
+    "function emergencyExecute(address compromisedWallet, address target, uint256 value, bytes data) external",
+    "function sweepDelegatedWallets(address[] wallets, address destination) external",
+    "function sweepTokensFromDelegatedWallets(address[] wallets, address[] tokens, address destination) external",
+    "function setupMultiSig(address wallet, address[] signers, uint256 required) external",
+    "function executeMultiSig(address wallet, address target, uint256 value, bytes data, bytes[] signatures) external",
+    "function revokeDelegation(address account) external",
+    "function isDelegated(address account) external view returns (bool)",
+    "function delegatedCode(address account) external view returns (address)",
+    "function getDelegatedWalletCount() external view returns (uint256)",
+    "function getAllDelegatedWallets() external view returns (address[])",
+    "function paymasterDeposits(address paymaster) external view returns (uint256)",
+    "function delegationNonce(address account) external view returns (uint256)",
+    "function emergencyMode() external view returns (bool)",
+    "event CodeSet(address indexed account, address indexed codeAddress, uint256 nonce)",
+    "event GaslessTransactionExecuted(address indexed sender, address indexed target, bytes data)",
+    "event EmergencyModeActivated(address indexed activator)",
+    "event WalletSwept(address indexed wallet, address indexed destination, uint256 amount)",
+    "event DelegationRevoked(address indexed delegator, address indexed delegate)",
+    "event PaymasterDeposit(address indexed paymaster, uint256 amount)",
+    "event BatchExecutionCompleted(uint256 successCount, uint256 failureCount)"
+  ];
+
+  constructor() {
+    this.app = express();
+    this.redis = new Redis(process.env.REDIS_URL || 'redis://localhost:6379', {
+      retryDelayOnFailover: 100,
+      maxRetriesPerRequest: 3,
+      lazyConnect: true
+    });
+    
+    this.initializeNetworks();
+    this.setupMiddleware();
+    this.setupRoutes();
+    this.initializeDatabase();
+  }
+
+  private initializeNetworks() {
+    const networks: NetworkConfig[] = [
+      {
+        name: 'ethereum',
+        rpcUrl: process.env.ETHEREUM_RPC_URL || 'https://mainnet.infura.io/v3/YOUR_KEY',
+        chainId: 1,
+        contractAddress: process.env.ETHEREUM_CONTRACT_ADDRESS!,
+        gasSettings: {
+          maxFeePerGas: ethers.parseUnits('50', 'gwei'),
+          maxPriorityFeePerGas: ethers.parseUnits('2', 'gwei'),
+          gasLimit: 500000
+        }
+      },
+      {
+        name: 'arbitrum',
+        rpcUrl: process.env.ARBITRUM_RPC_URL || 'https://arb1.arbitrum.io/rpc',
+        chainId: 42161,
+        contractAddress: process.env.ARBITRUM_CONTRACT_ADDRESS!,
+        gasSettings: {
+          maxFeePerGas: ethers.parseUnits('1', 'gwei'),
+          maxPriorityFeePerGas: ethers.parseUnits('0.1', 'gwei'),
+          gasLimit: 800000
+        }
+      },
+      {
+        name: 'optimism',
+        rpcUrl: process.env.OPTIMISM_RPC_URL || 'https://mainnet.optimism.io',
+        chainId: 10,
+        contractAddress: process.env.OPTIMISM_CONTRACT_ADDRESS!,
+        gasSettings: {
+          maxFeePerGas: ethers.parseUnits('1', 'gwei'),
+          maxPriorityFeePerGas: ethers.parseUnits('0.1', 'gwei'),
+          gasLimit: 500000
+        }
+      },
+      {
+        name: 'polygon',
+        rpcUrl: process.env.POLYGON_RPC_URL || 'https://polygon-rpc.com/',
+        chainId: 137,
+        contractAddress: process.env.POLYGON_CONTRACT_ADDRESS!,
+        gasSettings: {
+          maxFeePerGas: ethers.parseUnits('100', 'gwei'),
+          maxPriorityFeePerGas: ethers.parseUnits('30', 'gwei'),
+          gasLimit: 500000
+        }
+      },
+      {
+        name: 'base',
+        rpcUrl: process.env.BASE_RPC_URL || 'https://mainnet.base.org',
+        chainId: 8453,
+        contractAddress: process.env.BASE_CONTRACT_ADDRESS!,
+        gasSettings: {
+          maxFeePerGas: ethers.parseUnits('1', 'gwei'),
+          maxPriorityFeePerGas: ethers.parseUnits('0.1', 'gwei'),
+          gasLimit: 500000
+        }
+      }
+    ];
+
+    for (const config of networks) {
+      if (config.contractAddress) {
+        this.networks.set(config.name, config);
+        logger.info(`Network configured: ${config.name} (Chain ID: ${config.chainId})`);
+      } else {
+        logger.warn(`Contract address not configured for ${config.name}, skipping`);
+      }
+    }
+  }
+
+  async initialize() {
+    try {
+      // Connect to Redis
+      await this.redis.connect();
+      logger.info('Connected to Redis');
+
+      // Initialize Web3 providers and contracts
+      const privateKey = process.env.PRIVATE_KEY;
+      if (!privateKey) {
+        throw new Error('PRIVATE_KEY environment variable is required');
+      }
+
+      for (const [networkName, config] of this.networks.entries()) {
+        try {
+          // Create provider with retry and fallback logic
+          const provider = new ethers.JsonRpcProvider(config.rpcUrl, config.chainId, {
+            staticNetwork: ethers.Network.from(config.chainId)
+          });
+          
+          // Test connection
+          const blockNumber = await provider.getBlockNumber();
+          logger.info(`Connected to ${networkName}: block ${blockNumber}`);
+          
+          this.providers.set(networkName, provider);
+
+          // Create wallet
+          const wallet = new Wallet(privateKey, provider);
+          this.wallets.set(networkName, wallet);
+
+          // Create contract instance
+          const contract = new Contract(config.contractAddress, this.CONTRACT_ABI, wallet);
+          this.contracts.set(networkName, contract);
+
+          // Initialize queue for this network
+          const queue = new Queue(`relay-${networkName}`, {
+            connection: this.redis,
+            defaultJobOptions: {
+              removeOnComplete: 100,
+              removeOnFail: 50,
+              attempts: 3,
+              backoff: {
+                type: 'exponential',
+                delay: 2000
+              }
+            }
+          });
+          this.queues.set(networkName, queue);
+
+          // Initialize worker for this network
+          const worker = new Worker(
+            `relay-${networkName}`,
+            async (job: Job) => await this.processRelayJob(networkName, job),
+            {
+              connection: this.redis,
+              concurrency: 5,
+              maxStalledCount: 1,
+              stalledInterval: 30000
+            }
+          );
+          
+          worker.on('completed', (job) => {
+            logger.info(`Job completed: ${job.id} on ${networkName}`);
+            relayMetrics.transactionsTotal.inc({
+              network: networkName,
+              type: job.data.type,
+              status: 'success'
+            });
+          });
+
+          worker.on('failed', (job, err) => {
+            logger.error(`Job failed: ${job?.id} on ${networkName}`, err);
+            relayMetrics.transactionsTotal.inc({
+              network: networkName,
+              type: job?.data?.type || 'unknown',
+              status: 'failed'
+            });
+            relayMetrics.errorCount.inc({
+              network: networkName,
+              type: job?.data?.type || 'unknown',
+              error_type: 'job_failed'
+            });
+          });
+
+          this.workers.set(networkName, worker);
+
+        } catch (error) {
+          logger.error(`Failed to initialize ${networkName}:`, error);
+          relayMetrics.errorCount.inc({
+            network: networkName,
+            type: 'initialization',
+            error_type: 'network_init_failed'
+          });
+        }
+      }
+
+      // Setup WebSocket server
+      this.setupWebSocketServer();
+      
+      // Start background tasks
+      this.startBackgroundTasks();
+
+      logger.info('Production Relay initialized successfully');
+
+    } catch (error) {
+      logger.error('Failed to initialize relay:', error);
+      throw error;
+    }
+  }
+
+  private setupMiddleware() {
+    // Security middleware
+    this.app.use(helmet({
+      contentSecurityPolicy: {
+        directives: {
+          defaultSrc: ["'self'"],
+          styleSrc: ["'self'", "'unsafe-inline'"],
+          scriptSrc: ["'self'"],
+          imgSrc: ["'self'", "data:", "https:"],
+        },
+      },
+      crossOriginEmbedderPolicy: false
+    }));
+
+    // CORS
+    this.app.use(cors({
+      origin: process.env.ALLOWED_ORIGINS?.split(',') || '*',
+      credentials: true,
+      methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+      allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+    }));
+
+    // Rate limiting with Redis store
+    const limiter = rateLimit({
+      windowMs: 15 * 60 * 1000, // 15 minutes
+      max: 1000, // Limit each IP to 1000 requests per window
+      standardHeaders: true,
+      legacyHeaders: false,
+      store: new (require('express-rate-limit-redis'))({
+        client: this.redis,
+        prefix: 'rl:'
+      })
+    });
+    this.app.use(limiter);
+
+    // Compression
+    this.app.use(compression());
+
+    // Body parsing
+    this.app.use(express.json({ limit: '10mb' }));
+    this.app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+    // Request logging
+    this.app.use((req, res, next) => {
+      const start = Date.now();
+      res.on('finish', () => {
+        const duration = Date.now() - start;
+        logger.info('Request completed', {
+          method: req.method,
+          url: req.url,
+          status: res.statusCode,
+          duration,
+          ip: req.ip,
+          userAgent: req.get('User-Agent')
+        });
+      });
+      next();
+    });
+  }
+
+  private setupRoutes() {
+    // Health check
+    this.app.get('/health', (req, res) => {
+      const health = {
+        status: 'healthy',
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime(),
+        networks: Array.from(this.networks.keys()),
+        redis: this.redis.status,
+        memory: process.memoryUsage(),
+        version: process.env.npm_package_version || '1.0.0'
+      };
+      res.json(health);
+    });
+
+    // Metrics endpoint
+    this.app.get('/metrics', async (req, res) => {
+      res.set('Content-Type', register.contentType);
+      res.send(await register.metrics());
+    });
+
+    // Main relay endpoint
+    this.app.post('/relay', async (req, res) => {
+      try {
+        const relayRequest: RelayRequest = req.body;
+        
+        // Validate request
+        if (!this.validateRelayRequest(relayRequest)) {
+          return res.status(400).json({ error: 'Invalid relay request' });
+        }
+
+        // Verify signature
+        if (!await this.verifyRequestSignature(relayRequest)) {
+          return res.status(401).json({ error: 'Invalid signature' });
+        }
+
+        // Check rate limits per address
+        const rateLimitKey = `rate_limit:${relayRequest.payload.sender || 'unknown'}`;
+        const requestCount = await this.redis.incr(rateLimitKey);
+        if (requestCount === 1) {
+          await this.redis.expire(rateLimitKey, 3600); // 1 hour window
+        }
+        if (requestCount > 100) { // 100 requests per hour per address
+          return res.status(429).json({ error: 'Rate limit exceeded' });
+        }
+
+        // Add to queue
+        const queue = this.queues.get(relayRequest.network);
+        if (!queue) {
+          return res.status(400).json({ error: 'Unsupported network' });
+        }
+
+        const job = await queue.add(
+          `relay-${relayRequest.type}`,
+          relayRequest,
+          {
+            priority: relayRequest.priority || 0,
+            delay: 0,
+            jobId: relayRequest.id
+          }
+        );
+
+        // Store request in database
+        await this.storeRelayRequest(relayRequest);
+
+        res.json({
+          success: true,
+          jobId: job.id,
+          estimatedProcessingTime: this.estimateProcessingTime(relayRequest.network, relayRequest.type),
+          queuePosition: await queue.getWaiting().then(jobs => jobs.length)
+        });
+
+      } catch (error) {
+        logger.error('Relay request error:', error);
+        relayMetrics.errorCount.inc({
+          network: req.body.network || 'unknown',
+          type: req.body.type || 'unknown',
+          error_type: 'relay_request_failed'
+        });
+        res.status(500).json({ error: 'Internal server error' });
+      }
+    });
+
+    // Job status endpoint
+    this.app.get('/job/:jobId', async (req, res) => {
+      try {
+        const { jobId } = req.params;
+        let job = null;
+
+        // Search across all network queues
+        for (const queue of this.queues.values()) {
+          job = await queue.getJob(jobId);
+          if (job) break;
+        }
+
+        if (!job) {
+          return res.status(404).json({ error: 'Job not found' });
+        }
+
+        const status = {
+          id: job.id,
+          name: job.name,
+          data: job.data,
+          progress: job.progress,
+          processedOn: job.processedOn,
+          finishedOn: job.finishedOn,
+          failedReason: job.failedReason,
+          returnvalue: job.returnvalue,
+          opts: job.opts
+        };
+
+        res.json(status);
+
+      } catch (error) {
+        logger.error('Job status error:', error);
+        res.status(500).json({ error: 'Internal server error' });
+      }
+    });
+
+    // Network status endpoints
+    this.app.get('/networks', async (req, res) => {
+      const networkStatus = {};
+      
+      for (const [name, config] of this.networks.entries()) {
+        const provider = this.providers.get(name);
+        const queue = this.queues.get(name);
+        
+        try {
+          const [blockNumber, queueStats] = await Promise.all([
+            provider?.getBlockNumber() || 0,
+            queue ? {
+              waiting: await queue.getWaiting().then(jobs => jobs.length),
+              active: await queue.getActive().then(jobs => jobs.length),
+              completed: await queue.getCompleted().then(jobs => jobs.length),
+              failed: await queue.getFailed().then(jobs => jobs.length)
+            } : null
+          ]);
+
+          networkStatus[name] = {
+            chainId: config.chainId,
+            contractAddress: config.contractAddress,
+            blockNumber,
+            status: 'connected',
+            queue: queueStats
+          };
+        } catch (error) {
+          networkStatus[name] = {
+            chainId: config.chainId,
+            contractAddress: config.contractAddress,
+            status: 'error',
+            error: error.message
+          };
+        }
+      }
+      
+      res.json({ networks: networkStatus });
+    });
+
+    // Emergency endpoints
+    this.app.post('/emergency/pause/:network', async (req, res) => {
+      try {
+        const { network } = req.params;
+        const queue = this.queues.get(network);
+        
+        if (!queue) {
+          return res.status(400).json({ error: 'Invalid network' });
+        }
+
+        await queue.pause();
+        logger.warn(`Emergency pause activated for ${network}`);
+        
+        res.json({ success: true, message: `${network} queue paused` });
+      } catch (error) {
+        logger.error('Emergency pause error:', error);
+        res.status(500).json({ error: 'Failed to pause queue' });
+      }
+    });
+
+    this.app.post('/emergency/resume/:network', async (req, res) => {
+      try {
+        const { network } = req.params;
+        const queue = this.queues.get(network);
+        
+        if (!queue) {
+          return res.status(400).json({ error: 'Invalid network' });
+        }
+
+        await queue.resume();
+        logger.info(`Queue resumed for ${network}`);
+        
+        res.json({ success: true, message: `${network} queue resumed` });
+      } catch (error) {
+        logger.error('Queue resume error:', error);
+        res.status(500).json({ error: 'Failed to resume queue' });
+      }
+    });
+
+    // Gas price endpoints
+    this.app.get('/gas-prices', async (req, res) => {
+      try {
+        const gasPrices = {};
+        
+        for (const [name, provider] of this.providers.entries()) {
+          try {
+            const feeData = await provider.getFeeData();
+            gasPrices[name] = {
+              gasPrice: feeData.gasPrice?.toString(),
+              maxFeePerGas: feeData.maxFeePerGas?.toString(),
+              maxPriorityFeePerGas: feeData.maxPriorityFeePerGas?.toString(),
+              timestamp: Date.now()
+            };
+          } catch (error) {
+            gasPrices[name] = { error: error.message };
+          }
+        }
+        
+        res.json({ gasPrices });
+      } catch (error) {
+        logger.error('Gas prices error:', error);
+        res.status(500).json({ error: 'Failed to get gas prices' });
+      }
+    });
+
+    // Contract query endpoints
+    this.app.get('/contract/:network/wallet/:address/status', async (req, res) => {
+      try {
+        const { network, address } = req.params;
+        const contract = this.contracts.get(network);
+        
+        if (!contract) {
+          return res.status(400).json({ error: 'Invalid network' });
+        }
+
+        const [isDelegated, delegatedCode, nonce] = await Promise.all([
+          contract.isDelegated(address),
+          contract.delegatedCode(address),
+          contract.delegationNonce(address)
+        ]);
+
+        res.json({
+          address,
+          network,
+          isDelegated,
+          delegatedCode: isDelegated ? delegatedCode : null,
+          nonce: nonce.toString()
+        });
+
+      } catch (error) {
+        logger.error('Contract query error:', error);
+        res.status(500).json({ error: 'Contract query failed' });
+      }
+    });
+  }
+
+  private setupWebSocketServer() {
+    this.wsServer = new WebSocketServer({ port: parseInt(process.env.WS_PORT || '8080') });
+    
+    this.wsServer.on('connection', (ws: WebSocket, req) => {
+      const clientId = crypto.randomUUID();
+      relayMetrics.activeConnections.inc();
+      
+      logger.info(`WebSocket client connected: ${clientId}`);
+      
+      // Send welcome message
+      ws.send(JSON.stringify({
+        type: 'connected',
+        clientId,
+        timestamp: Date.now(),
+        supportedNetworks: Array.from(this.networks.keys())
+      }));
+
+      // Handle messages
+      ws.on('message', async (data) => {
+        try {
+          const message = JSON.parse(data.toString());
+          await this.handleWebSocketMessage(ws, clientId, message);
+        } catch (error) {
+          logger.error('WebSocket message error:', error);
+          ws.send(JSON.stringify({
+            type: 'error',
+            error: 'Invalid message format'
+          }));
+        }
+      });
+
+      // Handle disconnect
+      ws.on('close', () => {
+        logger.info(`WebSocket client disconnected: ${clientId}`);
+        relayMetrics.activeConnections.dec();
+      });
+
+      // Handle errors
+      ws.on('error', (error) => {
+        logger.error(`WebSocket error for client ${clientId}:`, error);
+      });
+    });
+
+    logger.info(`WebSocket server started on port ${process.env.WS_PORT || '8080'}`);
+  }
+
+  private async processRelayJob(networkName: string, job: Job): Promise<any> {
+    const startTime = performance.now();
+    const relayRequest: RelayRequest = job.data;
+    
+    logger.info(`Processing job ${job.id} on ${networkName}:`, {
+      type: relayRequest.type,
+      id: relayRequest.id
+    });
+
+    try {
+      const contract = this.contracts.get(networkName);
+      const wallet = this.wallets.get(networkName);
+      const provider = this.providers.get(networkName);
+      
+      if (!contract || !wallet || !provider) {
+        throw new Error(`Network ${networkName} not properly initialized`);
+      }
+
+      let result;
+
+      // Process based on request type
+      switch (relayRequest.type) {
+        case 'setcode':
+          result = await this.processSetCode(contract, relayRequest.payload);
+          break;
+        case 'gasless':
+          result = await this.processGaslessTransaction(contract, relayRequest.payload);
+          break;
+        case 'batch':
+          result = await this.processBatchExecute(contract, relayRequest.payload);
+          break;
+        case 'emergency':
+          result = await this.processEmergencyAction(contract, relayRequest.payload);
+          break;
+        case 'sweep':
+          result = await this.processSweepWallets(contract, relayRequest.payload);
+          break;
+        case 'multisig':
+          result = await this.processMultiSig(contract, relayRequest.payload);
+          break;
+        default:
+          throw new Error(`Unknown request type: ${relayRequest.type}`);
+      }
+
+      // Update metrics
+      const duration = (performance.now() - startTime) / 1000;
+      relayMetrics.transactionDuration.observe(
+        { network: networkName, type: relayRequest.type },
+        duration
+      );
+
+      if (result.gasUsed) {
+        relayMetrics.gasUsed.observe(
+          { network: networkName, type: relayRequest.type },
+          parseInt(result.gasUsed)
+        );
+      }
+
+      // Store result
+      await this.storeJobResult(job.id!, result);
+      
+      // Broadcast result via WebSocket
+      this.broadcastToWebSocket({
+        type: 'transaction_completed',
+        jobId: job.id,
+        network: networkName,
+        transactionType: relayRequest.type,
+        result,
+        timestamp: Date.now()
+      });
+
+      logger.info(`Job ${job.id} completed successfully on ${networkName}`, {
+        txHash: result.txHash,
+        gasUsed: result.gasUsed,
+        duration
+      });
+
+      return result;
+
+    } catch (error) {
+      logger.error(`Job ${job.id} failed on ${networkName}:`, error);
+      
+      // Broadcast error via WebSocket
+      this.broadcastToWebSocket({
+        type: 'transaction_failed',
+        jobId: job.id,
+        network: networkName,
+        transactionType: relayRequest.type,
+        error: error.message,
+        timestamp: Date.now()
+      });
+
+      throw error;
+    }
+  }
+
+  // Transaction processing methods
+  private async processSetCode(contract: Contract, payload: any): Promise<any> {
+    const { account, codeAddress, authorization } = payload;
+    
+    // Validate authorization
+    if (!this.isValidAddress(account) || !this.isValidAddress(codeAddress)) {
+      throw new Error('Invalid address format');
+    }
+
+    // Build authorization tuple
+    const authTuple = [
+      authorization.chainId,
+      authorization.codeAddress,
+      authorization.nonce,
+      authorization.v,
+      authorization.r,
+      authorization.s
+    ];
+
+    // Estimate gas
+    const gasEstimate = await contract.setCode.estimateGas(account, codeAddress, authTuple);
+    
+    // Execute transaction
+    const tx = await contract.setCode(account, codeAddress, authTuple, {
+      gasLimit: gasEstimate * 110n / 100n // Add 10% buffer
+    });
+
+    const receipt = await tx.wait();
+    
+    return {
+      txHash: receipt.hash,
+      blockNumber: receipt.blockNumber,
+      gasUsed: receipt.gasUsed.toString(),
+      account,
+      codeAddress,
+      status: 'success'
+    };
+  }
+
+  private async processGaslessTransaction(contract: Contract, payload: any): Promise<any> {
+    const { userOperation, paymasterSignature } = payload;
+    
+    // Build user operation tuple
+    const userOpTuple = [
+      userOperation.sender,
+      userOperation.nonce,
+      userOperation.initCode || '0x',
+      userOperation.callData,
+      userOperation.callGasLimit,
+      userOperation.verificationGasLimit,
+      userOperation.preVerificationGas,
+      userOperation.maxFeePerGas,
+      userOperation.maxPriorityFeePerGas,
+      userOperation.paymasterAndData || '0x',
+      userOperation.signature
+    ];
+
+    // Estimate gas
+    const gasEstimate = await contract.executeGaslessTransaction.estimateGas(
+      userOpTuple, 
+      paymasterSignature || '0x'
+    );
+    
+    // Execute transaction
+    const tx = await contract.executeGaslessTransaction(userOpTuple, paymasterSignature || '0x', {
+      gasLimit: gasEstimate * 120n / 100n // Add 20% buffer for gasless transactions
+    });
+
+    const receipt = await tx.wait();
+    
+    return {
+      txHash: receipt.hash,
+      blockNumber: receipt.blockNumber,
+      gasUsed: receipt.gasUsed.toString(),
+      sender: userOperation.sender,
+      status: 'success'
+    };
+  }
+
+  private async processBatchExecute(contract: Contract, payload: any): Promise<any> {
+    const { targets, values, datas, delegatedWallet } = payload;
+    
+    // Validate batch data
+    if (targets.length !== values.length || values.length !== datas.length) {
+      throw new Error('Batch data length mismatch');
+    }
+
+    // Convert values to BigInt
+    const valuesWei = values.map((v: string) => ethers.parseEther(v));
+    
+    // Estimate gas
+    const gasEstimate = await contract.batchExecute.estimateGas(
+      targets, valuesWei, datas, delegatedWallet
+    );
+    
+    // Execute transaction
+    const tx = await contract.batchExecute(targets, valuesWei, datas, delegatedWallet, {
+      gasLimit: gasEstimate * 130n / 100n // Add 30% buffer for batch operations
+    });
+
+    const receipt = await tx.wait();
+    
+    return {
+      txHash: receipt.hash,
+      blockNumber: receipt.blockNumber,
+      gasUsed: receipt.gasUsed.toString(),
+      batchSize: targets.length,
+      delegatedWallet,
+      status: 'success'
+    };
+  }
+
+  private async processEmergencyAction(contract: Contract, payload: any): Promise<any> {
+    const { action, compromisedWallet, target, value, data } = payload;
+    
+    let tx;
+    let gasEstimate;
+
+    switch (action) {
+      case 'activate':
+        gasEstimate = await contract.activateEmergencyMode.estimateGas(compromisedWallet);
+        tx = await contract.activateEmergencyMode(compromisedWallet, {
+          gasLimit: gasEstimate * 110n / 100n
+        });
+        break;
+        
+      case 'execute':
+        const valueWei = value ? ethers.parseEther(value) : 0n;
+        gasEstimate = await contract.emergencyExecute.estimateGas(
+          compromisedWallet, target, valueWei, data || '0x'
+        );
+        tx = await contract.emergencyExecute(compromisedWallet, target, valueWei, data || '0x', {
+          gasLimit: gasEstimate * 110n / 100n
+        });
+        break;
+        
+      default:
+        throw new Error(`Unknown emergency action: ${action}`);
+    }
+
+    const receipt = await tx.wait();
+    
+    return {
+      txHash: receipt.hash,
+      blockNumber: receipt.blockNumber,
+      gasUsed: receipt.gasUsed.toString(),
+      action,
+      compromisedWallet,
+      status: 'success'
+    };
+  }
+
+  private async processSweepWallets(contract: Contract, payload: any): Promise<any> {
+    const { wallets, destination, tokens } = payload;
+    
+    let tx;
+    let gasEstimate;
+
+    if (tokens && tokens.length > 0) {
+      // Sweep tokens
+      gasEstimate = await contract.sweepTokensFromDelegatedWallets.estimateGas(
+        wallets, tokens, destination
+      );
+      tx = await contract.sweepTokensFromDelegatedWallets(wallets, tokens, destination, {
+        gasLimit: gasEstimate * 120n / 100n
+      });
+    } else {
+      // Sweep ETH
+      gasEstimate = await contract.sweepDelegatedWallets.estimateGas(wallets, destination);
+      tx = await contract.sweepDelegatedWallets(wallets, destination, {
+        gasLimit: gasEstimate * 120n / 100n
+      });
+    }
+
+    const receipt = await tx.wait();
+    
+    return {
+      txHash: receipt.hash,
+      blockNumber: receipt.blockNumber,
+      gasUsed: receipt.gasUsed.toString(),
+      walletsSwept: wallets.length,
+      tokensSwept: tokens ? tokens.length : 0,
+      destination,
+      status: 'success'
+    };
+  }
+
+  private async processMultiSig(contract: Contract, payload: any): Promise<any> {
+    const { action, wallet, target, value, data, signatures, signers, required } = payload;
+    
+    let tx;
+    let gasEstimate;
+
+    switch (action) {
+      case 'setup':
+        gasEstimate = await contract.setupMultiSig.estimateGas(wallet, signers, required);
+        tx = await contract.setupMultiSig(wallet, signers, required, {
+          gasLimit: gasEstimate * 110n / 100n
+        });
+        break;
+        
+      case 'execute':
+        const valueWei = value ? ethers.parseEther(value) : 0n;
+        gasEstimate = await contract.executeMultiSig.estimateGas(
+          wallet, target, valueWei, data || '0x', signatures
+        );
+        tx = await contract.executeMultiSig(wallet, target, valueWei, data || '0x', signatures, {
+          gasLimit: gasEstimate * 110n / 100n
+        });
+        break;
+        
+      default:
+        throw new Error(`Unknown multisig action: ${action}`);
+    }
+
+    const receipt = await tx.wait();
+    
+    return {
+      txHash: receipt.hash,
+      blockNumber: receipt.blockNumber,
+      gasUsed: receipt.gasUsed.toString(),
+      action,
+      wallet,
+      status: 'success'
+    };
+  }
+
+  // Utility methods
+  private validateRelayRequest(request: RelayRequest): boolean {
+    return !!(
+      request.id &&
+      request.network &&
+      request.type &&
+      request.payload &&
+      request.signature &&
+      request.timestamp &&
+      this.networks.has(request.network)
+    );
+  }
+
+  private async verifyRequestSignature(request: RelayRequest): Promise<boolean> {
+    try {
+      // Create message hash
+      const message = JSON.stringify({
+        id: request.id,
+        network: request.network,
+        type: request.type,
+        payload: request.payload,
+        timestamp: request.timestamp
+      });
+      
+      const messageHash = ethers.keccak256(ethers.toUtf8Bytes(message));
+      const recovered = ethers.recoverAddress(messageHash, request.signature);
+      
+      // In production, verify against authorized signers
+      const authorizedSigners = (process.env.AUTHORIZED_SIGNERS || '').split(',');
+      return authorizedSigners.includes(recovered.toLowerCase());
+      
+    } catch (error) {
+      logger.error('Signature verification error:', error);
+      return false;
+    }
+  }
+
+  private isValidAddress(address: string): boolean {
+    return /^0x[a-fA-F0-9]{40}$/.test(address);
+  }
+
+  private estimateProcessingTime(network: string, type: string): number {
+    // Return estimated processing time in seconds
+    const baseTime = {
+      'setcode': 30,
+      'gasless': 45,
+      'batch': 60,
+      'emergency': 20,
+      'sweep': 90,
+      'multisig': 40
+    };
+    
+    const networkMultiplier = {
+      'ethereum': 2.0,
+      'arbitrum': 0.5,
+      'optimism': 0.8,
+      'polygon': 1.2,
+      'base': 0.7
+    };
+    
+    return (baseTime[type] || 30) * (networkMultiplier[network] || 1.0);
+  }
+
+  private async handleWebSocketMessage(ws: WebSocket, clientId: string, message: any) {
+    switch (message.type) {
+      case 'subscribe':
+        // Handle subscription to specific events
+        const { topics } = message;
+        await this.redis.sadd(`ws_subscriptions:${clientId}`, ...topics);
+        ws.send(JSON.stringify({
+          type: 'subscribed',
+          topics,
+          timestamp: Date.now()
+        }));
+        break;
+        
+      case 'unsubscribe':
+        const { topics: unsubTopics } = message;
+        await this.redis.srem(`ws_subscriptions:${clientId}`, ...unsubTopics);
+        ws.send(JSON.stringify({
+          type: 'unsubscribed',
+          topics: unsubTopics,
+          timestamp: Date.now()
+        }));
+        break;
+        
+      case 'ping':
+        ws.send(JSON.stringify({
+          type: 'pong',
+          timestamp: Date.now()
+        }));
+        break;
+        
+      default:
+        ws.send(JSON.stringify({
+          type: 'error',
+          error: 'Unknown message type',
+          timestamp: Date.now()
+        }));
+    }
+  }
+
+  private broadcastToWebSocket(message: any) {
+    const messageStr = JSON.stringify(message);
+    this.wsServer.clients.forEach((client) => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(messageStr);
+      }
+    });
+  }
+
+  private initializeDatabase() {
+    this.db = new Database('relay.db');
+    
+    // Create tables
+    this.db.serialize(() => {
+      this.db.run(`
+        CREATE TABLE IF NOT EXISTS relay_requests (
+          id TEXT PRIMARY KEY,
+          network TEXT NOT NULL,
+          type TEXT NOT NULL,
+          payload TEXT NOT NULL,
+          signature TEXT NOT NULL,
+          timestamp INTEGER NOT NULL,
+          priority INTEGER DEFAULT 0,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+      
+      this.db.run(`
+        CREATE TABLE IF NOT EXISTS job_results (
+          job_id TEXT PRIMARY KEY,
+          result TEXT NOT NULL,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+      
+      this.db.run(`
+        CREATE INDEX IF NOT EXISTS idx_relay_requests_network 
+        ON relay_requests(network)
+      `);
+      
+      this.db.run(`
+        CREATE INDEX IF NOT EXISTS idx_relay_requests_timestamp 
+        ON relay_requests(timestamp)
+      `);
+    });
+    
+    logger.info('Database initialized');
+  }
+
+  private async storeRelayRequest(request: RelayRequest) {
+    const run = promisify(this.db.run.bind(this.db));
+    
+    await run(`
+      INSERT INTO relay_requests 
+      (id, network, type, payload, signature, timestamp, priority)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `, [
+      request.id,
+      request.network,
+      request.type,
+      JSON.stringify(request.payload),
+      request.signature,
+      request.timestamp,
+      request.priority
+    ]);
+  }
+
+  private async storeJobResult(jobId: string, result: any) {
+    const run = promisify(this.db.run.bind(this.db));
+    
+    await run(`
+      INSERT OR REPLACE INTO job_results (job_id, result)
+      VALUES (?, ?)
+    `, [jobId, JSON.stringify(result)]);
+  }
+
+  private startBackgroundTasks() {
+    // Gas price monitoring
+    this.gasTracker = setInterval(async () => {
+      for (const [networkName, provider] of this.providers.entries()) {
+        try {
+          const feeData = await provider.getFeeData();
+          const gasPriceGwei = feeData.gasPrice ? 
+            parseFloat(ethers.formatUnits(feeData.gasPrice, 'gwei')) : 0;
+          
+          // Update metrics
+          relayMetrics.errorCount.labels({
+            network: networkName,
+            type: 'gas_price',
+            error_type: 'success'
+          });
+
+          // Cache in Redis
+          await this.redis.setex(
+            `gas_price:${networkName}`,
+            60, // 1 minute TTL
+            JSON.stringify({
+              gasPrice: feeData.gasPrice?.toString(),
+              maxFeePerGas: feeData.maxFeePerGas?.toString(),
+              maxPriorityFeePerGas: feeData.maxPriorityFeePerGas?.toString(),
+              timestamp: Date.now()
+            })
+          );
+          
+        } catch (error) {
+          logger.error(`Gas price update failed for ${networkName}:`, error);
+          relayMetrics.errorCount.inc({
+            network: networkName,
+            type: 'gas_price',
+            error_type: 'update_failed'
+          });
+        }
+      }
+    }, 30000); // Every 30 seconds
+
+    // Queue size monitoring
+    this.monitoringInterval = setInterval(async () => {
+      for (const [networkName, queue] of this.queues.entries()) {
+        try {
+          const [waiting, active, completed, failed] = await Promise.all([
+            queue.getWaiting().then(jobs => jobs.length),
+            queue.getActive().then(jobs => jobs.length),
+            queue.getCompleted().then(jobs => jobs.length),
+            queue.getFailed().then(jobs => jobs.length)
+          ]);
+          
+          relayMetrics.queueSize.set(
+            { network: networkName, priority: 'high' },
+            waiting
+          );
+          relayMetrics.queueSize.set(
+            { network: networkName, priority: 'normal' },
+            active
+          );
+          
+        } catch (error) {
+          logger.error(`Queue monitoring failed for ${networkName}:`, error);
+        }
+      }
+    }, 60000); // Every minute
+
+    // Heartbeat for WebSocket clients
+    this.heartbeatInterval = setInterval(() => {
+      this.broadcastToWebSocket({
+        type: 'heartbeat',
+        timestamp: Date.now(),
+        activeNetworks: Array.from(this.networks.keys()),
+        totalQueues: this.queues.size
+      });
+    }, 30000); // Every 30 seconds
+
+    logger.info('Background tasks started');
+  }
+
+  async start(port: number = parseInt(process.env.PORT || '3000')) {
+    await this.initialize();
+    
+    const server = this.app.listen(port, () => {
+      logger.info(`Production Relay server running on port ${port}`);
+      logger.info(`WebSocket server running on port ${process.env.WS_PORT || '8080'}`);
+      logger.info(`Initialized networks: ${Array.from(this.networks.keys()).join(', ')}`);
+    });
+
+    // Graceful shutdown handling
+    const shutdown = async (signal: string) => {
+      logger.info(`Received ${signal}, starting graceful shutdown...`);
+      this.isShuttingDown = true;
+
+      // Clear intervals
+      clearInterval(this.heartbeatInterval);
+      clearInterval(this.gasTracker);
+      clearInterval(this.monitoringInterval);
+
+      // Close server
+      server.close(async () => {
+        logger.info('HTTP server closed');
+
+        // Close WebSocket server
+        this.wsServer.close(() => {
+          logger.info('WebSocket server closed');
+        });
+
+        // Close workers
+        for (const [networkName, worker] of this.workers.entries()) {
+          logger.info(`Closing worker for ${networkName}`);
+          await worker.close();
+        }
+
+        // Close queues
+        for (const [networkName, queue] of this.queues.entries()) {
+          logger.info(`Closing queue for ${networkName}`);
+          await queue.close();
+        }
+
+        // Close Redis connection
+        if (this.redis.status === 'ready') {
+          await this.redis.quit();
+          logger.info('Redis connection closed');
+        }
+
+        // Close database
+        this.db.close((err) => {
+          if (err) {
+            logger.error('Error closing database:', err);
+          } else {
+            logger.info('Database closed');
+          }
+          
+          logger.info('Graceful shutdown completed');
+          process.exit(0);
+        });
+      });
+    };
+
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
+    process.on('SIGINT', () => shutdown('SIGINT'));
+    
+    return server;
+  }
+}
+
+// Export the relay class
+export { ProductionRelay, RelayRequest, UserOperation, Authorization };
+
+// If running as main module, start the server
+if (require.main === module) {
+  const relay = new ProductionRelay();
+  relay.start().catch((error) => {
+    logger.error('Failed to start relay server:', error);
+    process.exit(1);
+  });
+}
