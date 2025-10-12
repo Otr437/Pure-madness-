@@ -1,0 +1,1519 @@
+// server.js - Complete Production Web3 Server with Latest 2025 Features
+const express = require('express');
+const { ethers } = require('ethers');
+const jwt = require('jsonwebtoken');
+const bcrypt = require('bcryptjs');
+const cors = require('cors');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+const { body, validationResult, param } = require('express-validator');
+const basicAuth = require('express-basic-auth');
+const crypto = require('crypto');
+const sqlite3 = require('sqlite3').verbose();
+const WebSocket = require('ws');
+const Redis = require('ioredis');
+require('dotenv').config();
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// Enhanced security middleware
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'", "https://cdn.jsdelivr.net"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      connectSrc: ["'self'", "wss:", "https:"]
+    }
+  },
+  crossOriginEmbedderPolicy: false
+}));
+
+app.use(cors({
+  origin: process.env.ALLOWED_ORIGINS?.split(',') || '*',
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Wallet-Address', 'X-Chain-Id']
+}));
+
+app.use(express.json({ limit: '2mb' }));
+app.use(express.urlencoded({ extended: true, limit: '2mb' }));
+
+// Rate limiting with Redis
+const redis = new Redis({
+  host: process.env.REDIS_HOST || 'localhost',
+  port: process.env.REDIS_PORT || 6379,
+  password: process.env.REDIS_PASSWORD,
+  retryStrategy: (times) => Math.min(times * 50, 2000)
+});
+
+const createRateLimiter = (windowMs, max) => rateLimit({
+  windowMs,
+  max,
+  message: { error: 'Too many requests, please try again later' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => process.env.NODE_ENV === 'development'
+});
+
+app.use('/api/', createRateLimiter(15 * 60 * 1000, 100));
+app.use('/api/send-transaction', createRateLimiter(60 * 1000, 10));
+app.use('/api/batch-transactions', createRateLimiter(60 * 1000, 5));
+
+// Database setup with migrations
+const db = new sqlite3.Database(process.env.DATABASE_PATH || './crypto_server.sqlite');
+
+db.serialize(() => {
+  // Users table
+  db.run(`CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT UNIQUE NOT NULL,
+    password TEXT NOT NULL,
+    email TEXT UNIQUE,
+    wallet_address TEXT,
+    is_verified BOOLEAN DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`);
+
+  // Transactions table
+  db.run(`CREATE TABLE IF NOT EXISTS transactions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    hash TEXT UNIQUE NOT NULL,
+    from_address TEXT NOT NULL,
+    to_address TEXT NOT NULL,
+    value TEXT NOT NULL,
+    status TEXT NOT NULL,
+    gas_used TEXT,
+    gas_price TEXT,
+    block_number INTEGER,
+    chain_id INTEGER,
+    transaction_type TEXT DEFAULT 'legacy',
+    nonce INTEGER,
+    data TEXT,
+    user_id INTEGER,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+  )`);
+
+  // Signed messages table
+  db.run(`CREATE TABLE IF NOT EXISTS signed_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    message TEXT NOT NULL,
+    signature TEXT NOT NULL,
+    signer TEXT NOT NULL,
+    message_type TEXT DEFAULT 'plain',
+    chain_id INTEGER,
+    user_id INTEGER,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+  )`);
+
+  // Wallet connections table
+  db.run(`CREATE TABLE IF NOT EXISTS wallet_connections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    wallet_address TEXT NOT NULL,
+    wallet_type TEXT NOT NULL,
+    chain_id INTEGER NOT NULL,
+    is_active BOOLEAN DEFAULT 1,
+    last_connected DATETIME DEFAULT CURRENT_TIMESTAMP,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+  )`);
+
+  // Gasless transactions (meta-transactions)
+  db.run(`CREATE TABLE IF NOT EXISTS gasless_transactions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_address TEXT NOT NULL,
+    target_address TEXT NOT NULL,
+    data TEXT NOT NULL,
+    signature TEXT NOT NULL,
+    nonce INTEGER NOT NULL,
+    executed BOOLEAN DEFAULT 0,
+    executor_hash TEXT,
+    status TEXT DEFAULT 'pending',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    executed_at DATETIME
+  )`);
+
+  // EIP-7702 authorizations table
+  db.run(`CREATE TABLE IF NOT EXISTS eip7702_authorizations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    authorizer_address TEXT NOT NULL,
+    contract_address TEXT NOT NULL,
+    chain_id INTEGER NOT NULL,
+    nonce INTEGER NOT NULL,
+    signature TEXT NOT NULL,
+    authorization_data TEXT,
+    is_used BOOLEAN DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`);
+
+  // API keys table for programmatic access
+  db.run(`CREATE TABLE IF NOT EXISTS api_keys (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    api_key TEXT UNIQUE NOT NULL,
+    name TEXT,
+    permissions TEXT,
+    is_active BOOLEAN DEFAULT 1,
+    last_used DATETIME,
+    expires_at DATETIME,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+  )`);
+
+  // Create indexes
+  db.run(`CREATE INDEX IF NOT EXISTS idx_transactions_hash ON transactions(hash)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_transactions_from ON transactions(from_address)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_transactions_to ON transactions(to_address)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_wallet_connections_address ON wallet_connections(wallet_address)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_gasless_status ON gasless_transactions(status)`);
+});
+
+// Enhanced Wallet Manager with multi-chain support
+class WalletManager {
+  constructor() {
+    this.providers = new Map();
+    this.wallets = new Map();
+    this.setupProviders();
+  }
+
+  setupProviders() {
+    const chains = {
+      1: process.env.ETH_MAINNET_RPC || 'https://eth.llamarpc.com',
+      11155111: process.env.SEPOLIA_RPC || 'https://ethereum-sepolia-rpc.publicnode.com',
+      137: process.env.POLYGON_RPC || 'https://polygon-rpc.com',
+      8453: process.env.BASE_RPC || 'https://mainnet.base.org',
+      42161: process.env.ARBITRUM_RPC || 'https://arb1.arbitrum.io/rpc',
+      10: process.env.OPTIMISM_RPC || 'https://mainnet.optimism.io'
+    };
+
+    for (const [chainId, rpcUrl] of Object.entries(chains)) {
+      const provider = new ethers.JsonRpcProvider(rpcUrl);
+      this.providers.set(parseInt(chainId), provider);
+      
+      if (process.env.PRIVATE_KEY) {
+        const wallet = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
+        this.wallets.set(parseInt(chainId), wallet);
+      }
+    }
+  }
+
+  getProvider(chainId = 1) {
+    return this.providers.get(chainId) || this.providers.get(1);
+  }
+
+  getWallet(chainId = 1) {
+    return this.wallets.get(chainId) || this.wallets.get(1);
+  }
+
+  isValidAddress(address) {
+    return ethers.isAddress(address);
+  }
+
+  isValidAmount(amount) {
+    try {
+      ethers.parseEther(amount.toString());
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async signEIP7702Authorization(chainId, contractAddress, nonce) {
+    const wallet = this.getWallet(chainId);
+    const authorizationData = {
+      chainId: BigInt(chainId),
+      address: contractAddress,
+      nonce: BigInt(nonce)
+    };
+
+    // EIP-7702 authorization format
+    const domain = {
+      name: 'EIP7702Authorization',
+      version: '1',
+      chainId: chainId
+    };
+
+    const types = {
+      Authorization: [
+        { name: 'chainId', type: 'uint256' },
+        { name: 'address', type: 'address' },
+        { name: 'nonce', type: 'uint64' }
+      ]
+    };
+
+    const signature = await wallet.signTypedData(domain, types, authorizationData);
+    return { authorizationData, signature };
+  }
+}
+
+const walletManager = new WalletManager();
+
+// WebSocket server for real-time updates
+const wss = new WebSocket.Server({ noServer: true });
+
+wss.on('connection', (ws, req) => {
+  const clientId = crypto.randomUUID();
+  
+  ws.on('message', async (message) => {
+    try {
+      const data = JSON.parse(message);
+      
+      if (data.type === 'subscribe') {
+        ws.subscriptions = data.topics || [];
+      }
+      
+      if (data.type === 'ping') {
+        ws.send(JSON.stringify({ type: 'pong', timestamp: Date.now() }));
+      }
+    } catch (error) {
+      ws.send(JSON.stringify({ type: 'error', message: 'Invalid message format' }));
+    }
+  });
+
+  ws.on('close', () => {
+    console.log(`Client ${clientId} disconnected`);
+  });
+
+  ws.send(JSON.stringify({ type: 'connected', clientId }));
+});
+
+// Broadcast to WebSocket clients
+function broadcastToClients(topic, data) {
+  wss.clients.forEach((client) => {
+    if (client.readyState === WebSocket.OPEN && 
+        client.subscriptions?.includes(topic)) {
+      client.send(JSON.stringify({ topic, data, timestamp: Date.now() }));
+    }
+  });
+}
+
+// Authentication middleware
+const authenticateToken = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : null;
+
+  if (!token) {
+    return res.status(401).json({ error: 'Authentication token required' });
+  }
+
+  jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
+    if (err) {
+      return res.status(403).json({ error: 'Invalid or expired token' });
+    }
+    req.user = user;
+    next();
+  });
+};
+
+// API Key authentication middleware
+const authenticateApiKey = async (req, res, next) => {
+  const apiKey = req.headers['x-api-key'];
+  
+  if (!apiKey) {
+    return res.status(401).json({ error: 'API key required' });
+  }
+
+  db.get(
+    'SELECT * FROM api_keys WHERE api_key = ? AND is_active = 1 AND (expires_at IS NULL OR expires_at > datetime("now"))',
+    [apiKey],
+    (err, key) => {
+      if (err || !key) {
+        return res.status(403).json({ error: 'Invalid or expired API key' });
+      }
+
+      db.run('UPDATE api_keys SET last_used = datetime("now") WHERE id = ?', [key.id]);
+      req.apiKey = key;
+      req.user = { userId: key.user_id, apiKeyId: key.id };
+      next();
+    }
+  );
+};
+
+// Admin authentication
+const adminAuth = basicAuth({
+  users: { [process.env.ADMIN_USERNAME || 'admin']: process.env.ADMIN_PASSWORD || 'changeme' },
+  challenge: true,
+  realm: 'Admin Area'
+});
+
+// Validation error handler
+const handleValidationErrors = (req, res, next) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({
+      error: 'Validation failed',
+      details: errors.array()
+    });
+  }
+  next();
+};
+
+// ============================================
+// AUTH ROUTES
+// ============================================
+
+app.post('/api/register', [
+  body('username').isLength({ min: 3, max: 30 }).isAlphanumeric(),
+  body('password').isLength({ min: 8 }).matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]/),
+  body('email').optional().isEmail()
+], handleValidationErrors, async (req, res) => {
+  try {
+    const { username, password, email } = req.body;
+
+    db.get('SELECT id FROM users WHERE username = ? OR email = ?', [username, email], async (err, row) => {
+      if (err) return res.status(500).json({ error: 'Database error' });
+      if (row) return res.status(400).json({ error: 'Username or email already exists' });
+
+      const hashedPassword = await bcrypt.hash(password, 12);
+      
+      db.run(
+        'INSERT INTO users (username, password, email) VALUES (?, ?, ?)',
+        [username, hashedPassword, email],
+        function(err) {
+          if (err) return res.status(500).json({ error: 'Registration failed' });
+          
+          const token = jwt.sign(
+            { username, userId: this.lastID },
+            process.env.JWT_SECRET,
+            { expiresIn: '24h' }
+          );
+
+          res.status(201).json({
+            message: 'User registered successfully',
+            userId: this.lastID,
+            token,
+            expiresIn: '24h'
+          });
+        }
+      );
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Registration failed', details: error.message });
+  }
+});
+
+app.post('/api/login', [
+  body('username').isLength({ min: 1 }),
+  body('password').isLength({ min: 1 })
+], handleValidationErrors, async (req, res) => {
+  try {
+    const { username, password } = req.body;
+
+    db.get('SELECT * FROM users WHERE username = ?', [username], async (err, user) => {
+      if (err || !user) {
+        return res.status(400).json({ error: 'Invalid credentials' });
+      }
+
+      const validPassword = await bcrypt.compare(password, user.password);
+      if (!validPassword) {
+        return res.status(400).json({ error: 'Invalid credentials' });
+      }
+
+      const token = jwt.sign(
+        { username: user.username, userId: user.id },
+        process.env.JWT_SECRET,
+        { expiresIn: '24h' }
+      );
+
+      res.json({
+        token,
+        expiresIn: '24h',
+        user: {
+          id: user.id,
+          username: user.username,
+          email: user.email,
+          walletAddress: user.wallet_address
+        }
+      });
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Login failed', details: error.message });
+  }
+});
+
+app.post('/api/refresh-token', authenticateToken, (req, res) => {
+  try {
+    const token = jwt.sign(
+      { username: req.user.username, userId: req.user.userId },
+      process.env.JWT_SECRET,
+      { expiresIn: '24h' }
+    );
+
+    res.json({ token, expiresIn: '24h' });
+  } catch (error) {
+    res.status(500).json({ error: 'Token refresh failed' });
+  }
+});
+
+// ============================================
+// WALLET CONNECTION ROUTES
+// ============================================
+
+app.post('/api/wallet/connect', authenticateToken, [
+  body('walletAddress').custom(value => walletManager.isValidAddress(value)),
+  body('walletType').isIn(['metamask', 'tokenpocket', 'walletconnect', 'coinbase', 'trust', 'phantom', 'rainbow']),
+  body('chainId').isInt(),
+  body('signature').isLength({ min: 1 })
+], handleValidationErrors, async (req, res) => {
+  try {
+    const { walletAddress, walletType, chainId, signature } = req.body;
+
+    // Verify signature
+    const message = `Connect wallet ${walletAddress} to account ${req.user.userId}`;
+    const recoveredAddress = ethers.verifyMessage(message, signature);
+
+    if (recoveredAddress.toLowerCase() !== walletAddress.toLowerCase()) {
+      return res.status(400).json({ error: 'Invalid signature' });
+    }
+
+    // Update user wallet address
+    db.run('UPDATE users SET wallet_address = ? WHERE id = ?', [walletAddress, req.user.userId]);
+
+    // Insert wallet connection
+    db.run(
+      `INSERT INTO wallet_connections (user_id, wallet_address, wallet_type, chain_id) 
+       VALUES (?, ?, ?, ?)`,
+      [req.user.userId, walletAddress, walletType, chainId],
+      function(err) {
+        if (err) return res.status(500).json({ error: 'Failed to record connection' });
+
+        broadcastToClients('wallet_connected', {
+          userId: req.user.userId,
+          walletAddress,
+          walletType,
+          chainId
+        });
+
+        res.json({
+          message: 'Wallet connected successfully',
+          connectionId: this.lastID,
+          walletAddress,
+          chainId
+        });
+      }
+    );
+  } catch (error) {
+    res.status(500).json({ error: 'Wallet connection failed', details: error.message });
+  }
+});
+
+app.get('/api/wallet/connections', authenticateToken, (req, res) => {
+  db.all(
+    'SELECT * FROM wallet_connections WHERE user_id = ? ORDER BY last_connected DESC',
+    [req.user.userId],
+    (err, rows) => {
+      if (err) return res.status(500).json({ error: 'Database error' });
+      res.json({ connections: rows });
+    }
+  );
+});
+
+app.delete('/api/wallet/disconnect/:id', authenticateToken, (req, res) => {
+  db.run(
+    'UPDATE wallet_connections SET is_active = 0 WHERE id = ? AND user_id = ?',
+    [req.params.id, req.user.userId],
+    function(err) {
+      if (err) return res.status(500).json({ error: 'Disconnection failed' });
+      if (this.changes === 0) return res.status(404).json({ error: 'Connection not found' });
+      
+      res.json({ message: 'Wallet disconnected successfully' });
+    }
+  );
+});
+
+// ============================================
+// BLOCKCHAIN QUERY ROUTES
+// ============================================
+
+app.get('/api/balance/:address', authenticateToken, [
+  param('address').custom(value => walletManager.isValidAddress(value))
+], handleValidationErrors, async (req, res) => {
+  try {
+    const { address } = req.params;
+    const chainId = parseInt(req.query.chainId) || 1;
+    const provider = walletManager.getProvider(chainId);
+
+    const balance = await provider.getBalance(address);
+    const blockNumber = await provider.getBlockNumber();
+
+    res.json({
+      address,
+      chainId,
+      balance: ethers.formatEther(balance),
+      balanceWei: balance.toString(),
+      blockNumber
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch balance', details: error.message });
+  }
+});
+
+app.get('/api/gas-price', authenticateToken, async (req, res) => {
+  try {
+    const chainId = parseInt(req.query.chainId) || 1;
+    const provider = walletManager.getProvider(chainId);
+
+    const [feeData, block] = await Promise.all([
+      provider.getFeeData(),
+      provider.getBlock('latest')
+    ]);
+
+    res.json({
+      chainId,
+      gasPrice: ethers.formatUnits(feeData.gasPrice || '0', 'gwei'),
+      maxFeePerGas: ethers.formatUnits(feeData.maxFeePerGas || '0', 'gwei'),
+      maxPriorityFeePerGas: ethers.formatUnits(feeData.maxPriorityFeePerGas || '0', 'gwei'),
+      baseFeePerGas: ethers.formatUnits(block.baseFeePerGas || '0', 'gwei'),
+      blockNumber: block.number,
+      timestamp: block.timestamp
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch gas price', details: error.message });
+  }
+});
+
+app.post('/api/token/balance', authenticateToken, [
+  body('contractAddress').custom(value => walletManager.isValidAddress(value)),
+  body('walletAddress').custom(value => walletManager.isValidAddress(value)),
+  body('chainId').optional().isInt()
+], handleValidationErrors, async (req, res) => {
+  try {
+    const { contractAddress, walletAddress, chainId = 1 } = req.body;
+    const provider = walletManager.getProvider(chainId);
+
+    const abi = [
+      'function balanceOf(address) view returns (uint256)',
+      'function decimals() view returns (uint8)',
+      'function symbol() view returns (string)',
+      'function name() view returns (string)'
+    ];
+
+    const contract = new ethers.Contract(contractAddress, abi, provider);
+
+    const [balance, decimals, symbol, name] = await Promise.all([
+      contract.balanceOf(walletAddress),
+      contract.decimals().catch(() => 18),
+      contract.symbol().catch(() => 'UNKNOWN'),
+      contract.name().catch(() => 'Unknown Token')
+    ]);
+
+    res.json({
+      contractAddress,
+      walletAddress,
+      chainId,
+      balance: balance.toString(),
+      balanceFormatted: ethers.formatUnits(balance, decimals),
+      decimals,
+      symbol,
+      name
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch token balance', details: error.message });
+  }
+});
+
+app.get('/api/transaction/:hash', authenticateToken, async (req, res) => {
+  try {
+    const { hash } = req.params;
+    const chainId = parseInt(req.query.chainId) || 1;
+    const provider = walletManager.getProvider(chainId);
+
+    const [tx, receipt] = await Promise.all([
+      provider.getTransaction(hash),
+      provider.getTransactionReceipt(hash)
+    ]);
+
+    if (!tx) {
+      return res.status(404).json({ error: 'Transaction not found' });
+    }
+
+    res.json({
+      hash: tx.hash,
+      from: tx.from,
+      to: tx.to,
+      value: ethers.formatEther(tx.value),
+      valueWei: tx.value.toString(),
+      gasLimit: tx.gasLimit.toString(),
+      gasPrice: tx.gasPrice ? ethers.formatUnits(tx.gasPrice, 'gwei') : null,
+      maxFeePerGas: tx.maxFeePerGas ? ethers.formatUnits(tx.maxFeePerGas, 'gwei') : null,
+      maxPriorityFeePerGas: tx.maxPriorityFeePerGas ? ethers.formatUnits(tx.maxPriorityFeePerGas, 'gwei') : null,
+      nonce: tx.nonce,
+      data: tx.data,
+      chainId: tx.chainId.toString(),
+      type: tx.type,
+      blockNumber: tx.blockNumber,
+      blockHash: tx.blockHash,
+      timestamp: receipt ? (await provider.getBlock(receipt.blockNumber)).timestamp : null,
+      status: receipt ? (receipt.status === 1 ? 'success' : 'failed') : 'pending',
+      gasUsed: receipt?.gasUsed.toString(),
+      effectiveGasPrice: receipt?.gasPrice ? ethers.formatUnits(receipt.gasPrice, 'gwei') : null
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch transaction', details: error.message });
+  }
+});
+
+// ============================================
+// TRANSACTION ROUTES
+// ============================================
+
+app.post('/api/send-transaction', authenticateToken, [
+  body('to').custom(value => walletManager.isValidAddress(value)),
+  body('value').custom(value => walletManager.isValidAmount(value)),
+  body('chainId').optional().isInt(),
+  body('data').optional().isHexadecimal(),
+  body('gasLimit').optional().isInt()
+], handleValidationErrors, async (req, res) => {
+  try {
+    const { to, value, chainId = 1, data = '0x', gasLimit } = req.body;
+    const wallet = walletManager.getWallet(chainId);
+
+    if (!wallet) {
+      return res.status(400).json({ error: 'Wallet not configured for this chain' });
+    }
+
+    const valueWei = ethers.parseEther(value.toString());
+    const maxEth = ethers.parseEther(process.env.MAX_TRANSACTION_AMOUNT || '10');
+    
+    if (valueWei > maxEth) {
+      return res.status(400).json({
+        error: `Amount exceeds maximum limit of ${ethers.formatEther(maxEth)} ETH`
+      });
+    }
+
+    const feeData = await wallet.provider.getFeeData();
+    
+    const transaction = {
+      to,
+      value: valueWei,
+      data,
+      gasLimit: gasLimit || 21000,
+      maxFeePerGas: feeData.maxFeePerGas,
+      maxPriorityFeePerGas: feeData.maxPriorityFeePerGas,
+      chainId
+    };
+
+    const txResponse = await wallet.sendTransaction(transaction);
+    
+    broadcastToClients('transaction_sent', {
+      hash: txResponse.hash,
+      from: txResponse.from,
+      to: txResponse.to,
+      value: value
+    });
+
+    const receipt = await txResponse.wait();
+
+    db.run(
+      `INSERT INTO transactions (hash, from_address, to_address, value, status, gas_used, gas_price, block_number, chain_id, nonce, data, user_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        receipt.hash,
+        receipt.from,
+        receipt.to,
+        value,
+        receipt.status === 1 ? 'success' : 'failed',
+        receipt.gasUsed.toString(),
+        receipt.gasPrice ? receipt.gasPrice.toString() : null,
+        receipt.blockNumber,
+        chainId,
+        txResponse.nonce,
+        data,
+        req.user.userId
+      ]
+    );
+
+    broadcastToClients('transaction_confirmed', {
+      hash: receipt.hash,
+      status: receipt.status === 1 ? 'success' : 'failed',
+      blockNumber: receipt.blockNumber
+    });
+
+    res.json({
+      hash: receipt.hash,
+      from: receipt.from,
+      to: receipt.to,
+      value: value,
+      status: receipt.status === 1 ? 'success' : 'failed',
+      blockNumber: receipt.blockNumber,
+      gasUsed: receipt.gasUsed.toString(),
+      effectiveGasPrice: receipt.gasPrice ? ethers.formatUnits(receipt.gasPrice, 'gwei') : null,
+      transactionFee: receipt.gasUsed && receipt.gasPrice ? 
+        ethers.formatEther(receipt.gasUsed * receipt.gasPrice) : null
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: 'Transaction failed',
+      details: error.message,
+      code: error.code
+    });
+  }
+});
+
+app.post('/api/batch-transactions', authenticateToken, [
+  body('transactions').isArray({ min: 1, max: 10 }),
+  body('transactions.*.to').custom(value => walletManager.isValidAddress(value)),
+  body('transactions.*.value').custom(value => walletManager.isValidAmount(value)),
+  body('chainId').optional().isInt()
+], handleValidationErrors, async (req, res) => {
+  try {
+    const { transactions, chainId = 1 } = req.body;
+    const wallet = walletManager.getWallet(chainId);
+
+    if (!wallet) {
+      return res.status(400).json({ error: 'Wallet not configured for this chain' });
+    }
+
+    const results = [];
+    const feeData = await wallet.provider.getFeeData();
+
+    for (const tx of transactions) {
+      try {
+        const valueWei = ethers.parseEther(tx.value.toString());
+        
+        const transaction = {
+          to: tx.to,
+          value: valueWei,
+          data: tx.data || '0x',
+          gasLimit: tx.gasLimit || 21000,
+          maxFeePerGas: feeData.maxFeePerGas,
+          maxPriorityFeePerGas: feeData.maxPriorityFeePerGas,
+          chainId
+        };
+
+        const txResponse = await wallet.sendTransaction(transaction);
+        const receipt = await txResponse.wait();
+
+        db.run(
+          `INSERT INTO transactions (hash, from_address, to_address, value, status, gas_used, gas_price, block_number, chain_id, user_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [receipt.hash, receipt.from, receipt.to, tx.value, receipt.status === 1 ? 'success' : 'failed',
+           receipt.gasUsed.toString(), receipt.gasPrice?.toString(), receipt.blockNumber, chainId, req.user.userId]
+        );
+
+        results.push({
+          to: tx.to,
+          hash: receipt.hash,
+          status: receipt.status === 1 ? 'success' : 'failed',
+          blockNumber: receipt.blockNumber,
+          gasUsed: receipt.gasUsed.toString()
+        });
+      } catch (txError) {
+        results.push({
+          to: tx.to,
+          error: txError.message,
+          status: 'failed'
+        });
+      }
+    }
+
+    res.json({ results, totalTransactions: transactions.length });
+  } catch (error) {
+    res.status(500).json({ error: 'Batch transactions failed', details: error.message });
+  }
+});
+
+// ============================================
+// GASLESS TRANSACTIONS (META-TRANSACTIONS)
+// ============================================
+
+app.post('/api/gasless/submit', authenticateToken, [
+  body('from').custom(value => walletManager.isValidAddress(value)),
+  body('to').custom(value => walletManager.isValidAddress(value)),
+  body('data').isHexadecimal(),
+  body('signature').isLength({ min: 1 }),
+  body('nonce').isInt(),
+  body('chainId').optional().isInt()
+], handleValidationErrors, async (req, res) => {
+  try {
+    const { from, to, data, signature, nonce, chainId = 1 } = req.body;
+
+    // Verify signature
+    const messageHash = ethers.solidityPackedKeccak256(
+      ['address', 'address', 'bytes', 'uint256', 'uint256'],
+      [from, to, data, nonce, chainId]
+    );
+
+    const recoveredAddress = ethers.recoverAddress(messageHash, signature);
+
+    if (recoveredAddress.toLowerCase() !== from.toLowerCase()) {
+      return res.status(400).json({ error: 'Invalid signature' });
+    }
+
+    // Store gasless transaction
+    db.run(
+      `INSERT INTO gasless_transactions (user_address, target_address, data, signature, nonce)
+       VALUES (?, ?, ?, ?, ?)`,
+      [from, to, data, signature, nonce],
+      function(err) {
+        if (err) return res.status(500).json({ error: 'Failed to submit gasless transaction' });
+
+        res.json({
+          message: 'Gasless transaction submitted',
+          transactionId: this.lastID,
+          status: 'pending',
+          estimatedExecution: '2-5 minutes'
+        });
+
+        // Broadcast to executors
+        broadcastToClients('gasless_transaction_pending', {
+          id: this.lastID,
+          from,
+          to,
+          data
+        });
+      }
+    );
+  } catch (error) {
+    res.status(500).json({ error: 'Gasless transaction submission failed', details: error.message });
+  }
+});
+
+app.post('/api/gasless/execute/:id', authenticateToken, async (req, res) => {
+  try {
+    const transactionId = req.params.id;
+    const chainId = parseInt(req.body.chainId) || 1;
+    const wallet = walletManager.getWallet(chainId);
+
+    if (!wallet) {
+      return res.status(400).json({ error: 'Wallet not configured for this chain' });
+    }
+
+    db.get(
+      'SELECT * FROM gasless_transactions WHERE id = ? AND executed = 0',
+      [transactionId],
+      async (err, gasTx) => {
+        if (err || !gasTx) {
+          return res.status(404).json({ error: 'Gasless transaction not found or already executed' });
+        }
+
+        try {
+          // Execute the transaction on behalf of the user
+          const tx = await wallet.sendTransaction({
+            to: gasTx.target_address,
+            data: gasTx.data,
+            gasLimit: 100000
+          });
+
+          const receipt = await tx.wait();
+
+          db.run(
+            `UPDATE gasless_transactions 
+             SET executed = 1, executor_hash = ?, status = ?, executed_at = datetime('now')
+             WHERE id = ?`,
+            [receipt.hash, receipt.status === 1 ? 'success' : 'failed', transactionId]
+          );
+
+          db.run(
+            `INSERT INTO transactions (hash, from_address, to_address, value, status, gas_used, block_number, chain_id, transaction_type, user_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [receipt.hash, wallet.address, gasTx.target_address, '0', receipt.status === 1 ? 'success' : 'failed',
+             receipt.gasUsed.toString(), receipt.blockNumber, chainId, 'gasless', req.user.userId]
+          );
+
+          broadcastToClients('gasless_transaction_executed', {
+            id: transactionId,
+            hash: receipt.hash,
+            status: receipt.status === 1 ? 'success' : 'failed'
+          });
+
+          res.json({
+            message: 'Gasless transaction executed',
+            hash: receipt.hash,
+            status: receipt.status === 1 ? 'success' : 'failed',
+            gasUsed: receipt.gasUsed.toString(),
+            blockNumber: receipt.blockNumber
+          });
+        } catch (execError) {
+          db.run(
+            `UPDATE gasless_transactions SET status = ? WHERE id = ?`,
+            ['failed', transactionId]
+          );
+
+          res.status(500).json({ error: 'Transaction execution failed', details: execError.message });
+        }
+      }
+    );
+  } catch (error) {
+    res.status(500).json({ error: 'Gasless execution failed', details: error.message });
+  }
+});
+
+app.get('/api/gasless/pending', authenticateToken, (req, res) => {
+  db.all(
+    'SELECT * FROM gasless_transactions WHERE executed = 0 AND status = "pending" ORDER BY created_at DESC LIMIT 50',
+    (err, rows) => {
+      if (err) return res.status(500).json({ error: 'Database error' });
+      res.json({ pendingTransactions: rows });
+    }
+  );
+});
+
+app.get('/api/gasless/history', authenticateToken, (req, res) => {
+  db.all(
+    'SELECT * FROM gasless_transactions WHERE user_address IN (SELECT wallet_address FROM wallet_connections WHERE user_id = ?) ORDER BY created_at DESC LIMIT 100',
+    [req.user.userId],
+    (err, rows) => {
+      if (err) return res.status(500).json({ error: 'Database error' });
+      res.json({ gaslessHistory: rows });
+    }
+  );
+});
+
+// ============================================
+// EIP-7702 AUTHORIZATION ROUTES
+// ============================================
+
+app.post('/api/eip7702/create-authorization', authenticateToken, [
+  body('contractAddress').custom(value => walletManager.isValidAddress(value)),
+  body('chainId').isInt(),
+  body('nonce').isInt()
+], handleValidationErrors, async (req, res) => {
+  try {
+    const { contractAddress, chainId, nonce } = req.body;
+
+    const { authorizationData, signature } = await walletManager.signEIP7702Authorization(
+      chainId,
+      contractAddress,
+      nonce
+    );
+
+    db.run(
+      `INSERT INTO eip7702_authorizations (authorizer_address, contract_address, chain_id, nonce, signature, authorization_data)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [
+        walletManager.getWallet(chainId).address,
+        contractAddress,
+        chainId,
+        nonce,
+        signature,
+        JSON.stringify(authorizationData)
+      ],
+      function(err) {
+        if (err) return res.status(500).json({ error: 'Failed to create authorization' });
+
+        res.json({
+          message: 'EIP-7702 authorization created',
+          authorizationId: this.lastID,
+          authorizerAddress: walletManager.getWallet(chainId).address,
+          contractAddress,
+          chainId,
+          nonce,
+          signature,
+          authorizationData
+        });
+      }
+    );
+  } catch (error) {
+    res.status(500).json({ error: 'Authorization creation failed', details: error.message });
+  }
+});
+
+app.post('/api/eip7702/execute-with-authorization', authenticateToken, [
+  body('authorizationId').isInt(),
+  body('transactionData').isHexadecimal(),
+  body('chainId').isInt()
+], handleValidationErrors, async (req, res) => {
+  try {
+    const { authorizationId, transactionData, chainId } = req.body;
+
+    db.get(
+      'SELECT * FROM eip7702_authorizations WHERE id = ? AND is_used = 0',
+      [authorizationId],
+      async (err, auth) => {
+        if (err || !auth) {
+          return res.status(404).json({ error: 'Authorization not found or already used' });
+        }
+
+        const wallet = walletManager.getWallet(chainId);
+        
+        try {
+          // Execute transaction with EIP-7702 authorization
+          const tx = await wallet.sendTransaction({
+            to: auth.contract_address,
+            data: transactionData,
+            gasLimit: 200000,
+            type: 4, // EIP-7702 transaction type
+            authorizationList: [
+              {
+                chainId: BigInt(auth.chain_id),
+                address: auth.contract_address,
+                nonce: BigInt(auth.nonce),
+                v: ethers.Signature.from(auth.signature).v,
+                r: ethers.Signature.from(auth.signature).r,
+                s: ethers.Signature.from(auth.signature).s
+              }
+            ]
+          });
+
+          const receipt = await tx.wait();
+
+          db.run(
+            'UPDATE eip7702_authorizations SET is_used = 1 WHERE id = ?',
+            [authorizationId]
+          );
+
+          db.run(
+            `INSERT INTO transactions (hash, from_address, to_address, value, status, gas_used, block_number, chain_id, transaction_type, user_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [receipt.hash, wallet.address, auth.contract_address, '0', receipt.status === 1 ? 'success' : 'failed',
+             receipt.gasUsed.toString(), receipt.blockNumber, chainId, 'eip7702', req.user.userId]
+          );
+
+          res.json({
+            message: 'EIP-7702 transaction executed',
+            hash: receipt.hash,
+            status: receipt.status === 1 ? 'success' : 'failed',
+            gasUsed: receipt.gasUsed.toString(),
+            blockNumber: receipt.blockNumber
+          });
+        } catch (execError) {
+          res.status(500).json({ error: 'EIP-7702 execution failed', details: execError.message });
+        }
+      }
+    );
+  } catch (error) {
+    res.status(500).json({ error: 'EIP-7702 execution failed', details: error.message });
+  }
+});
+
+app.get('/api/eip7702/authorizations', authenticateToken, (req, res) => {
+  db.all(
+    'SELECT * FROM eip7702_authorizations ORDER BY created_at DESC LIMIT 100',
+    (err, rows) => {
+      if (err) return res.status(500).json({ error: 'Database error' });
+      res.json({ authorizations: rows });
+    }
+  );
+});
+
+// ============================================
+// MESSAGE SIGNING ROUTES
+// ============================================
+
+app.post('/api/sign-message', authenticateToken, [
+  body('message').isLength({ min: 1, max: 5000 }),
+  body('chainId').optional().isInt()
+], handleValidationErrors, async (req, res) => {
+  try {
+    const { message, chainId = 1 } = req.body;
+    const wallet = walletManager.getWallet(chainId);
+
+    if (!wallet) {
+      return res.status(400).json({ error: 'Wallet not configured for this chain' });
+    }
+
+    const signature = await wallet.signMessage(message);
+
+    db.run(
+      `INSERT INTO signed_messages (message, signature, signer, message_type, chain_id, user_id)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [message, signature, wallet.address, 'plain', chainId, req.user.userId],
+      function(err) {
+        if (err) return res.status(500).json({ error: 'Failed to record signed message' });
+
+        res.json({
+          message,
+          signature,
+          signer: wallet.address,
+          chainId,
+          messageId: this.lastID
+        });
+      }
+    );
+  } catch (error) {
+    res.status(500).json({ error: 'Message signing failed', details: error.message });
+  }
+});
+
+app.post('/api/sign-typed-data', authenticateToken, [
+  body('domain').isObject(),
+  body('types').isObject(),
+  body('message').isObject(),
+  body('primaryType').isString(),
+  body('chainId').optional().isInt()
+], handleValidationErrors, async (req, res) => {
+  try {
+    const { domain, types, message, primaryType, chainId = 1 } = req.body;
+    const wallet = walletManager.getWallet(chainId);
+
+    if (!wallet) {
+      return res.status(400).json({ error: 'Wallet not configured for this chain' });
+    }
+
+    const { EIP712Domain, ...restTypes } = types;
+    const signature = await wallet.signTypedData(domain, restTypes, message);
+
+    db.run(
+      `INSERT INTO signed_messages (message, signature, signer, message_type, chain_id, user_id)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [JSON.stringify(message), signature, wallet.address, 'EIP712', chainId, req.user.userId],
+      function(err) {
+        if (err) return res.status(500).json({ error: 'Failed to record signed message' });
+
+        res.json({
+          signature,
+          message,
+          domain,
+          primaryType,
+          signer: wallet.address,
+          chainId,
+          messageId: this.lastID
+        });
+      }
+    );
+  } catch (error) {
+    res.status(500).json({ error: 'Typed data signing failed', details: error.message });
+  }
+});
+
+app.post('/api/verify-signature', [
+  body('message').isLength({ min: 1 }),
+  body('signature').isLength({ min: 1 }),
+  body('expectedSigner').optional().custom(value => walletManager.isValidAddress(value))
+], handleValidationErrors, async (req, res) => {
+  try {
+    const { message, signature, expectedSigner } = req.body;
+
+    const recoveredAddress = ethers.verifyMessage(message, signature);
+    const isValid = expectedSigner ? 
+      recoveredAddress.toLowerCase() === expectedSigner.toLowerCase() : 
+      true;
+
+    res.json({
+      isValid,
+      recoveredAddress,
+      expectedSigner: expectedSigner || null,
+      message
+    });
+  } catch (error) {
+    res.status(400).json({ error: 'Signature verification failed', details: error.message });
+  }
+});
+
+// ============================================
+// TRANSACTION HISTORY ROUTES
+// ============================================
+
+app.get('/api/transaction-history', authenticateToken, (req, res) => {
+  const page = parseInt(req.query.page) || 1;
+  const limit = Math.min(parseInt(req.query.limit) || 20, 100);
+  const offset = (page - 1) * limit;
+  const chainId = req.query.chainId ? parseInt(req.query.chainId) : null;
+
+  let query = 'SELECT * FROM transactions WHERE user_id = ?';
+  const params = [req.user.userId];
+
+  if (chainId) {
+    query += ' AND chain_id = ?';
+    params.push(chainId);
+  }
+
+  query += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
+  params.push(limit, offset);
+
+  db.all(query, params, (err, rows) => {
+    if (err) return res.status(500).json({ error: 'Database error' });
+
+    db.get(
+      'SELECT COUNT(*) as total FROM transactions WHERE user_id = ?' + (chainId ? ' AND chain_id = ?' : ''),
+      chainId ? [req.user.userId, chainId] : [req.user.userId],
+      (err, countRow) => {
+        if (err) return res.status(500).json({ error: 'Database error' });
+
+        res.json({
+          transactions: rows,
+          pagination: {
+            page,
+            limit,
+            total: countRow.total,
+            pages: Math.ceil(countRow.total / limit)
+          }
+        });
+      }
+    );
+  });
+});
+
+app.get('/api/signed-messages', authenticateToken, (req, res) => {
+  const page = parseInt(req.query.page) || 1;
+  const limit = Math.min(parseInt(req.query.limit) || 20, 100);
+  const offset = (page - 1) * limit;
+
+  db.all(
+    'SELECT * FROM signed_messages WHERE user_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?',
+    [req.user.userId, limit, offset],
+    (err, rows) => {
+      if (err) return res.status(500).json({ error: 'Database error' });
+      res.json({ signedMessages: rows });
+    }
+  );
+});
+
+// ============================================
+// API KEY MANAGEMENT ROUTES
+// ============================================
+
+app.post('/api/api-keys/create', authenticateToken, [
+  body('name').isLength({ min: 1, max: 100 }),
+  body('permissions').optional().isArray(),
+  body('expiresInDays').optional().isInt({ min: 1, max: 365 })
+], handleValidationErrors, (req, res) => {
+  try {
+    const { name, permissions = ['read'], expiresInDays } = req.body;
+    const apiKey = 'sk_' + crypto.randomBytes(32).toString('hex');
+    const expiresAt = expiresInDays ? 
+      new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000).toISOString() : 
+      null;
+
+    db.run(
+      `INSERT INTO api_keys (user_id, api_key, name, permissions, expires_at)
+       VALUES (?, ?, ?, ?, ?)`,
+      [req.user.userId, apiKey, name, JSON.stringify(permissions), expiresAt],
+      function(err) {
+        if (err) return res.status(500).json({ error: 'Failed to create API key' });
+
+        res.json({
+          message: 'API key created successfully',
+          apiKey,
+          keyId: this.lastID,
+          name,
+          permissions,
+          expiresAt,
+          warning: 'Store this key securely. It will not be shown again.'
+        });
+      }
+    );
+  } catch (error) {
+    res.status(500).json({ error: 'API key creation failed', details: error.message });
+  }
+});
+
+app.get('/api/api-keys', authenticateToken, (req, res) => {
+  db.all(
+    'SELECT id, name, permissions, is_active, last_used, expires_at, created_at FROM api_keys WHERE user_id = ? ORDER BY created_at DESC',
+    [req.user.userId],
+    (err, rows) => {
+      if (err) return res.status(500).json({ error: 'Database error' });
+      res.json({ apiKeys: rows });
+    }
+  );
+});
+
+app.delete('/api/api-keys/:id', authenticateToken, (req, res) => {
+  db.run(
+    'UPDATE api_keys SET is_active = 0 WHERE id = ? AND user_id = ?',
+    [req.params.id, req.user.userId],
+    function(err) {
+      if (err) return res.status(500).json({ error: 'Failed to revoke API key' });
+      if (this.changes === 0) return res.status(404).json({ error: 'API key not found' });
+      
+      res.json({ message: 'API key revoked successfully' });
+    }
+  );
+});
+
+// ============================================
+// ADMIN ROUTES
+// ============================================
+
+app.get('/api/admin/stats', authenticateToken, adminAuth, async (req, res) => {
+  try {
+    const stats = await new Promise((resolve, reject) => {
+      db.all(
+        `SELECT 
+          (SELECT COUNT(*) FROM users) as total_users,
+          (SELECT COUNT(*) FROM transactions) as total_transactions,
+          (SELECT COUNT(*) FROM wallet_connections WHERE is_active = 1) as active_wallets,
+          (SELECT COUNT(*) FROM gasless_transactions WHERE executed = 0) as pending_gasless,
+          (SELECT COUNT(*) FROM eip7702_authorizations WHERE is_used = 0) as unused_authorizations,
+          (SELECT SUM(CAST(value AS REAL)) FROM transactions WHERE status = 'success') as total_volume`,
+        (err, rows) => {
+          if (err) reject(err);
+          else resolve(rows[0]);
+        }
+      );
+    });
+
+    res.json({ stats });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch stats' });
+  }
+});
+
+app.get('/api/admin/transactions', authenticateToken, adminAuth, (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit) || 100, 500);
+  
+  db.all(
+    'SELECT * FROM transactions ORDER BY created_at DESC LIMIT ?',
+    [limit],
+    (err, rows) => {
+      if (err) return res.status(500).json({ error: 'Database error' });
+      res.json({ transactions: rows });
+    }
+  );
+});
+
+app.get('/api/admin/users', authenticateToken, adminAuth, (req, res) => {
+  db.all(
+    'SELECT id, username, email, wallet_address, is_verified, created_at FROM users ORDER BY created_at DESC LIMIT 100',
+    (err, rows) => {
+      if (err) return res.status(500).json({ error: 'Database error' });
+      res.json({ users: rows });
+    }
+  );
+});
+
+// ============================================
+// UTILITY ROUTES
+// ============================================
+
+app.get('/api/health', (req, res) => {
+  const healthcheck = {
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    environment: process.env.NODE_ENV || 'development',
+    version: '1.0.0',
+    chains: Array.from(walletManager.providers.keys()),
+    database: 'connected'
+  };
+
+  db.get('SELECT 1', (err) => {
+    if (err) healthcheck.database = 'error';
+    res.json(healthcheck);
+  });
+});
+
+app.get('/api/chains', (req, res) => {
+  const chains = [
+    { chainId: 1, name: 'Ethereum Mainnet', symbol: 'ETH', explorer: 'https://etherscan.io' },
+    { chainId: 11155111, name: 'Sepolia Testnet', symbol: 'SepoliaETH', explorer: 'https://sepolia.etherscan.io' },
+    { chainId: 137, name: 'Polygon', symbol: 'MATIC', explorer: 'https://polygonscan.com' },
+    { chainId: 8453, name: 'Base', symbol: 'ETH', explorer: 'https://basescan.org' },
+    { chainId: 42161, name: 'Arbitrum One', symbol: 'ETH', explorer: 'https://arbiscan.io' },
+    { chainId: 10, name: 'Optimism', symbol: 'ETH', explorer: 'https://optimistic.etherscan.io' }
+  ];
+
+  res.json({ chains });
+});
+
+app.get('/api/wallet/info', authenticateToken, async (req, res) => {
+  try {
+    const chainId = parseInt(req.query.chainId) || 1;
+    const wallet = walletManager.getWallet(chainId);
+
+    if (!wallet) {
+      return res.status(400).json({ error: 'Wallet not configured for this chain' });
+    }
+
+    const [balance, nonce, feeData] = await Promise.all([
+      wallet.provider.getBalance(wallet.address),
+      wallet.provider.getTransactionCount(wallet.address),
+      wallet.provider.getFeeData()
+    ]);
+
+    res.json({
+      address: wallet.address,
+      chainId,
+      balance: ethers.formatEther(balance),
+      balanceWei: balance.toString(),
+      nonce,
+      gasPrice: feeData.gasPrice ? ethers.formatUnits(feeData.gasPrice, 'gwei') : null,
+      maxFeePerGas: feeData.maxFeePerGas ? ethers.formatUnits(feeData.maxFeePerGas, 'gwei') : null
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch wallet info', details: error.message });
+  }
+});
+
+// ============================================
+// ERROR HANDLING
+// ============================================
+
+app.use((error, req, res, next) => {
+  console.error('Error:', error);
+  
+  const errorResponse = {
+    error: 'Internal server error',
+    timestamp: new Date().toISOString()
+  };
+
+  if (process.env.NODE_ENV === 'development') {
+    errorResponse.details = error.message;
+    errorResponse.stack = error.stack;
+  }
+
+  res.status(500).json(errorResponse);
+});
+
+app.use('*', (req, res) => {
+  res.status(404).json({
+    error: 'Endpoint not found',
+    path: req.originalUrl,
+    method: req.method
+  });
+});
+
+// ============================================
+// SERVER STARTUP
+// ============================================
+
+const server = app.listen(PORT, () => {
+  console.log('═══════════════════════════════════════════════════');
+  console.log('🚀 Web3 Express Server (2025 Edition)');
+  console.log('═══════════════════════════════════════════════════');
+  console.log(`📡 Server: http://localhost:${PORT}`);
+  console.log(`💰 Wallet: ${walletManager.getWallet(1)?.address || 'Not configured'}`);
+  console.log(`🔗 Chains: ${Array.from(walletManager.providers.keys()).join(', ')}`);
+  console.log(`🌐 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log('═══════════════════════════════════════════════════');
+  console.log('\n✅ Features enabled:');
+  console.log('  • Multi-wallet support (MetaMask, TokenPocket, etc.)');
+  console.log('  • Gasless transactions (meta-transactions)');
+  console.log('  • EIP-7702 account abstraction');
+  console.log('  • Real-time WebSocket updates');
+  console.log('  • Multi-chain support');
+  console.log('  • API key authentication');
+  console.log('  • Transaction history & analytics');
+  console.log('═══════════════════════════════════════════════════\n');
+});
+
+// Handle WebSocket upgrade
+server.on('upgrade', (request, socket, head) => {
+  wss.handleUpgrade(request, socket, head, (ws) => {
+    wss.emit('connection', ws, request);
+  });
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('SIGTERM signal received: closing HTTP server');
+  server.close(() => {
+    console.log('HTTP server closed');
+    db.close(() => {
+      console.log('Database connection closed');
+      redis.disconnect();
+      process.exit(0);
+    });
+  });
+});
+
+process.on('SIGINT', () => {
+  console.log('SIGINT signal received: closing HTTP server');
+  server.close(() => {
+    console.log('HTTP server closed');
+    db.close(() => {
+      console.log('Database connection closed');
+      redis.disconnect();
+      process.exit(0);
+    });
+  });
+});
+
+module.exports = app;
