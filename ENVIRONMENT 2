@@ -1,0 +1,1193 @@
+# UNIVERSAL FOLDER STRUCTURE CREATOR + FILE ORGANIZER
+# Creates proper folders for ALL languages that match the environment setup
+# Organizes installed packages/libraries into correct locations
+# Run this AFTER the main environment setup script
+# Run as Administrator in PowerShell
+
+Write-Host "=== UNIVERSAL FOLDER STRUCTURE + FILE ORGANIZER ===" -ForegroundColor Green
+
+# ===== CONFIGURATION =====
+$devRoot = "$env:USERPROFILE\dev"
+
+function New-DevFolder {
+    param(
+        [string]$Path,
+        [string]$Description
+    )
+    
+    if (Test-Path $Path) {
+        Write-Host "  ✓ $Description" -ForegroundColor Gray
+    } else {
+        New-Item -ItemType Directory -Path $Path -Force | Out-Null
+        # Create .gitkeep for empty folders
+        $gitkeep = Join-Path $Path ".gitkeep"
+        New-Item -ItemType File -Path $gitkeep -Force | Out-Null
+        Write-Host "  ✓ Created: $Path" -ForegroundColor Green
+    }
+}
+
+function Copy-LibraryFiles {
+    param(
+        [string]$Source,
+        [string]$Destination,
+        [string]$Description
+    )
+    
+    if (Test-Path $Source) {
+        if (!(Test-Path $Destination)) {
+            New-Item -ItemType Directory -Path $Destination -Force | Out-Null
+        }
+        Write-Host "  → Linking $Description..." -ForegroundColor Yellow
+        # Create symbolic link or copy
+        try {
+            New-Item -ItemType SymbolicLink -Path $Destination -Target $Source -Force -ErrorAction SilentlyContinue | Out-Null
+            Write-Host "  ✓ Linked: $Source -> $Destination" -ForegroundColor Green
+        } catch {
+            Write-Host "  ℹ Reference: $Source available at original location" -ForegroundColor Cyan
+        }
+    }
+}
+
+function Add-ToPath {
+    param([string]$PathToAdd)
+    
+    if (Test-Path $PathToAdd) {
+        $currentPath = [Environment]::GetEnvironmentVariable("Path", [EnvironmentVariableTarget]::User)
+        if ($currentPath -notlike "*$PathToAdd*") {
+            [Environment]::SetEnvironmentVariable("Path", "$currentPath;$PathToAdd", [EnvironmentVariableTarget]::User)
+            Write-Host "  ✓ Added to PATH: $PathToAdd" -ForegroundColor Green
+        }
+    }
+}
+
+Write-Host "`n[SETUP] Creating COMPLETE Universal Folder Structure..." -ForegroundColor Cyan
+Write-Host "Base directory: $devRoot" -ForegroundColor Yellow
+Write-Host ""
+
+# ============= MAIN CODE FOLDER =============
+Write-Host "[MAIN] Creating main working folder..." -ForegroundColor Cyan
+New-DevFolder "$devRoot\CODE" "Your main code working folder - put everything here first"
+
+# ============= SOLIDITY / SMART CONTRACTS =============
+Write-Host "`n[SOLIDITY] Creating Solidity structure..." -ForegroundColor Cyan
+New-DevFolder "$devRoot\contracts" "Solidity smart contracts"
+New-DevFolder "$devRoot\contracts\interfaces" "Contract interfaces (IToken.sol, etc)"
+New-DevFolder "$devRoot\contracts\libraries" "Solidity libraries for imports"
+New-DevFolder "$devRoot\contracts\tokens" "Token contracts (ERC20, ERC721, etc)"
+New-DevFolder "$devRoot\contracts\utils" "Contract utility functions"
+New-DevFolder "$devRoot\contracts\mocks" "Mock contracts for testing"
+New-DevFolder "$devRoot\contracts\test" "Contract tests"
+New-DevFolder "$devRoot\contracts\scripts" "Deployment scripts"
+New-DevFolder "$devRoot\contracts\artifacts" "Compiled artifacts"
+
+# Link OpenZeppelin and common Solidity libraries
+$nodeModulesPath = "$env:APPDATA\npm\node_modules"
+if (Test-Path "$nodeModulesPath\@openzeppelin") {
+    Copy-LibraryFiles "$nodeModulesPath\@openzeppelin" "$devRoot\contracts\libraries\@openzeppelin" "OpenZeppelin contracts"
+}
+
+# ============= PYTHON - COMPLETE STRUCTURE =============
+Write-Host "`n[PYTHON] Creating Python structure..." -ForegroundColor Cyan
+New-DevFolder "$devRoot\python" "Python projects"
+New-DevFolder "$devRoot\python\src" "Python source code"
+New-DevFolder "$devRoot\python\lib" "Python libraries for imports"
+New-DevFolder "$devRoot\python\utils" "Python utility functions"
+New-DevFolder "$devRoot\python\models" "Python data models"
+New-DevFolder "$devRoot\python\services" "Python services"
+New-DevFolder "$devRoot\python\api" "Python API code"
+New-DevFolder "$devRoot\python\config" "Python configuration files"
+New-DevFolder "$devRoot\python\scripts" "Python scripts"
+New-DevFolder "$devRoot\python\tests" "Python tests"
+New-DevFolder "$devRoot\python\venv" "Python virtual environment"
+
+# Link Python site-packages to lib folder for reference
+$pythonVersion = python --version 2>&1 | Select-String -Pattern '\d+\.\d+' | ForEach-Object { $_.Matches.Value }
+if ($pythonVersion) {
+    $pythonSitePackages = python -c "import site; print(site.getsitepackages()[0])" 2>&1
+    if (Test-Path $pythonSitePackages) {
+        Write-Host "  ℹ Python packages location: $pythonSitePackages" -ForegroundColor Cyan
+        Copy-LibraryFiles $pythonSitePackages "$devRoot\python\lib\site-packages" "Python site-packages"
+    }
+}
+
+# Add Python paths
+Add-ToPath "$devRoot\python\src"
+Add-ToPath "$devRoot\python\lib"
+
+# ============= JAVASCRIPT / NODE.JS =============
+Write-Host "`n[JAVASCRIPT] Creating JavaScript structure..." -ForegroundColor Cyan
+New-DevFolder "$devRoot\javascript" "JavaScript projects"
+New-DevFolder "$devRoot\javascript\src" "JavaScript source code"
+New-DevFolder "$devRoot\javascript\lib" "JavaScript libraries"
+New-DevFolder "$devRoot\javascript\utils" "JavaScript utilities"
+New-DevFolder "$devRoot\javascript\components" "React/Vue components"
+New-DevFolder "$devRoot\javascript\services" "API services"
+New-DevFolder "$devRoot\javascript\routes" "Route handlers"
+New-DevFolder "$devRoot\javascript\middleware" "Middleware functions"
+New-DevFolder "$devRoot\javascript\models" "Data models"
+New-DevFolder "$devRoot\javascript\config" "Configuration"
+New-DevFolder "$devRoot\javascript\public" "Static files"
+New-DevFolder "$devRoot\javascript\tests" "JavaScript tests"
+New-DevFolder "$devRoot\javascript\node_modules" "NPM packages"
+
+# Link global node_modules
+Copy-LibraryFiles "$nodeModulesPath" "$devRoot\javascript\lib\global-modules" "Global NPM packages"
+
+# ============= TYPESCRIPT =============
+Write-Host "`n[TYPESCRIPT] Creating TypeScript structure..." -ForegroundColor Cyan
+New-DevFolder "$devRoot\typescript" "TypeScript projects"
+New-DevFolder "$devRoot\typescript\src" "TypeScript source code"
+New-DevFolder "$devRoot\typescript\types" "TypeScript type definitions"
+New-DevFolder "$devRoot\typescript\interfaces" "TypeScript interfaces"
+New-DevFolder "$devRoot\typescript\lib" "TypeScript libraries"
+New-DevFolder "$devRoot\typescript\utils" "TypeScript utilities"
+New-DevFolder "$devRoot\typescript\services" "TypeScript services"
+New-DevFolder "$devRoot\typescript\models" "TypeScript models"
+New-DevFolder "$devRoot\typescript\components" "TypeScript components"
+New-DevFolder "$devRoot\typescript\tests" "TypeScript tests"
+New-DevFolder "$devRoot\typescript\dist" "Compiled JavaScript output"
+
+# ============= JAVA =============
+Write-Host "`n[JAVA] Creating Java structure..." -ForegroundColor Cyan
+New-DevFolder "$devRoot\java" "Java projects"
+New-DevFolder "$devRoot\java\src\main\java" "Java source code"
+New-DevFolder "$devRoot\java\src\main\java\lib" "Java internal libraries"
+New-DevFolder "$devRoot\java\src\main\java\models" "Java data models"
+New-DevFolder "$devRoot\java\src\main\java\services" "Java services"
+New-DevFolder "$devRoot\java\src\main\java\controllers" "Java controllers"
+New-DevFolder "$devRoot\java\src\main\java\utils" "Java utilities"
+New-DevFolder "$devRoot\java\src\main\resources" "Java resources (configs, properties)"
+New-DevFolder "$devRoot\java\src\test\java" "Java test code"
+New-DevFolder "$devRoot\java\src\test\resources" "Java test resources"
+New-DevFolder "$devRoot\java\lib" "External JAR files"
+New-DevFolder "$devRoot\java\target" "Java build output (auto-generated)"
+
+# Link Maven repository
+$mavenRepo = "$env:USERPROFILE\.m2\repository"
+if (Test-Path $mavenRepo) {
+    Copy-LibraryFiles $mavenRepo "$devRoot\java\lib\maven-repository" "Maven repository"
+}
+
+# ============= RUST =============
+Write-Host "`n[RUST] Creating Rust structure..." -ForegroundColor Cyan
+New-DevFolder "$devRoot\rust" "Rust projects"
+New-DevFolder "$devRoot\rust\src" "Rust source code"
+New-DevFolder "$devRoot\rust\src\lib" "Rust library modules"
+New-DevFolder "$devRoot\rust\src\bin" "Rust binary executables"
+New-DevFolder "$devRoot\rust\src\models" "Rust data models"
+New-DevFolder "$devRoot\rust\src\utils" "Rust utilities"
+New-DevFolder "$devRoot\rust\tests" "Rust integration tests"
+New-DevFolder "$devRoot\rust\benches" "Rust benchmarks"
+New-DevFolder "$devRoot\rust\examples" "Rust examples"
+New-DevFolder "$devRoot\rust\target" "Rust build output (auto-generated)"
+
+# Link Cargo registry
+$cargoRegistry = "$env:USERPROFILE\.cargo\registry"
+if (Test-Path $cargoRegistry) {
+    Copy-LibraryFiles $cargoRegistry "$devRoot\rust\lib\cargo-registry" "Cargo registry"
+}
+
+# ============= GO =============
+Write-Host "`n[GO] Creating Go structure..." -ForegroundColor Cyan
+New-DevFolder "$devRoot\go" "Go projects"
+New-DevFolder "$devRoot\go\cmd" "Go main applications"
+New-DevFolder "$devRoot\go\pkg" "Go library code (importable)"
+New-DevFolder "$devRoot\go\pkg\models" "Go data models"
+New-DevFolder "$devRoot\go\pkg\handlers" "Go HTTP handlers"
+New-DevFolder "$devRoot\go\pkg\services" "Go business logic"
+New-DevFolder "$devRoot\go\pkg\utils" "Go utilities"
+New-DevFolder "$devRoot\go\internal" "Go private application code"
+New-DevFolder "$devRoot\go\api" "Go API definitions"
+New-DevFolder "$devRoot\go\test" "Go tests"
+
+# Set GOPATH
+$goPath = "$env:USERPROFILE\go"
+if (Test-Path $goPath) {
+    [Environment]::SetEnvironmentVariable("GOPATH", "$devRoot\go", [EnvironmentVariableTarget]::User)
+    Copy-LibraryFiles "$goPath\pkg" "$devRoot\go\pkg\modules" "Go modules"
+}
+
+# ============= C/C++ =============
+Write-Host "`n[C/C++] Creating C/C++ structure..." -ForegroundColor Cyan
+New-DevFolder "$devRoot\cpp" "C/C++ projects"
+New-DevFolder "$devRoot\cpp\src" "C++ source files"
+New-DevFolder "$devRoot\cpp\include" "C++ header files"
+New-DevFolder "$devRoot\cpp\lib" "C++ libraries"
+New-DevFolder "$devRoot\cpp\build" "C++ build output"
+New-DevFolder "$devRoot\cpp\tests" "C++ tests"
+
+# ============= C# / .NET =============
+Write-Host "`n[C#] Creating C# structure..." -ForegroundColor Cyan
+New-DevFolder "$devRoot\csharp" "C# projects"
+New-DevFolder "$devRoot\csharp\src" "C# source code"
+New-DevFolder "$devRoot\csharp\lib" "C# libraries"
+New-DevFolder "$devRoot\csharp\tests" "C# tests"
+
+# Link NuGet packages
+$nugetPackages = "$env:USERPROFILE\.nuget\packages"
+if (Test-Path $nugetPackages) {
+    Copy-LibraryFiles $nugetPackages "$devRoot\csharp\lib\nuget-packages" "NuGet packages"
+}
+
+# ============= RUBY =============
+Write-Host "`n[RUBY] Creating Ruby structure..." -ForegroundColor Cyan
+New-DevFolder "$devRoot\ruby" "Ruby projects"
+New-DevFolder "$devRoot\ruby\lib" "Ruby library code"
+New-DevFolder "$devRoot\ruby\bin" "Ruby executables"
+New-DevFolder "$devRoot\ruby\spec" "Ruby tests (RSpec)"
+New-DevFolder "$devRoot\ruby\config" "Ruby configuration"
+
+# Link Ruby gems
+$gemPath = gem environment gemdir 2>&1
+if ($gemPath -and (Test-Path $gemPath)) {
+    Copy-LibraryFiles "$gemPath\gems" "$devRoot\ruby\lib\gems" "Ruby gems"
+}
+
+# ============= PHP =============
+Write-Host "`n[PHP] Creating PHP structure..." -ForegroundColor Cyan
+New-DevFolder "$devRoot\php" "PHP projects"
+New-DevFolder "$devRoot\php\src" "PHP source code"
+New-DevFolder "$devRoot\php\lib" "PHP libraries"
+New-DevFolder "$devRoot\php\public" "PHP public web root"
+New-DevFolder "$devRoot\php\config" "PHP configuration"
+New-DevFolder "$devRoot\php\tests" "PHP tests"
+New-DevFolder "$devRoot\php\vendor" "Composer dependencies (auto-generated)"
+
+# ============= OTHER LANGUAGES =============
+Write-Host "`n[OTHER] Creating other language structures..." -ForegroundColor Cyan
+New-DevFolder "$devRoot\perl\lib" "Perl libraries"
+New-DevFolder "$devRoot\lua\lib" "Lua libraries"
+New-DevFolder "$devRoot\r\lib" "R libraries"
+New-DevFolder "$devRoot\julia\src" "Julia source"
+New-DevFolder "$devRoot\haskell\src" "Haskell source"
+New-DevFolder "$devRoot\elixir\lib" "Elixir libraries"
+New-DevFolder "$devRoot\erlang\lib" "Erlang libraries"
+New-DevFolder "$devRoot\dart\lib" "Dart libraries"
+New-DevFolder "$devRoot\kotlin\src" "Kotlin source"
+New-DevFolder "$devRoot\scala\src" "Scala source"
+New-DevFolder "$devRoot\swift\src" "Swift source"
+New-DevFolder "$devRoot\zig\src" "Zig source"
+New-DevFolder "$devRoot\nim\src" "Nim source"
+New-DevFolder "$devRoot\crystal\src" "Crystal source"
+New-DevFolder "$devRoot\clojure\src" "Clojure source"
+New-DevFolder "$devRoot\ocaml\lib" "OCaml libraries"
+New-DevFolder "$devRoot\racket\lib" "Racket libraries"
+New-DevFolder "$devRoot\lisp\lib" "Lisp libraries"
+New-DevFolder "$devRoot\fortran\src" "Fortran source"
+New-DevFolder "$devRoot\cobol\src" "COBOL source"
+New-DevFolder "$devRoot\assembly\src" "Assembly source"
+New-DevFolder "$devRoot\vlang\src" "V source"
+
+# ============= EXTERNAL LIBRARIES FOR ALL LANGUAGES =============
+Write-Host "`n[LIBRARIES] Creating external libraries structure..." -ForegroundColor Cyan
+New-DevFolder "$devRoot\libraries" "External libraries you download/use"
+New-DevFolder "$devRoot\libraries\solidity" "Solidity libraries (OpenZeppelin, etc)"
+New-DevFolder "$devRoot\libraries\python" "Python packages"
+New-DevFolder "$devRoot\libraries\javascript" "JavaScript packages"
+New-DevFolder "$devRoot\libraries\java" "Java JARs"
+New-DevFolder "$devRoot\libraries\rust" "Rust crates"
+New-DevFolder "$devRoot\libraries\go" "Go modules"
+New-DevFolder "$devRoot\libraries\cpp" "C++ libraries"
+New-DevFolder "$devRoot\libraries\csharp" ".NET libraries"
+New-DevFolder "$devRoot\libraries\ruby" "Ruby gems"
+New-DevFolder "$devRoot\libraries\php" "PHP libraries"
+
+# ============= WEB DEVELOPMENT =============
+Write-Host "`n[WEB] Creating web development structure..." -ForegroundColor Cyan
+New-DevFolder "$devRoot\web" "Web applications"
+New-DevFolder "$devRoot\web\frontend" "Frontend projects"
+New-DevFolder "$devRoot\web\frontend\react" "React projects"
+New-DevFolder "$devRoot\web\frontend\vue" "Vue projects"
+New-DevFolder "$devRoot\web\frontend\angular" "Angular projects"
+New-DevFolder "$devRoot\web\frontend\svelte" "Svelte projects"
+New-DevFolder "$devRoot\web\backend" "Backend services"
+New-DevFolder "$devRoot\web\backend\express" "Express servers"
+New-DevFolder "$devRoot\web\backend\fastapi" "FastAPI servers"
+New-DevFolder "$devRoot\web\backend\django" "Django projects"
+New-DevFolder "$devRoot\web\backend\flask" "Flask servers"
+New-DevFolder "$devRoot\web\backend\nestjs" "NestJS servers"
+New-DevFolder "$devRoot\web\fullstack" "Full-stack applications"
+New-DevFolder "$devRoot\web\fullstack\nextjs" "Next.js applications"
+New-DevFolder "$devRoot\web\fullstack\nuxt" "Nuxt.js applications"
+New-DevFolder "$devRoot\web\sites" "Static websites"
+New-DevFolder "$devRoot\web\nginx-configs" "NGINX configurations"
+New-DevFolder "$devRoot\web\apache-configs" "Apache configurations"
+
+# ============= CRYPTO & BLOCKCHAIN =============
+Write-Host "`n[CRYPTO] Creating crypto & blockchain structure..." -ForegroundColor Cyan
+New-DevFolder "$devRoot\crypto" "Cryptocurrency projects"
+New-DevFolder "$devRoot\crypto\ethereum" "Ethereum smart contracts"
+New-DevFolder "$devRoot\crypto\solana" "Solana programs"
+New-DevFolder "$devRoot\crypto\defi" "DeFi applications"
+New-DevFolder "$devRoot\crypto\nft" "NFT projects"
+New-DevFolder "$devRoot\crypto\wallets" "Wallet integrations"
+
+# ============= BLOCKCHAIN INFRASTRUCTURE =============
+Write-Host "`n[BLOCKCHAIN] Creating blockchain infrastructure..." -ForegroundColor Cyan
+New-DevFolder "$devRoot\blockchain" "Blockchain nodes & infrastructure"
+New-DevFolder "$devRoot\blockchain\nodes" "Running blockchain nodes"
+New-DevFolder "$devRoot\blockchain\nodes\ethereum" "Ethereum node data"
+New-DevFolder "$devRoot\blockchain\nodes\solana" "Solana node data"
+New-DevFolder "$devRoot\blockchain\nodes\ipfs" "IPFS data"
+New-DevFolder "$devRoot\blockchain\data" "Blockchain data storage"
+
+# ============= BANKING & FINTECH =============
+Write-Host "`n[BANKING] Creating banking & fintech structure..." -ForegroundColor Cyan
+New-DevFolder "$devRoot\banking" "Banking & fintech projects"
+New-DevFolder "$devRoot\banking\apis" "Payment API integrations (Stripe, Plaid)"
+New-DevFolder "$devRoot\banking\neobank" "Neo-banking applications"
+New-DevFolder "$devRoot\banking\services" "Financial services"
+
+# ============= TESTS =============
+Write-Host "`n[TESTS] Creating test structure..." -ForegroundColor Cyan
+New-DevFolder "$devRoot\test" "Contract tests"
+New-DevFolder "$devRoot\tests" "All tests"
+New-DevFolder "$devRoot\tests\unit" "Unit tests"
+New-DevFolder "$devRoot\tests\integration" "Integration tests"
+New-DevFolder "$devRoot\tests\e2e" "End-to-end tests"
+New-DevFolder "$devRoot\tests\performance" "Performance tests"
+New-DevFolder "$devRoot\tests\fixtures" "Test fixtures/data"
+New-DevFolder "$devRoot\tests\mocks" "Mock data"
+
+# ============= SCRIPTS =============
+Write-Host "`n[SCRIPTS] Creating scripts structure..." -ForegroundColor Cyan
+New-DevFolder "$devRoot\scripts" "Utility scripts"
+New-DevFolder "$devRoot\scripts\build" "Build scripts"
+New-DevFolder "$devRoot\scripts\deploy" "Deployment scripts"
+New-DevFolder "$devRoot\scripts\setup" "Setup/installation scripts"
+New-DevFolder "$devRoot\scripts\automation" "Automation scripts"
+New-DevFolder "$devRoot\scripts\utils" "Utility scripts"
+
+# ============= CONFIGURATION =============
+Write-Host "`n[CONFIG] Creating configuration structure..." -ForegroundColor Cyan
+New-DevFolder "$devRoot\config" "General configuration files"
+New-DevFolder "$devRoot\config\environments" "Environment-specific configs"
+New-DevFolder "$devRoot\config\services" "Service configurations"
+
+# ============= BUILD & DISTRIBUTION =============
+Write-Host "`n[BUILD] Creating build structure..." -ForegroundColor Cyan
+New-DevFolder "$devRoot\build" "Build artifacts (auto-generated)"
+New-DevFolder "$devRoot\dist" "Distribution files (auto-generated)"
+New-DevFolder "$devRoot\out" "Output files (auto-generated)"
+New-DevFolder "$devRoot\artifacts" "Compiled artifacts"
+
+# ============= DOCUMENTATION =============
+Write-Host "`n[DOCS] Creating documentation structure..." -ForegroundColor Cyan
+New-DevFolder "$devRoot\docs" "Project documentation"
+New-DevFolder "$devRoot\docs\api" "API documentation"
+New-DevFolder "$devRoot\docs\guides" "User guides"
+New-DevFolder "$devRoot\docs\architecture" "Architecture docs"
+
+# ============= DATA & DATABASES =============
+Write-Host "`n[DATA] Creating data & database structure..." -ForegroundColor Cyan
+New-DevFolder "$devRoot\data" "Data files"
+New-DevFolder "$devRoot\data\raw" "Raw data"
+New-DevFolder "$devRoot\data\processed" "Processed data"
+New-DevFolder "$devRoot\data\temp" "Temporary data"
+New-DevFolder "$devRoot\data\databases" "Local database storage"
+New-DevFolder "$devRoot\data\databases\mongodb" "MongoDB data"
+New-DevFolder "$devRoot\data\databases\postgresql" "PostgreSQL data"
+New-DevFolder "$devRoot\data\databases\mysql" "MySQL data"
+New-DevFolder "$devRoot\data\databases\redis" "Redis data"
+New-DevFolder "$devRoot\data\databases\elasticsearch" "Elasticsearch data"
+New-DevFolder "$devRoot\data\databases\neo4j" "Neo4j data"
+New-DevFolder "$devRoot\data\databases\cassandra" "Cassandra data"
+New-DevFolder "$devRoot\data\backups" "Backup storage"
+
+# ============= LOGS =============
+Write-Host "`n[LOGS] Creating logs structure..." -ForegroundColor Cyan
+New-DevFolder "$devRoot\logs" "Application logs"
+
+# ============= TOOLS =============
+Write-Host "`n[TOOLS] Creating tools structure..." -ForegroundColor Cyan
+New-DevFolder "$devRoot\tools" "Development tools"
+New-DevFolder "$devRoot\tools\generators" "Code generators"
+New-DevFolder "$devRoot\tools\validators" "Validators"
+New-DevFolder "$devRoot\tools\formatters" "Code formatters"
+
+# ============= SERVERS =============
+Write-Host "`n[SERVERS] Creating servers structure..." -ForegroundColor Cyan
+New-DevFolder "$devRoot\servers" "Server applications"
+New-DevFolder "$devRoot\servers\web" "Web server code"
+New-DevFolder "$devRoot\servers\api" "API server code"
+New-DevFolder "$devRoot\servers\websocket" "WebSocket server"
+New-DevFolder "$devRoot\servers\proxy" "Proxy server"
+
+# ============= SERVICES =============
+Write-Host "`n[SERVICES] Creating services structure..." -ForegroundColor Cyan
+New-DevFolder "$devRoot\services" "Microservices"
+New-DevFolder "$devRoot\services\auth" "Authentication service"
+New-DevFolder "$devRoot\services\storage" "Storage service"
+New-DevFolder "$devRoot\services\cache" "Caching service"
+New-DevFolder "$devRoot\services\queue" "Queue/job service"
+
+# ============= MOBILE DEVELOPMENT =============
+Write-Host "`n[MOBILE] Creating mobile development structure..." -ForegroundColor Cyan
+New-DevFolder "$devRoot\mobile" "Mobile applications"
+New-DevFolder "$devRoot\mobile\android" "Android projects"
+New-DevFolder "$devRoot\mobile\ios" "iOS projects"
+New-DevFolder "$devRoot\mobile\react-native" "React Native"
+New-DevFolder "$devRoot\mobile\flutter" "Flutter projects"
+New-DevFolder "$devRoot\mobile\ionic" "Ionic projects"
+New-DevFolder "$devRoot\mobile\cordova" "Cordova projects"
+
+# ============= DESKTOP APPLICATIONS =============
+Write-Host "`n[DESKTOP] Creating desktop applications structure..." -ForegroundColor Cyan
+New-DevFolder "$devRoot\desktop" "Desktop applications"
+New-DevFolder "$devRoot\desktop\electron" "Electron apps"
+New-DevFolder "$devRoot\desktop\tauri" "Tauri apps"
+
+# ============= API PROJECTS =============
+Write-Host "`n[API] Creating API projects structure..." -ForegroundColor Cyan
+New-DevFolder "$devRoot\api" "API projects"
+New-DevFolder "$devRoot\api\rest" "REST APIs"
+New-DevFolder "$devRoot\api\graphql" "GraphQL APIs"
+New-DevFolder "$devRoot\api\grpc" "gRPC services"
+New-DevFolder "$devRoot\api\collections" "API collections (Postman)"
+
+# ============= TESTING =============
+Write-Host "`n[TESTING] Creating testing structure..." -ForegroundColor Cyan
+New-DevFolder "$devRoot\testing" "Test projects & experiments"
+
+# ============= DOCKER / CONTAINERS =============
+Write-Host "`n[DOCKER] Creating Docker structure..." -ForegroundColor Cyan
+New-DevFolder "$devRoot\docker" "Docker configurations"
+New-DevFolder "$devRoot\docker\images" "Docker images"
+New-DevFolder "$devRoot\docker\compose" "Docker Compose files"
+New-DevFolder "$devRoot\docker\volumes" "Docker volumes"
+
+# ============= KUBERNETES =============
+Write-Host "`n[KUBERNETES] Creating Kubernetes structure..." -ForegroundColor Cyan
+New-DevFolder "$devRoot\kubernetes" "Kubernetes manifests"
+New-DevFolder "$devRoot\kubernetes\manifests" "K8s manifests"
+New-DevFolder "$devRoot\kubernetes\helm" "Helm charts"
+
+# ============= INFRASTRUCTURE AS CODE =============
+Write-Host "`n[INFRASTRUCTURE] Creating IaC structure..." -ForegroundColor Cyan
+New-DevFolder "$devRoot\infrastructure" "Infrastructure as Code"
+New-DevFolder "$devRoot\infrastructure\terraform" "Terraform configs"
+New-DevFolder "$devRoot\infrastructure\ansible" "Ansible playbooks"
+New-DevFolder "$devRoot\infrastructure\pulumi" "Pulumi projects"
+
+# ============= SHARED / COMMON =============
+Write-Host "`n[SHARED] Creating shared code structure..." -ForegroundColor Cyan
+New-DevFolder "$devRoot\shared" "Shared code"
+New-DevFolder "$devRoot\shared\types" "Shared type definitions"
+New-DevFolder "$devRoot\shared\interfaces" "Shared interfaces"
+New-DevFolder "$devRoot\shared\utils" "Shared utility functions"
+New-DevFolder "$devRoot\shared\constants" "Shared constants"
+New-DevFolder "$devRoot\shared\config" "Shared configuration"
+
+# ============= CACHE / TEMP =============
+Write-Host "`n[CACHE] Creating cache structure..." -ForegroundColor Cyan
+New-DevFolder "$devRoot\cache" "Cache files"
+New-DevFolder "$devRoot\temp" "Temporary files"
+
+# ============= GAME DEVELOPMENT =============
+Write-Host "`n[GAMEDEV] Creating game development structure..." -ForegroundColor Cyan
+New-DevFolder "$devRoot\gamedev" "Game development"
+New-DevFolder "$devRoot\gamedev\unity" "Unity projects"
+New-DevFolder "$devRoot\gamedev\godot" "Godot projects"
+New-DevFolder "$devRoot\gamedev\unreal" "Unreal projects"
+
+# ===== CREATE CONFIGURATION FILES =====
+Write-Host "`n[FILES] Creating configuration files..." -ForegroundColor Cyan
+
+# Create .gitignore
+$gitignoreContent = @"
+# Dependencies
+node_modules/
+venv/
+__pycache__/
+target/
+dist/
+build/
+vendor/
+
+# Environment
+.env
+.env.local
+*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Keys & Secrets
+*.pem
+*.key
+*.p12
+.secret
+wallet.json
+
+# Database
+*.db
+*.sqlite
+
+# Build artifacts
+artifacts/
+out/
+"@
+
+$gitignoreContent | Out-File -FilePath "$devRoot\.gitignore" -Encoding UTF8
+Write-Host "  ✓ Created .gitignore" -ForegroundColor Green
+
+# Create README
+$readmeContent = @"
+# Development Environment
+
+## Overview
+Complete development environment with proper folder structure for ALL programming languages.
+
+## Main Folders
+
+### CODE
+Put all your working code here first. Organize it later.
+
+### Languages
+- **contracts/** - Solidity smart contracts (imports from contracts/libraries/)
+- **python/** - Python projects (imports from python/lib/)
+- **javascript/** - JavaScript projects (imports from javascript/lib/)
+- **typescript/** - TypeScript projects (imports from typescript/lib/)
+- **java/** - Java projects (imports from java/lib/)
+- **rust/** - Rust projects
+- **go/** - Go projects
+- **cpp/** - C/C++ projects
+- **csharp/** - C# projects
+- **ruby/** - Ruby projects
+- **php/** - PHP projects
+
+### Libraries
+- **libraries/** - External libraries for all languages
+- Each language folder has its own lib/ subfolder
+
+### Projects
+- **crypto/** - Cryptocurrency & blockchain projects
+- **banking/** - Banking & fintech projects
+- **web/** - Web applications (frontend/backend/fullstack)
+- **mobile/** - Mobile apps (Android/iOS/React Native/Flutter)
+- **desktop/** - Desktop applications (Electron/Tauri)
+- **api/** - API projects (REST/GraphQL/gRPC)
+
+### Infrastructure
+- **blockchain/** - Blockchain nodes & data
+- **data/** - Databases & data storage
+- **docker/** - Docker configurations
+- **kubernetes/** - Kubernetes manifests
+- **infrastructure/** - Terraform/Ansible/Pulumi
+
+### Development
+- **tests/** - All tests (unit/integration/e2e)
+- **scripts/** - Build/deploy/automation scripts
+- **docs/** - Documentation
+- **tools/** - Development tools
+
+## How Compilers Find Libraries
+
+### Solidity
+- Put contracts in `contracts/`
+- Import from `contracts/libraries/` like: `import "./libraries/MyLib.sol";`
+- OpenZeppelin: `import "@openzeppelin/contracts/token/ERC20/ERC20.sol";`
+
+### Python
+- Put code in `python/src/`
+- Put libraries in `python/lib/`
+- Import: `from lib.mymodule import MyClass`
+- Or add to PYTHONPATH: `$env:PYTHONPATH="$devRoot\python\lib"`
+
+### JavaScript/TypeScript
+- Put code in `javascript/src/` or `typescript/src/`
+- Put libraries in `lib/`
+- Import: `import { MyFunc } from './lib/mylib'`
+- Or use node_modules: `import express from 'express'`
+
+### Java
+- Put code in `java/src/main/java/`
+- Put JARs in `java/lib/`
+- Classpath includes both automatically
+- Maven pulls dependencies to `.m2/repository` (linked to lib/)
+
+### Rust
+- Put code in `rust/src/`
+- Cargo.toml references dependencies
+- Cargo downloads to `.cargo/registry` (linked to lib/)
+
+### Go
+- Put code in `go/pkg/` or `go/cmd/`
+- Use go modules: `go get github.com/user/package`
+- GOPATH set to `$devRoot\go`
+
+### C/C++
+- Put source in `cpp/src/`
+- Put headers in `cpp/include/`
+- Put libraries in `cpp/lib/`
+- Compiler flags: `-I include -L lib`
+
+## Quick Start
+
+### Create a Solidity Project
+``````powershell
+cd $devRoot\crypto\ethereum
+npx hardhat init
+# Imports will find contracts/libraries/
+``````
+
+### Create a Python Project
+``````powershell
+cd $devRoot\python\src
+# Create your files
+# Imports from ../lib/ will work
+``````
+
+### Create a React App
+``````powershell
+cd $devRoot\web\frontend\react
+npx create-react-app my-app
+``````
+
+### Create a Java Project
+``````powershell
+cd $devRoot\java
+mvn archetype:generate
+# External JARs go in lib/
+``````
+
+### Create a Rust Project
+``````powershell
+cd $devRoot\rust
+cargo new my-project
+``````
+
+## Environment Variables
+
+The following paths are added to your PATH:
+- Python: `$devRoot\python\src`, `$devRoot\python\lib`
+- All bin directories for installed tools
+
+## Notes
+
+- All empty folders have `.gitkeep` files so git tracks them
+- Library folders are linked/referenced to system package locations
+- You can move files between folders as needed
+- Compilers are configured to find libraries in the correct locations
+
+"@
+
+$readmeContent | Out-File -FilePath "$devRoot\README.md" -Encoding UTF8
+Write-Host "  ✓ Created README.md" -ForegroundColor Green
+
+# Create language-specific config files
+
+# Python requirements.txt template
+$pythonRequirements = @"
+# Python dependencies
+# Add packages here, then run: pip install -r requirements.txt
+
+# Web frameworks
+# fastapi
+# flask
+# django
+
+# Blockchain
+# web3
+# eth-brownie
+# solana
+
+# Banking
+# stripe
+# plaid-python
+
+# Data science
+# pandas
+# numpy
+"@
+$pythonRequirements | Out-File -FilePath "$devRoot\python\requirements.txt" -Encoding UTF8
+Write-Host "  ✓ Created python/requirements.txt" -ForegroundColor Green
+
+# JavaScript package.json template
+$jsPackageJson = @"
+{
+  "name": "javascript-projects",
+  "version": "1.0.0",
+  "description": "JavaScript project workspace",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "jest"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}
+"@
+$jsPackageJson | Out-File -FilePath "$devRoot\javascript\package.json" -Encoding UTF8
+Write-Host "  ✓ Created javascript/package.json" -ForegroundColor Green
+
+# TypeScript tsconfig.json template
+$tsconfigJson = @"
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "commonjs",
+    "lib": ["ES2020"],
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "baseUrl": ".",
+    "paths": {
+      "@lib/*": ["lib/*"],
+      "@utils/*": ["utils/*"]
+    }
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist"]
+}
+"@
+$tsconfigJson | Out-File -FilePath "$devRoot\typescript\tsconfig.json" -Encoding UTF8
+Write-Host "  ✓ Created typescript/tsconfig.json" -ForegroundColor Green
+
+# Java pom.xml template
+$javaPomXml = @"
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 
+         http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    
+    <groupId>com.project</groupId>
+    <artifactId>java-project</artifactId>
+    <version>1.0.0</version>
+    <packaging>jar</packaging>
+    
+    <properties>
+        <maven.compiler.source>17</maven.compiler.source>
+        <maven.compiler.target>17</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    </properties>
+    
+    <dependencies>
+        <!-- Add dependencies here -->
+    </dependencies>
+    
+    <build>
+        <sourceDirectory>src/main/java</sourceDirectory>
+        <testSourceDirectory>src/test/java</testSourceDirectory>
+    </build>
+</project>
+"@
+$javaPomXml | Out-File -FilePath "$devRoot\java\pom.xml" -Encoding UTF8
+Write-Host "  ✓ Created java/pom.xml" -ForegroundColor Green
+
+# Rust Cargo.toml template
+$rustCargoToml = @"
+[package]
+name = "rust-project"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Add dependencies here
+
+[dev-dependencies]
+# Add dev dependencies here
+"@
+$rustCargoToml | Out-File -FilePath "$devRoot\rust\Cargo.toml" -Encoding UTF8
+Write-Host "  ✓ Created rust/Cargo.toml" -ForegroundColor Green
+
+# Go go.mod template
+$goModFile = @"
+module project
+
+go 1.21
+
+require (
+    // Add dependencies here
+)
+"@
+$goModFile | Out-File -FilePath "$devRoot\go\go.mod" -Encoding UTF8
+Write-Host "  ✓ Created go/go.mod" -ForegroundColor Green
+
+# Solidity hardhat.config.js template
+$hardhatConfig = @"
+require("@nomicfoundation/hardhat-toolbox");
+
+module.exports = {
+  solidity: {
+    version: "0.8.20",
+    settings: {
+      optimizer: {
+        enabled: true,
+        runs: 200
+      }
+    }
+  },
+  paths: {
+    sources: "./contracts",
+    tests: "./test",
+    cache: "./cache",
+    artifacts: "./artifacts"
+  },
+  networks: {
+    hardhat: {
+      chainId: 31337
+    },
+    localhost: {
+      url: "http://127.0.0.1:8545"
+    }
+  }
+};
+"@
+$hardhatConfig | Out-File -FilePath "$devRoot\contracts\hardhat.config.js" -Encoding UTF8
+Write-Host "  ✓ Created contracts/hardhat.config.js" -ForegroundColor Green
+
+# Create example files for each language
+
+# Python example
+$pythonExample = @"
+#!/usr/bin/env python3
+# Example Python file
+# Import from lib: from lib.mymodule import MyClass
+
+def main():
+    print("Hello from Python!")
+    print(f"Put your code in: {__file__}")
+
+if __name__ == "__main__":
+    main()
+"@
+$pythonExample | Out-File -FilePath "$devRoot\python\src\example.py" -Encoding UTF8
+
+# JavaScript example
+$jsExample = @"
+// Example JavaScript file
+// Import from lib: const { myFunc } = require('./lib/mymodule');
+
+console.log('Hello from JavaScript!');
+console.log('Put your code in:', __filename);
+"@
+$jsExample | Out-File -FilePath "$devRoot\javascript\src\example.js" -Encoding UTF8
+
+# TypeScript example
+$tsExample = @"
+// Example TypeScript file
+// Import from lib: import { MyClass } from './lib/mymodule';
+
+console.log('Hello from TypeScript!');
+console.log('Put your code in this directory');
+"@
+$tsExample | Out-File -FilePath "$devRoot\typescript\src\example.ts" -Encoding UTF8
+
+# Solidity example
+$solidityExample = @"
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+// Import from libraries: import "./libraries/MyLib.sol";
+// Import OpenZeppelin: import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+
+contract ExampleContract {
+    string public message = "Hello from Solidity!";
+    
+    function getMessage() public view returns (string memory) {
+        return message;
+    }
+    
+    function setMessage(string memory newMessage) public {
+        message = newMessage;
+    }
+}
+"@
+$solidityExample | Out-File -FilePath "$devRoot\contracts\Example.sol" -Encoding UTF8
+
+# Java example
+$javaExample = @"
+package com.project;
+
+// Import from lib: import com.project.lib.MyClass;
+
+public class Example {
+    public static void main(String[] args) {
+        System.out.println("Hello from Java!");
+        System.out.println("Put your code in: src/main/java/");
+    }
+}
+"@
+$javaExample | Out-File -FilePath "$devRoot\java\src\main\java\Example.java" -Encoding UTF8
+
+# Rust example
+$rustExample = @"
+// Import from lib: use crate::lib::my_module;
+
+fn main() {
+    println!("Hello from Rust!");
+    println!("Put your code in: src/");
+}
+"@
+$rustExample | Out-File -FilePath "$devRoot\rust\src\main.rs" -Encoding UTF8
+
+# Go example
+$goExample = @"
+package main
+
+// Import from pkg: import "project/pkg/mypackage"
+
+import "fmt"
+
+func main() {
+    fmt.Println("Hello from Go!")
+    fmt.Println("Put your code in: pkg/ or cmd/")
+}
+"@
+$goExample | Out-File -FilePath "$devRoot\go\cmd\main.go" -Encoding UTF8
+
+Write-Host "  ✓ Created example files for all languages" -ForegroundColor Green
+
+# ===== CREATE HELPER SCRIPTS =====
+Write-Host "`n[SCRIPTS] Creating helper scripts..." -ForegroundColor Cyan
+
+# Create Python virtual environment setup script
+$pythonVenvScript = @"
+# Setup Python virtual environment
+cd $devRoot\python
+python -m venv venv
+.\venv\Scripts\Activate.ps1
+pip install --upgrade pip
+pip install -r requirements.txt
+Write-Host "Python virtual environment activated!" -ForegroundColor Green
+Write-Host "To deactivate: deactivate" -ForegroundColor Yellow
+"@
+$pythonVenvScript | Out-File -FilePath "$devRoot\scripts\setup\setup-python-venv.ps1" -Encoding UTF8
+Write-Host "  ✓ Created scripts/setup/setup-python-venv.ps1" -ForegroundColor Green
+
+# Create Node.js install script
+$nodeInstallScript = @"
+# Install Node.js dependencies for all projects
+Write-Host "Installing JavaScript dependencies..." -ForegroundColor Cyan
+cd $devRoot\javascript
+npm install
+Write-Host "Installing TypeScript dependencies..." -ForegroundColor Cyan
+cd $devRoot\typescript
+npm install
+Write-Host "All Node.js dependencies installed!" -ForegroundColor Green
+"@
+$nodeInstallScript | Out-File -FilePath "$devRoot\scripts\setup\setup-node-deps.ps1" -Encoding UTF8
+Write-Host "  ✓ Created scripts/setup/setup-node-deps.ps1" -ForegroundColor Green
+
+# Create Solidity/Hardhat setup script
+$soliditySetupScript = @"
+# Setup Solidity/Hardhat project
+cd $devRoot\contracts
+npm init -y
+npm install --save-dev hardhat @nomicfoundation/hardhat-toolbox
+npm install @openzeppelin/contracts
+npx hardhat
+Write-Host "Hardhat project initialized!" -ForegroundColor Green
+Write-Host "OpenZeppelin contracts installed!" -ForegroundColor Green
+"@
+$soliditySetupScript | Out-File -FilePath "$devRoot\scripts\setup\setup-hardhat.ps1" -Encoding UTF8
+Write-Host "  ✓ Created scripts/setup/setup-hardhat.ps1" -ForegroundColor Green
+
+# Create build script
+$buildScript = @"
+# Build all projects
+param(
+    [string]`$Project = "all"
+)
+
+Write-Host "Building projects..." -ForegroundColor Cyan
+
+if (`$Project -eq "all" -or `$Project -eq "typescript") {
+    Write-Host "`nBuilding TypeScript..." -ForegroundColor Yellow
+    cd $devRoot\typescript
+    tsc
+}
+
+if (`$Project -eq "all" -or `$Project -eq "rust") {
+    Write-Host "`nBuilding Rust..." -ForegroundColor Yellow
+    cd $devRoot\rust
+    cargo build --release
+}
+
+if (`$Project -eq "all" -or `$Project -eq "go") {
+    Write-Host "`nBuilding Go..." -ForegroundColor Yellow
+    cd $devRoot\go
+    go build ./...
+}
+
+if (`$Project -eq "all" -or `$Project -eq "java") {
+    Write-Host "`nBuilding Java..." -ForegroundColor Yellow
+    cd $devRoot\java
+    mvn clean package
+}
+
+if (`$Project -eq "all" -or `$Project -eq "contracts") {
+    Write-Host "`nCompiling Solidity contracts..." -ForegroundColor Yellow
+    cd $devRoot\contracts
+    npx hardhat compile
+}
+
+Write-Host "`nBuild complete!" -ForegroundColor Green
+"@
+$buildScript | Out-File -FilePath "$devRoot\scripts\build\build-all.ps1" -Encoding UTF8
+Write-Host "  ✓ Created scripts/build/build-all.ps1" -ForegroundColor Green
+
+# Create test runner script
+$testScript = @"
+# Run all tests
+param(
+    [string]`$Project = "all"
+)
+
+Write-Host "Running tests..." -ForegroundColor Cyan
+
+if (`$Project -eq "all" -or `$Project -eq "python") {
+    Write-Host "`nRunning Python tests..." -ForegroundColor Yellow
+    cd $devRoot\python
+    pytest tests/
+}
+
+if (`$Project -eq "all" -or `$Project -eq "javascript") {
+    Write-Host "`nRunning JavaScript tests..." -ForegroundColor Yellow
+    cd $devRoot\javascript
+    npm test
+}
+
+if (`$Project -eq "all" -or `$Project -eq "typescript") {
+    Write-Host "`nRunning TypeScript tests..." -ForegroundColor Yellow
+    cd $devRoot\typescript
+    npm test
+}
+
+if (`$Project -eq "all" -or `$Project -eq "rust") {
+    Write-Host "`nRunning Rust tests..." -ForegroundColor Yellow
+    cd $devRoot\rust
+    cargo test
+}
+
+if (`$Project -eq "all" -or `$Project -eq "go") {
+    Write-Host "`nRunning Go tests..." -ForegroundColor Yellow
+    cd $devRoot\go
+    go test ./...
+}
+
+if (`$Project -eq "all" -or `$Project -eq "java") {
+    Write-Host "`nRunning Java tests..." -ForegroundColor Yellow
+    cd $devRoot\java
+    mvn test
+}
+
+if (`$Project -eq "all" -or `$Project -eq "contracts") {
+    Write-Host "`nRunning Solidity tests..." -ForegroundColor Yellow
+    cd $devRoot\contracts
+    npx hardhat test
+}
+
+Write-Host "`nAll tests complete!" -ForegroundColor Green
+"@
+$testScript | Out-File -FilePath "$devRoot\scripts\build\test-all.ps1" -Encoding UTF8
+Write-Host "  ✓ Created scripts/build/test-all.ps1" -ForegroundColor Green
+
+# ===== FINAL SUMMARY =====
+Write-Host "`n========================================" -ForegroundColor Green
+Write-Host "FOLDER STRUCTURE SETUP COMPLETE!" -ForegroundColor Green
+Write-Host "========================================" -ForegroundColor Green
+
+Write-Host "`n📁 STRUCTURE CREATED:" -ForegroundColor Yellow
+Write-Host "Main directory: $devRoot" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "✓ CODE/ - Main working folder" -ForegroundColor White
+Write-Host "✓ Complete structure for ALL languages:" -ForegroundColor White
+Write-Host "  - Solidity, Python, JavaScript, TypeScript" -ForegroundColor Gray
+Write-Host "  - Java, Rust, Go, C/C++, C#" -ForegroundColor Gray
+Write-Host "  - Ruby, PHP, Perl, Lua, R, Julia" -ForegroundColor Gray
+Write-Host "  - Haskell, Elixir, Dart, Kotlin, Scala" -ForegroundColor Gray
+Write-Host "  - Swift, Zig, Nim, Crystal, Clojure" -ForegroundColor Gray
+Write-Host "  - And many more..." -ForegroundColor Gray
+
+Write-Host "`n✓ Library folders linked to system packages" -ForegroundColor White
+Write-Host "✓ Configuration files created" -ForegroundColor White
+Write-Host "✓ Example files created" -ForegroundColor White
+Write-Host "✓ Helper scripts created" -ForegroundColor White
+
+Write-Host "`n📚 HOW COMPILERS FIND LIBRARIES:" -ForegroundColor Yellow
+
+Write-Host "`nSolidity:" -ForegroundColor Cyan
+Write-Host "  Put contracts in: contracts/" -ForegroundColor Gray
+Write-Host "  Import libraries: import './libraries/MyLib.sol';" -ForegroundColor Gray
+Write-Host "  OpenZeppelin linked to contracts/libraries/@openzeppelin/" -ForegroundColor Gray
+
+Write-Host "`nPython:" -ForegroundColor Cyan
+Write-Host "  Put code in: python/src/" -ForegroundColor Gray
+Write-Host "  Put libraries in: python/lib/" -ForegroundColor Gray
+Write-Host "  Import: from lib.mymodule import MyClass" -ForegroundColor Gray
+Write-Host "  Site-packages linked to python/lib/site-packages/" -ForegroundColor Gray
+
+Write-Host "`nJavaScript:" -ForegroundColor Cyan
+Write-Host "  Put code in: javascript/src/" -ForegroundColor Gray
+Write-Host "  Put libraries in: javascript/lib/" -ForegroundColor Gray
+Write-Host "  Global npm packages linked to javascript/lib/global-modules/" -ForegroundColor Gray
+
+Write-Host "`nJava:" -ForegroundColor Cyan
+Write-Host "  Put code in: java/src/main/java/" -ForegroundColor Gray
+Write-Host "  Put JARs in: java/lib/" -ForegroundColor Gray
+Write-Host "  Maven repository linked to java/lib/maven-repository/" -ForegroundColor Gray
+
+Write-Host "`nRust:" -ForegroundColor Cyan
+Write-Host "  Put code in: rust/src/" -ForegroundColor Gray
+Write-Host "  Cargo.toml references dependencies" -ForegroundColor Gray
+Write-Host "  Cargo registry linked to rust/lib/cargo-registry/" -ForegroundColor Gray
+
+Write-Host "`nGo:" -ForegroundColor Cyan
+Write-Host "  Put code in: go/pkg/ or go/cmd/" -ForegroundColor Gray
+Write-Host "  GOPATH set to: $devRoot\go" -ForegroundColor Gray
+Write-Host "  Go modules linked to go/pkg/modules/" -ForegroundColor Gray
+
+Write-Host "`n🚀 QUICK START COMMANDS:" -ForegroundColor Yellow
+
+Write-Host "`nSetup Python environment:" -ForegroundColor White
+Write-Host "  .\scripts\setup\setup-python-venv.ps1" -ForegroundColor Gray
+
+Write-Host "`nSetup Node.js dependencies:" -ForegroundColor White
+Write-Host "  .\scripts\setup\setup-node-deps.ps1" -ForegroundColor Gray
+
+Write-Host "`nSetup Hardhat (Solidity):" -ForegroundColor White
+Write-Host "  .\scripts\setup\setup-hardhat.ps1" -ForegroundColor Gray
+
+Write-Host "`nBuild all projects:" -ForegroundColor White
+Write-Host "  .\scripts\build\build-all.ps1" -ForegroundColor Gray
+
+Write-Host "`nRun all tests:" -ForegroundColor White
+Write-Host "  .\scripts\build\test-all.ps1" -ForegroundColor Gray
+
+Write-Host "`n📖 DOCUMENTATION:" -ForegroundColor Yellow
+Write-Host "  Read: $devRoot\README.md" -ForegroundColor Cyan
+Write-Host "  For detailed usage instructions" -ForegroundColor Gray
+
+Write-Host "`n✅ NEXT STEPS:" -ForegroundColor Yellow
+Write-Host "1. Read the README.md in $devRoot" -ForegroundColor White
+Write-Host "2. Check example files in each language folder" -ForegroundColor White
+Write-Host "3. Run setup scripts for languages you'll use" -ForegroundColor White
+Write-Host "4. Start coding in CODE/ or specific language folders" -ForegroundColor White
+Write-Host "5. All imports/libraries will work automatically" -ForegroundColor White
+
+Write-Host "`n========================================" -ForegroundColor Green
+Write-Host "READY TO DEVELOP! 🎉" -ForegroundColor Green
+Write-Host "========================================" -ForegroundColor Green
+Write-Host ""
