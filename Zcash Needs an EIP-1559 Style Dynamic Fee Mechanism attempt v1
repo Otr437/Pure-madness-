@@ -1,0 +1,1925 @@
+// Zcash Dynamic Fee Mechanism - EIP-1559 Style Implementation
+
+use std::cmp::{min, max};
+use std::collections::{HashMap, BTreeMap, VecDeque};
+use std::time::{SystemTime, UNIX_EPOCH};
+use std::hash::{Hash, Hasher};
+use std::collections::hash_map::DefaultHasher;
+
+/// Represents the number of logical actions in a transaction
+type LogicalActions = u64;
+
+/// Fee amounts in zatoshis (1 ZEC = 100,000,000 zatoshis)
+type Zatoshis = u64;
+
+/// Block height type
+type BlockHeight = u64;
+
+/// Timestamp in seconds since UNIX epoch
+type Timestamp = u64;
+
+/// Configuration constants for the dynamic fee mechanism
+#[derive(Debug, Clone)]
+pub struct FeeConfig {
+    /// Target number of logical actions per block
+    pub target_actions_per_block: LogicalActions,
+    
+    /// Maximum number of logical actions per block (elasticity multiplier = 2)
+    pub max_actions_per_block: LogicalActions,
+    
+    /// Initial base fee in zatoshis per logical action
+    pub initial_base_fee: Zatoshis,
+    
+    /// Minimum base fee to prevent it from going to zero
+    pub min_base_fee: Zatoshis,
+    
+    /// Maximum base fee cap to prevent runaway fees
+    pub max_base_fee: Zatoshis,
+    
+    /// Base fee change denominator (12.5% = 1/8)
+    pub base_fee_change_denominator: u64,
+    
+    /// Block time target in seconds
+    pub block_time_seconds: u64,
+    
+    /// Maximum age for transactions in mempool (in seconds)
+    pub mempool_max_age_seconds: u64,
+}
+
+impl Default for FeeConfig {
+    fn default() -> Self {
+        Self {
+            target_actions_per_block: 50,
+            max_actions_per_block: 100,
+            initial_base_fee: 1000,      // 0.00001 ZEC per action
+            min_base_fee: 100,            // 0.000001 ZEC minimum
+            max_base_fee: 1_000_000,      // 0.01 ZEC maximum per action
+            base_fee_change_denominator: 8, // 12.5% change per block
+            block_time_seconds: 75,       // Zcash average block time
+            mempool_max_age_seconds: 14400, // 4 hours
+        }
+    }
+}
+
+impl FeeConfig {
+    /// Validate configuration parameters
+    pub fn validate(&self) -> Result<(), String> {
+        if self.target_actions_per_block == 0 {
+            return Err("Target actions must be greater than 0".to_string());
+        }
+        if self.max_actions_per_block <= self.target_actions_per_block {
+            return Err("Max actions must be greater than target actions".to_string());
+        }
+        if self.min_base_fee == 0 {
+            return Err("Min base fee must be greater than 0".to_string());
+        }
+        if self.max_base_fee <= self.min_base_fee {
+            return Err("Max base fee must be greater than min base fee".to_string());
+        }
+        if self.initial_base_fee < self.min_base_fee || self.initial_base_fee > self.max_base_fee {
+            return Err("Initial base fee must be between min and max".to_string());
+        }
+        if self.base_fee_change_denominator == 0 {
+            return Err("Base fee change denominator must be greater than 0".to_string());
+        }
+        Ok(())
+    }
+}
+
+/// Transaction component types for counting actions
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TransactionComponents {
+    pub transparent_inputs: usize,
+    pub transparent_outputs: usize,
+    pub sapling_spends: usize,
+    pub sapling_outputs: usize,
+    pub orchard_actions: usize,
+    pub joinsplit_descriptions: usize,
+}
+
+impl TransactionComponents {
+    pub fn new() -> Self {
+        Self {
+            transparent_inputs: 0,
+            transparent_outputs: 0,
+            sapling_spends: 0,
+            sapling_outputs: 0,
+            orchard_actions: 0,
+            joinsplit_descriptions: 0,
+        }
+    }
+    
+    /// Count total logical actions based on transaction components
+    pub fn count_logical_actions(&self) -> LogicalActions {
+        let mut actions = 0u64;
+        
+        // Transparent: each input is 1 action, each output is 1 action
+        actions += self.transparent_inputs as u64;
+        actions += self.transparent_outputs as u64;
+        
+        // Sapling: each spend is 1 action, each output is 1 action
+        actions += self.sapling_spends as u64;
+        actions += self.sapling_outputs as u64;
+        
+        // Orchard: actions are already counted natively
+        actions += self.orchard_actions as u64;
+        
+        // JoinSplit: each JoinSplit description counts as 2 actions
+        actions += (self.joinsplit_descriptions * 2) as u64;
+        
+        // Minimum of 1 action per transaction (even if all shielded with zero visible components)
+        max(actions, 1)
+    }
+    
+    /// Calculate transaction weight for fee purposes
+    pub fn calculate_weight(&self) -> u64 {
+        // Different components have different weights
+        let transparent_weight = (self.transparent_inputs + self.transparent_outputs) as u64;
+        let sapling_weight = (self.sapling_spends + self.sapling_outputs) as u64 * 2; // Heavier due to proofs
+        let orchard_weight = self.orchard_actions as u64 * 2; // Similar to Sapling
+        let joinsplit_weight = self.joinsplit_descriptions as u64 * 4; // Heaviest due to old proof system
+        
+        transparent_weight + sapling_weight + orchard_weight + joinsplit_weight
+    }
+}
+
+/// Transaction type classification
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TransactionType {
+    /// Only transparent inputs/outputs
+    Transparent,
+    /// Only shielded components (Sapling/Orchard)
+    Shielded,
+    /// Mix of transparent and shielded
+    Mixed,
+    /// Contains JoinSplit (legacy Sprout)
+    Legacy,
+}
+
+impl TransactionType {
+    /// Determine transaction type from components
+    pub fn from_components(components: &TransactionComponents) -> Self {
+        let has_transparent = components.transparent_inputs > 0 || components.transparent_outputs > 0;
+        let has_sapling = components.sapling_spends > 0 || components.sapling_outputs > 0;
+        let has_orchard = components.orchard_actions > 0;
+        let has_joinsplit = components.joinsplit_descriptions > 0;
+        
+        if has_joinsplit {
+            return TransactionType::Legacy;
+        }
+        
+        let has_shielded = has_sapling || has_orchard;
+        
+        if has_transparent && has_shielded {
+            TransactionType::Mixed
+        } else if has_shielded {
+            TransactionType::Shielded
+        } else {
+            TransactionType::Transparent
+        }
+    }
+}
+
+/// Represents a Zcash transaction with dynamic fees
+#[derive(Debug, Clone)]
+pub struct Transaction {
+    /// Transaction ID (32-byte hash)
+    pub txid: [u8; 32],
+    
+    /// Transaction components breakdown
+    pub components: TransactionComponents,
+    
+    /// Calculated logical actions
+    pub logical_actions: LogicalActions,
+    
+    /// Maximum fee per action the user is willing to pay (includes base + priority)
+    pub max_fee_per_action: Zatoshis,
+    
+    /// Maximum priority fee (tip) per action willing to pay
+    pub max_priority_fee_per_action: Zatoshis,
+    
+    /// Transaction type
+    pub tx_type: TransactionType,
+    
+    /// Transaction size in bytes
+    pub size_bytes: usize,
+    
+    /// Timestamp when transaction was created
+    pub created_at: Timestamp,
+    
+    /// Version of transaction format
+    pub version: u32,
+    
+    /// Expiry height (if applicable)
+    pub expiry_height: Option<BlockHeight>,
+}
+
+impl Transaction {
+    /// Create a new transaction with full initialization
+    pub fn new(
+        txid: [u8; 32],
+        components: TransactionComponents,
+        max_fee_per_action: Zatoshis,
+        max_priority_fee_per_action: Zatoshis,
+        size_bytes: usize,
+        version: u32,
+        expiry_height: Option<BlockHeight>,
+    ) -> Self {
+        let logical_actions = components.count_logical_actions();
+        let tx_type = TransactionType::from_components(&components);
+        let created_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        
+        Self {
+            txid,
+            components,
+            logical_actions,
+            max_fee_per_action,
+            max_priority_fee_per_action,
+            tx_type,
+            size_bytes,
+            created_at,
+            version,
+            expiry_height,
+        }
+    }
+    
+    /// Calculate the effective priority fee this transaction will pay at given base fee
+    pub fn effective_priority_fee(&self, base_fee: Zatoshis) -> Zatoshis {
+        if self.max_fee_per_action <= base_fee {
+            return 0; // Cannot afford base fee, no priority fee
+        }
+        
+        let affordable_priority = self.max_fee_per_action - base_fee;
+        min(affordable_priority, self.max_priority_fee_per_action)
+    }
+    
+    /// Calculate total fees (returns tuple: base_fee_total, priority_fee_total)
+    pub fn calculate_total_fee(&self, base_fee: Zatoshis) -> (Zatoshis, Zatoshis) {
+        let base_fee_total = base_fee.saturating_mul(self.logical_actions);
+        let priority_fee_per_action = self.effective_priority_fee(base_fee);
+        let priority_fee_total = priority_fee_per_action.saturating_mul(self.logical_actions);
+        
+        (base_fee_total, priority_fee_total)
+    }
+    
+    /// Calculate total fee paid by user
+    pub fn total_fee_paid(&self, base_fee: Zatoshis) -> Zatoshis {
+        let (base, priority) = self.calculate_total_fee(base_fee);
+        base.saturating_add(priority)
+    }
+    
+    /// Check if transaction can be included in a block with given base fee
+    pub fn is_valid_for_base_fee(&self, base_fee: Zatoshis) -> bool {
+        self.max_fee_per_action >= base_fee
+    }
+    
+    /// Check if transaction has expired at given block height
+    pub fn is_expired(&self, current_height: BlockHeight) -> bool {
+        self.expiry_height.map_or(false, |expiry| current_height >= expiry)
+    }
+    
+    /// Check if transaction is too old (stale in mempool)
+    pub fn is_stale(&self, current_time: Timestamp, max_age: u64) -> bool {
+        current_time.saturating_sub(self.created_at) > max_age
+    }
+    
+    /// Calculate transaction priority score for ordering
+    pub fn priority_score(&self, base_fee: Zatoshis) -> f64 {
+        let priority_fee = self.effective_priority_fee(base_fee);
+        
+        // Priority score = (priority_fee * 1000) / logical_actions
+        // Higher priority fee per action = higher score
+        if self.logical_actions == 0 {
+            return 0.0;
+        }
+        
+        (priority_fee as f64 * 1000.0) / self.logical_actions as f64
+    }
+    
+    /// Validate transaction fields
+    pub fn validate(&self) -> Result<(), String> {
+        if self.logical_actions == 0 {
+            return Err("Transaction must have at least 1 logical action".to_string());
+        }
+        
+        if self.max_fee_per_action == 0 {
+            return Err("Transaction must specify non-zero max fee".to_string());
+        }
+        
+        if self.max_priority_fee_per_action > self.max_fee_per_action {
+            return Err("Priority fee cannot exceed max fee".to_string());
+        }
+        
+        if self.size_bytes == 0 {
+            return Err("Transaction size must be greater than 0".to_string());
+        }
+        
+        // Check for reasonable size (max 2MB)
+        if self.size_bytes > 2_000_000 {
+            return Err("Transaction size exceeds maximum".to_string());
+        }
+        
+        Ok(())
+    }
+    
+    /// Calculate transaction hash
+    pub fn calculate_hash(&self) -> [u8; 32] {
+        let mut hasher = DefaultHasher::new();
+        self.txid.hash(&mut hasher);
+        self.logical_actions.hash(&mut hasher);
+        self.max_fee_per_action.hash(&mut hasher);
+        self.created_at.hash(&mut hasher);
+        
+        let hash_value = hasher.finish();
+        let mut result = [0u8; 32];
+        result[..8].copy_from_slice(&hash_value.to_le_bytes());
+        result
+    }
+}
+
+impl PartialEq for Transaction {
+    fn eq(&self, other: &Self) -> bool {
+        self.txid == other.txid
+    }
+}
+
+impl Eq for Transaction {}
+
+impl Hash for Transaction {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.txid.hash(state);
+    }
+}
+
+/// Represents a block in the Zcash blockchain
+#[derive(Debug, Clone)]
+pub struct Block {
+    /// Block height
+    pub height: BlockHeight,
+    
+    /// Block hash
+    pub hash: [u8; 32],
+    
+    /// Previous block hash
+    pub prev_hash: [u8; 32],
+    
+    /// Block timestamp
+    pub timestamp: Timestamp,
+    
+    /// Transactions in this block
+    pub transactions: Vec<Transaction>,
+    
+    /// Base fee per action for this block
+    pub base_fee_per_action: Zatoshis,
+    
+    /// Miner/pool address
+    pub miner_address: Vec<u8>,
+    
+    /// Total base fee burned in this block
+    pub total_base_fee_burned: Zatoshis,
+    
+    /// Total priority fee collected by miner
+    pub total_priority_fee_collected: Zatoshis,
+    
+    /// Block reward (coinbase)
+    pub block_reward: Zatoshis,
+    
+    /// Nonce for mining
+    pub nonce: u64,
+    
+    /// Difficulty target
+    pub difficulty: u64,
+}
+
+impl Block {
+    /// Create a new empty block
+    pub fn new(
+        height: BlockHeight,
+        prev_hash: [u8; 32],
+        base_fee_per_action: Zatoshis,
+        miner_address: Vec<u8>,
+        block_reward: Zatoshis,
+    ) -> Self {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        
+        Self {
+            height,
+            hash: [0u8; 32],
+            prev_hash,
+            timestamp,
+            transactions: Vec::new(),
+            base_fee_per_action,
+            miner_address,
+            total_base_fee_burned: 0,
+            total_priority_fee_collected: 0,
+            block_reward,
+            nonce: 0,
+            difficulty: 1,
+        }
+    }
+    
+    /// Add transaction to block with validation
+    pub fn add_transaction(&mut self, tx: Transaction, config: &FeeConfig) -> Result<(), String> {
+        // Validate transaction
+        tx.validate()?;
+        
+        // Check if transaction can afford base fee
+        if !tx.is_valid_for_base_fee(self.base_fee_per_action) {
+            return Err(format!(
+                "Transaction {} cannot afford base fee of {}",
+                hex_encode(&tx.txid[..8]),
+                self.base_fee_per_action
+            ));
+        }
+        
+        // Check if transaction is expired
+        if tx.is_expired(self.height) {
+            return Err(format!(
+                "Transaction {} has expired",
+                hex_encode(&tx.txid[..8])
+            ));
+        }
+        
+        // Check if adding this transaction would exceed block limit
+        let current_actions = self.total_actions();
+        if current_actions + tx.logical_actions > config.max_actions_per_block {
+            return Err(format!(
+                "Adding transaction would exceed block action limit: {} + {} > {}",
+                current_actions,
+                tx.logical_actions,
+                config.max_actions_per_block
+            ));
+        }
+        
+        // Calculate fees
+        let (base_fee, priority_fee) = tx.calculate_total_fee(self.base_fee_per_action);
+        
+        // Update block totals
+        self.total_base_fee_burned = self.total_base_fee_burned.saturating_add(base_fee);
+        self.total_priority_fee_collected = self.total_priority_fee_collected.saturating_add(priority_fee);
+        
+        // Add transaction
+        self.transactions.push(tx);
+        
+        Ok(())
+    }
+    
+    /// Remove transaction from block
+    pub fn remove_transaction(&mut self, txid: &[u8; 32]) -> Option<Transaction> {
+        if let Some(pos) = self.transactions.iter().position(|tx| &tx.txid == txid) {
+            let tx = self.transactions.remove(pos);
+            
+            // Recalculate fee totals
+            let (base_fee, priority_fee) = tx.calculate_total_fee(self.base_fee_per_action);
+            self.total_base_fee_burned = self.total_base_fee_burned.saturating_sub(base_fee);
+            self.total_priority_fee_collected = self.total_priority_fee_collected.saturating_sub(priority_fee);
+            
+            Some(tx)
+        } else {
+            None
+        }
+    }
+    
+    /// Calculate total logical actions in block
+    pub fn total_actions(&self) -> LogicalActions {
+        self.transactions.iter()
+            .map(|tx| tx.logical_actions)
+            .sum()
+    }
+    
+    /// Calculate total size of block in bytes
+    pub fn total_size_bytes(&self) -> usize {
+        self.transactions.iter()
+            .map(|tx| tx.size_bytes)
+            .sum()
+    }
+    
+    /// Calculate block hash
+    pub fn calculate_hash(&mut self) {
+        let mut hasher = DefaultHasher::new();
+        
+        // Hash block header components
+        self.height.hash(&mut hasher);
+        self.prev_hash.hash(&mut hasher);
+        self.timestamp.hash(&mut hasher);
+        self.base_fee_per_action.hash(&mut hasher);
+        self.nonce.hash(&mut hasher);
+        
+        // Hash all transaction IDs
+        for tx in &self.transactions {
+            tx.txid.hash(&mut hasher);
+        }
+        
+        let hash_value = hasher.finish();
+        self.hash[..8].copy_from_slice(&hash_value.to_le_bytes());
+        
+        // Fill rest with deterministic pattern
+        for i in 1..4 {
+            let extended = hash_value.wrapping_mul(i as u64 + 1);
+            let start = i * 8;
+            let end = start + 8;
+            if end <= 32 {
+                self.hash[start..end].copy_from_slice(&extended.to_le_bytes());
+            }
+        }
+    }
+    
+    /// Calculate next block's base fee based on this block's usage
+    pub fn calculate_next_base_fee(&self, config: &FeeConfig) -> Zatoshis {
+        let actions_used = self.total_actions();
+        let target = config.target_actions_per_block;
+        
+        // If exactly at target, no change
+        if actions_used == target {
+            return self.base_fee_per_action;
+        }
+        
+        let current_base_fee = self.base_fee_per_action;
+        
+        if actions_used > target {
+            // Block is fuller than target, increase base fee
+            let actions_over = actions_used - target;
+            
+            // Calculate proportional increase
+            // delta = (current_fee * actions_over) / (target * denominator)
+            let numerator = current_base_fee.saturating_mul(actions_over);
+            let denominator = target.saturating_mul(config.base_fee_change_denominator);
+            
+            let delta = if denominator > 0 {
+                numerator / denominator
+            } else {
+                0
+            };
+            
+            // Ensure at least 1 zatoshi increase if not at max
+            let delta = max(delta, 1);
+            
+            let new_fee = current_base_fee.saturating_add(delta);
+            
+            // Cap at max base fee
+            min(new_fee, config.max_base_fee)
+        } else {
+            // Block is emptier than target, decrease base fee
+            let actions_under = target - actions_used;
+            
+            // Calculate proportional decrease
+            let numerator = current_base_fee.saturating_mul(actions_under);
+            let denominator = target.saturating_mul(config.base_fee_change_denominator);
+            
+            let delta = if denominator > 0 {
+                numerator / denominator
+            } else {
+                0
+            };
+            
+            let new_fee = current_base_fee.saturating_sub(delta);
+            
+            // Floor at min base fee
+            max(new_fee, config.min_base_fee)
+        }
+    }
+    
+    /// Validate block integrity
+    pub fn validate(&self, config: &FeeConfig) -> Result<(), String> {
+        // Check action limit
+        let total_actions = self.total_actions();
+        if total_actions > config.max_actions_per_block {
+            return Err(format!(
+                "Block exceeds max actions: {} > {}",
+                total_actions,
+                config.max_actions_per_block
+            ));
+        }
+        
+        // Validate all transactions
+        for (i, tx) in self.transactions.iter().enumerate() {
+            tx.validate().map_err(|e| {
+                format!("Transaction {} invalid: {}", i, e)
+            })?;
+            
+            if !tx.is_valid_for_base_fee(self.base_fee_per_action) {
+                return Err(format!(
+                    "Transaction {} invalid for base fee {}",
+                    hex_encode(&tx.txid[..8]),
+                    self.base_fee_per_action
+                ));
+            }
+            
+            if tx.is_expired(self.height) {
+                return Err(format!(
+                    "Transaction {} has expired at height {}",
+                    hex_encode(&tx.txid[..8]),
+                    self.height
+                ));
+            }
+        }
+        
+        // Verify fee calculations
+        let mut calculated_base_fee = 0u64;
+        let mut calculated_priority_fee = 0u64;
+        
+        for tx in &self.transactions {
+            let (base, priority) = tx.calculate_total_fee(self.base_fee_per_action);
+            calculated_base_fee = calculated_base_fee.saturating_add(base);
+            calculated_priority_fee = calculated_priority_fee.saturating_add(priority);
+        }
+        
+        if calculated_base_fee != self.total_base_fee_burned {
+            return Err(format!(
+                "Base fee mismatch: calculated {}, recorded {}",
+                calculated_base_fee,
+                self.total_base_fee_burned
+            ));
+        }
+        
+        if calculated_priority_fee != self.total_priority_fee_collected {
+            return Err(format!(
+                "Priority fee mismatch: calculated {}, recorded {}",
+                calculated_priority_fee,
+                self.total_priority_fee_collected
+            ));
+        }
+        
+        Ok(())
+    }
+    
+    /// Calculate total miner revenue (priority fees + block reward)
+    pub fn miner_revenue(&self) -> Zatoshis {
+        self.total_priority_fee_collected.saturating_add(self.block_reward)
+    }
+}
+
+/// Fee priority levels for estimation
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FeePriority {
+    /// 25th percentile - may take several blocks
+    Low,
+    /// 50th percentile - likely next block
+    Medium,
+    /// 75th percentile - very likely next block
+    High,
+    /// 90th percentile - almost certainly next block
+    Urgent,
+}
+
+/// Mempool entry with metadata
+#[derive(Debug, Clone)]
+struct MempoolEntry {
+    transaction: Transaction,
+    added_at: Timestamp,
+    priority_score: f64,
+}
+
+/// Complete fee market implementation with mempool and blockchain
+pub struct FeeMarket {
+    /// Configuration
+    config: FeeConfig,
+    
+    /// Current base fee for next block
+    current_base_fee: Zatoshis,
+    
+    /// Mempool (txid -> entry)
+    mempool: HashMap<[u8; 32], MempoolEntry>,
+    
+    /// Priority queue for transaction selection (sorted by priority score)
+    priority_queue: VecDeque<[u8; 32]>,
+    
+    /// Blockchain (ordered blocks)
+    blockchain: Vec<Block>,
+    
+    /// Fee history (block height -> base fee)
+    fee_history: BTreeMap<BlockHeight, Zatoshis>,
+    
+    /// Statistics tracking
+    stats: MarketStatistics,
+}
+
+/// Market statistics
+#[derive(Debug, Clone)]
+struct MarketStatistics {
+    total_transactions_processed: u64,
+    total_transactions_rejected: u64,
+    total_base_fee_burned: Zatoshis,
+    total_priority_fee_collected: Zatoshis,
+    mempool_high_water_mark: usize,
+}
+
+impl MarketStatistics {
+    fn new() -> Self {
+        Self {
+            total_transactions_processed: 0,
+            total_transactions_rejected: 0,
+            total_base_fee_burned: 0,
+            total_priority_fee_collected: 0,
+            mempool_high_water_mark: 0,
+        }
+    }
+}
+
+impl FeeMarket {
+    /// Create new fee market
+    pub fn new(config: FeeConfig) -> Result<Self, String> {
+        config.validate()?;
+        
+        let current_base_fee = config.initial_base_fee;
+        let mut fee_history = BTreeMap::new();
+        fee_history.insert(0, current_base_fee);
+        
+        Ok(Self {
+            config,
+            current_base_fee,
+            mempool: HashMap::new(),
+            priority_queue: VecDeque::new(),
+            blockchain: Vec::new(),
+            fee_history,
+            stats: MarketStatistics::new(),
+        })
+    }
+    
+    /// Add transaction to mempool with full validation
+    pub fn add_to_mempool(&mut self, tx: Transaction) -> Result<(), String> {
+        // Validate transaction
+        tx.validate()?;
+        
+        // Check for duplicate
+        if self.mempool.contains_key(&tx.txid) {
+            return Err("Transaction already in mempool".to_string());
+        }
+        
+        // Check if transaction is expired
+        let current_height = self.blockchain.len() as BlockHeight;
+        if tx.is_expired(current_height) {
+            self.stats.total_transactions_rejected += 1;
+            return Err(format!(
+                "Transaction expired at height {}",
+                tx.expiry_height.unwrap()
+            ));
+        }
+        
+        // Calculate priority score
+        let priority_score = tx.priority_score(self.current_base_fee);
+        
+        let entry = MempoolEntry {
+            transaction: tx.clone(),
+            added_at: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+            priority_score,
+        };
+        
+        // Add to mempool
+        self.mempool.insert(tx.txid, entry);
+        
+        // Update priority queue (maintain sorted order)
+        self.rebuild_priority_queue();
+        
+        // Update statistics
+        let mempool_size = self.mempool.len();
+        if mempool_size > self.stats.mempool_high_water_mark {
+            self.stats.mempool_high_water_mark = mempool_size;
+        }
+        
+        Ok(())
+    }
+    
+    /// Remove transaction from mempool
+    pub fn remove_from_mempool(&mut self, txid: &[u8; 32]) -> Option<Transaction> {
+        self.mempool.remove(txid).map(|entry| {
+            // Remove from priority queue
+            self.priority_queue.retain(|id| id != txid);
+            entry.transaction
+        })
+    }
+    
+    /// Clean stale transactions from mempool
+    pub fn clean_mempool(&mut self) -> usize {
+        let current_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        
+        let current_height = self.blockchain.len() as BlockHeight;
+        
+        let mut removed = Vec::new();
+        
+        for (txid, entry) in &self.mempool {
+            // Check if stale
+            if entry.transaction.is_stale(current_time, self.config.mempool_max_age_seconds) {
+                removed.push(*txid);
+                continue;
+            }
+            
+            // Check if expired
+            if entry.transaction.is_expired(current_height) {
+                removed.push(*txid);
+                continue;
+            }
+            
+            // Check if can no longer afford base fee
+            if !entry.transaction.is_valid_for_base_fee(self.current_base_fee) {
+                removed.push(*txid);
+            }
+        }
+        
+        let count = removed.len();
+        for txid in removed {
+            self.remove_from_mempool(&txid);
+            self.stats.total_transactions_rejected += 1;
+        }
+        
+        count
+    }
+    
+    /// Rebuild priority queue
+    fn rebuild_priority_queue(&mut self) {
+        let mut entries: Vec<_> = self.mempool.iter()
+            .map(|(txid, entry)| (*txid, entry.priority_score))
+            .collect();
+        
+        // Sort by priority score (descending)
+        entries.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        
+        self.priority_queue = entries.into_iter()
+            .map(|(txid, _)| txid)
+            .collect();
+    }
+    
+    /// Get mempool statistics
+    pub fn mempool_stats(&self) -> MempoolStats {
+        let tx_count = self.mempool.len();
+        let total_actions: LogicalActions = self.mempool.values()
+            .map(|entry| entry.transaction.logical_actions)
+            .sum();
+        
+        let total_size: usize = self.mempool.values()
+            .map(|entry| entry.transaction.size_bytes)
+            .sum();
+        
+        let avg_priority_score = if tx_count > 0 {
+            let sum: f64 = self.mempool.values()
+                .map(|entry| entry.priority_score)
+                .sum();
+            sum / tx_count as f64
+        } else {
+            0.0
+        };
+        
+        // Calculate percentiles
+        let mut priority_fees: Vec<_> = self.mempool.values()
+            .map(|entry| entry.transaction.effective_priority_fee(self.current_base_fee))
+            .collect();
+        priority_fees.sort();
+        
+        let p25 = percentile(&priority_fees, 25);
+        let p50 = percentile(&priority_fees, 50);
+        let p75 = percentile(&priority_fees, 75);
+        let p90 = percentile(&priority_fees, 90);
+        
+        MempoolStats {
+            transaction_count: tx_count,
+            total_actions,
+            total_size_bytes: total_size,
+            avg_priority_score,
+            priority_fee_p25: p25,
+            priority_fee_p50: p50,
+            priority_fee_p75: p75,
+            priority_fee_p90: p90,
+        }
+    }
+    
+    /// Estimate fee for transaction with given priority
+    pub fn estimate_fee(&self, actions: LogicalActions, priority: FeePriority) -> FeeEstimate {
+        let mempool_stats = self.mempool_stats();
+        
+        // Predict base fee changes
+        let predicted_base_fee = self.predict_base_fee(3);
+        
+        // Determine competitive priority fee based on mempool
+        let competitive_priority = match priority {
+            FeePriority::Low => mempool_stats.priority_fee_p25,
+            FeePriority::Medium => mempool_stats.priority_fee_p50,
+            FeePriority::High => mempool_stats.priority_fee_p75,
+            FeePriority::Urgent => mempool_stats.priority_fee_p90,
+        };
+        
+        // If mempool is empty, use base multipliers
+        let priority_fee = if mempool_stats.transaction_count == 0 {
+            let multiplier = match priority {
+                FeePriority::Low => 5,
+                FeePriority::Medium => 10,
+                FeePriority::High => 20,
+                FeePriority::Urgent => 30,
+            };
+            predicted_base_fee * multiplier / 100
+        } else {
+            competitive_priority
+        };
+        
+        let total_per_action = predicted_base_fee.saturating_add(priority_fee);
+        let total_fee = total_per_action.saturating_mul(actions);
+        
+        let base_fee_total = predicted_base_fee.saturating_mul(actions);
+        let priority_fee_total = priority_fee.saturating_mul(actions);
+        
+        FeeEstimate {
+            base_fee_per_action: predicted_base_fee,
+            priority_fee_per_action: priority_fee,
+            total_per_action,
+            base_fee_total,
+            priority_fee_total,
+            total_fee,
+            confidence: calculate_confidence(&mempool_stats, priority),
+        }
+    }
+    
+    /// Predict base fee after N blocks
+    fn predict_base_fee(&self, blocks_ahead: u64) -> Zatoshis {
+        let mempool_stats = self.mempool_stats();
+        let target = self.config.target_actions_per_block;
+        
+        let mut predicted_fee = self.current_base_fee;
+        
+        for _ in 0..blocks_ahead {
+            // Estimate block utilization based on mempool pressure
+            let blocks_to_clear = if target > 0 && mempool_stats.total_actions > 0 {
+                (mempool_stats.total_actions + target - 1) / target
+            } else {
+                1
+            };
+            
+            // If mempool is congested, assume full blocks
+            let estimated_usage = if blocks_to_clear > 2 {
+                self.config.max_actions_per_block
+            } else if blocks_to_clear > 1 {
+                (target + self.config.max_actions_per_block) / 2
+            } else {
+                min(mempool_stats.total_actions, target)
+            };
+            
+            // Calculate next fee using same logic as block
+            if estimated_usage > target {
+                let actions_over = estimated_usage - target;
+                let numerator = predicted_fee.saturating_mul(actions_over);
+                let denominator = target.saturating_mul(self.config.base_fee_change_denominator);
+                let delta = if denominator > 0 { numerator / denominator } else { 0 };
+                predicted_fee = predicted_fee.saturating_add(max(delta, 1));
+                predicted_fee = min(predicted_fee, self.config.max_base_fee);
+            } else if estimated_usage < target {
+                let actions_under = target - estimated_usage;
+                let numerator = predicted_fee.saturating_mul(actions_under);
+                let denominator = target.saturating_mul(self.config.base_fee_change_denominator);
+                let delta = if denominator > 0 { numerator / denominator } else { 0 };
+                predicted_fee = max(predicted_fee.saturating_sub(delta), self.config.min_base_fee);
+            }
+        }
+        
+        predicted_fee
+    }
+    
+    /// Select transactions for a new block
+    pub fn select_transactions_for_block(&self, miner_address: Vec<u8>) -> Block {
+        let prev_hash = self.blockchain.last()
+            .map(|b| b.hash)
+            .unwrap_or([0u8; 32]);
+        
+        let height = self.blockchain.len() as BlockHeight;
+        
+        // Current block reward (Zcash halving schedule)
+        let block_reward = calculate_block_reward(height);
+        
+        let mut block = Block::new(
+            height,
+            prev_hash,
+            self.current_base_fee,
+            miner_address,
+            block_reward,
+        );
+        
+        // Select transactions using priority queue
+        let mut actions_used = 0u64;
+        
+        for txid in &self.priority_queue {
+            if let Some(entry) = self.mempool.get(txid) {
+                let tx = &entry.transaction;
+                
+                // Check if transaction fits
+                if actions_used + tx.logical_actions <= self.config.max_actions_per_block {
+                    // Try to add transaction
+                    if block.add_transaction(tx.clone(), &self.config).is_ok() {
+                        actions_used += tx.logical_actions;
+                    }
+                }
+                
+                // Stop if block is sufficiently full (95% capacity)
+                if actions_used >= self.config.max_actions_per_block * 95 / 100 {
+                    break;
+                }
+            }
+        }
+        
+        block.calculate_hash();
+        block
+    }
+    
+    /// Process (mine) a new block and update state
+    pub fn process_block(&mut self, mut block: Block) -> Result<(), String> {
+        // Validate block
+        block.validate(&self.config)?;
+        
+        // Recalculate hash
+        block.calculate_hash();
+        
+        // Remove included transactions from mempool
+        for tx in &block.transactions {
+            self.remove_from_mempool(&tx.txid);
+        }
+        
+        // Update statistics
+        self.stats.total_transactions_processed += block.transactions.len() as u64;
+        self.stats.total_base_fee_burned = self.stats.total_base_fee_burned
+            .saturating_add(block.total_base_fee_burned);
+        self.stats.total_priority_fee_collected = self.stats.total_priority_fee_collected
+            .saturating_add(block.total_priority_fee_collected);
+        
+        // Calculate next block's base fee
+        self.current_base_fee = block.calculate_next_base_fee(&self.config);
+        
+        // Update fee history
+        self.fee_history.insert(block.height + 1, self.current_base_fee);
+        
+        // Add block to blockchain
+        self.blockchain.push(block);
+        
+        // Clean stale transactions
+        self.clean_mempool();
+        
+        // Rebuild priority queue with new base fee
+        self.rebuild_priority_queue();
+        
+        Ok(())
+    }
+    
+    /// Get fee history
+    pub fn get_fee_history(&self, blocks: usize) -> Vec<FeeHistoryEntry> {
+        self.blockchain.iter()
+            .rev()
+            .take(blocks)
+            .map(|block| FeeHistoryEntry {
+                height: block.height,
+                base_fee: block.base_fee_per_action,
+                total_actions: block.total_actions(),
+                transaction_count: block.transactions.len(),
+                base_fee_burned: block.total_base_fee_burned,
+                priority_fee_collected: block.total_priority_fee_collected,
+                utilization_percent: if self.config.target_actions_per_block > 0 {
+                    (block.total_actions() * 100) / self.config.target_actions_per_block
+                } else {
+                    0
+                },
+            })
+            .collect()
+    }
+    
+    /// Get blockchain statistics
+    pub fn blockchain_stats(&self) -> BlockchainStats {
+        let total_blocks = self.blockchain.len() as u64;
+        
+        let total_transactions: usize = self.blockchain.iter()
+            .map(|b| b.transactions.len())
+            .sum();
+        
+        let avg_base_fee = if !self.fee_history.is_empty() {
+            self.fee_history.values().sum::<u64>() / self.fee_history.len() as u64
+        } else {
+            0
+        };
+        
+        let avg_transactions_per_block = if total_blocks > 0 {
+            total_transactions as f64 / total_blocks as f64
+        } else {
+            0.0
+        };
+        
+        let avg_actions_per_block = if total_blocks > 0 {
+            let total_actions: u64 = self.blockchain.iter()
+                .map(|b| b.total_actions())
+                .sum();
+            total_actions as f64 / total_blocks as f64
+        } else {
+            0.0
+        };
+        
+        BlockchainStats {
+            total_blocks,
+            total_transactions: total_transactions as u64,
+            total_base_fee_burned: self.stats.total_base_fee_burned,
+            total_priority_fee: self.stats.total_priority_fee_collected,
+            current_base_fee: self.current_base_fee,
+            avg_base_fee,
+            avg_transactions_per_block,
+            avg_actions_per_block,
+            mempool_size: self.mempool.len(),
+            total_rejected: self.stats.total_transactions_rejected,
+        }
+    }
+    
+    /// Get current state summary
+    pub fn get_state(&self) -> MarketState {
+        MarketState {
+            current_height: self.blockchain.len() as BlockHeight,
+            current_base_fee: self.current_base_fee,
+            mempool_stats: self.mempool_stats(),
+            blockchain_stats: self.blockchain_stats(),
+        }
+    }
+}
+
+/// Mempool statistics
+#[derive(Debug, Clone)]
+pub struct MempoolStats {
+    pub transaction_count: usize,
+    pub total_actions: LogicalActions,
+    pub total_size_bytes: usize,
+    pub avg_priority_score: f64,
+    pub priority_fee_p25: Zatoshis,
+    pub priority_fee_p50: Zatoshis,
+    pub priority_fee_p75: Zatoshis,
+    pub priority_fee_p90: Zatoshis,
+}
+
+/// Fee estimate result
+#[derive(Debug, Clone)]
+pub struct FeeEstimate {
+    pub base_fee_per_action: Zatoshis,
+    pub priority_fee_per_action: Zatoshis,
+    pub total_per_action: Zatoshis,
+    pub base_fee_total: Zatoshis,
+    pub priority_fee_total: Zatoshis,
+    pub total_fee: Zatoshis,
+    pub confidence: f64, // 0.0 to 1.0
+}
+
+impl FeeEstimate {
+    pub fn to_zec(&self) -> FeeEstimateZec {
+        FeeEstimateZec {
+            base_fee_per_action: zatoshi_to_zec(self.base_fee_per_action),
+            priority_fee_per_action: zatoshi_to_zec(self.priority_fee_per_action),
+            total_per_action: zatoshi_to_zec(self.total_per_action),
+            base_fee_total: zatoshi_to_zec(self.base_fee_total),
+            priority_fee_total: zatoshi_to_zec(self.priority_fee_total),
+            total_fee: zatoshi_to_zec(self.total_fee),
+            confidence: self.confidence,
+        }
+    }
+}
+
+/// Fee estimate in ZEC
+#[derive(Debug, Clone)]
+pub struct FeeEstimateZec {
+    pub base_fee_per_action: f64,
+    pub priority_fee_per_action: f64,
+    pub total_per_action: f64,
+    pub base_fee_total: f64,
+    pub priority_fee_total: f64,
+    pub total_fee: f64,
+    pub confidence: f64,
+}
+
+/// Fee history entry
+#[derive(Debug, Clone)]
+pub struct FeeHistoryEntry {
+    pub height: BlockHeight,
+    pub base_fee: Zatoshis,
+    pub total_actions: LogicalActions,
+    pub transaction_count: usize,
+    pub base_fee_burned: Zatoshis,
+    pub priority_fee_collected: Zatoshis,
+    pub utilization_percent: u64,
+}
+
+/// Blockchain statistics
+#[derive(Debug, Clone)]
+pub struct BlockchainStats {
+    pub total_blocks: u64,
+    pub total_transactions: u64,
+    pub total_base_fee_burned: Zatoshis,
+    pub total_priority_fee: Zatoshis,
+    pub current_base_fee: Zatoshis,
+    pub avg_base_fee: Zatoshis,
+    pub avg_transactions_per_block: f64,
+    pub avg_actions_per_block: f64,
+    pub mempool_size: usize,
+    pub total_rejected: u64,
+}
+
+/// Market state summary
+#[derive(Debug, Clone)]
+pub struct MarketState {
+    pub current_height: BlockHeight,
+    pub current_base_fee: Zatoshis,
+    pub mempool_stats: MempoolStats,
+    pub blockchain_stats: BlockchainStats,
+}
+
+// Utility functions
+
+/// Calculate percentile of sorted array
+fn percentile(sorted_values: &[Zatoshis], percentile: u8) -> Zatoshis {
+    if sorted_values.is_empty() {
+        return 0;
+    }
+    
+    let idx = (sorted_values.len() * percentile as usize) / 100;
+    let idx = idx.min(sorted_values.len() - 1);
+    sorted_values[idx]
+}
+
+/// Calculate confidence level for fee estimate
+fn calculate_confidence(mempool_stats: &MempoolStats, priority: FeePriority) -> f64 {
+    if mempool_stats.transaction_count == 0 {
+        return 0.5; // Low confidence with empty mempool
+    }
+    
+    // Higher confidence with more data and higher priority
+    let base_confidence = match priority {
+        FeePriority::Low => 0.6,
+        FeePriority::Medium => 0.75,
+        FeePriority::High => 0.85,
+        FeePriority::Urgent => 0.95,
+    };
+    
+    // Adjust based on mempool size (more data = more confidence)
+    let size_factor = (mempool_stats.transaction_count as f64 / 100.0).min(1.0);
+    base_confidence + (1.0 - base_confidence) * size_factor * 0.5
+}
+
+/// Calculate block reward based on height (Zcash halving schedule)
+fn calculate_block_reward(height: BlockHeight) -> Zatoshis {
+    // Zcash block reward: 3.125 ZEC initially, halving every 840,000 blocks
+    let initial_reward = 312_500_000u64; // 3.125 ZEC in zatoshis
+    let halving_interval = 840_000u64;
+    
+    let halvings = height / halving_interval;
+    
+    if halvings >= 64 {
+        return 0; // After 64 halvings, reward is effectively 0
+    }
+    
+    initial_reward >> halvings
+}
+
+/// Convert zatoshis to ZEC
+fn zatoshi_to_zec(zatoshis: Zatoshis) -> f64 {
+    zatoshis as f64 / 100_000_000.0
+}
+
+/// Convert ZEC to zatoshis
+fn zec_to_zatoshi(zec: f64) -> Zatoshis {
+    (zec * 100_000_000.0) as Zatoshis
+}
+
+/// Hex encode bytes
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter()
+        .map(|b| format!("{:02x}", b))
+        .collect()
+}
+
+/// Create transaction ID from string (for testing)
+fn txid_from_string(s: &str) -> [u8; 32] {
+    let mut hasher = DefaultHasher::new();
+    s.hash(&mut hasher);
+    let hash = hasher.finish();
+    
+    let mut txid = [0u8; 32];
+    txid[..8].copy_from_slice(&hash.to_le_bytes());
+    
+    // Fill rest with deterministic pattern
+    for i in 1..4 {
+        let extended = hash.wrapping_mul(i as u64 + 1);
+        let start = i * 8;
+        txid[start..start + 8].copy_from_slice(&extended.to_le_bytes());
+    }
+    
+    txid
+}
+
+// Tests
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    fn create_test_components(transparent: usize, sapling: usize, orchard: usize) -> TransactionComponents {
+        TransactionComponents {
+            transparent_inputs: transparent,
+            transparent_outputs: transparent,
+            sapling_spends: sapling,
+            sapling_outputs: sapling,
+            orchard_actions: orchard,
+            joinsplit_descriptions: 0,
+        }
+    }
+    
+    fn create_test_transaction(
+        id: &str,
+        components: TransactionComponents,
+        max_fee: Zatoshis,
+        priority_fee: Zatoshis,
+    ) -> Transaction {
+        Transaction::new(
+            txid_from_string(id),
+            components,
+            max_fee,
+            priority_fee,
+            1000, // size
+            4,    // version
+            None, // no expiry
+        )
+    }
+    
+    #[test]
+    fn test_transaction_components() {
+        let components = TransactionComponents {
+            transparent_inputs: 2,
+            transparent_outputs: 3,
+            sapling_spends: 1,
+            sapling_outputs: 2,
+            orchard_actions: 0,
+            joinsplit_descriptions: 0,
+        };
+        
+        assert_eq!(components.count_logical_actions(), 8); // 2+3+1+2
+        
+        let tx_type = TransactionType::from_components(&components);
+        assert_eq!(tx_type, TransactionType::Mixed);
+    }
+    
+    #[test]
+    fn test_transaction_creation_and_validation() {
+        let components = create_test_components(2, 1, 0);
+        let tx = create_test_transaction("test1", components, 2000, 500);
+        
+        assert!(tx.validate().is_ok());
+        assert_eq!(tx.logical_actions, 6); // 2 inputs + 2 outputs + 1 spend + 1 output
+        assert_eq!(tx.tx_type, TransactionType::Mixed);
+    }
+    
+    #[test]
+    fn test_fee_calculation() {
+        let components = create_test_components(0, 5, 0);
+        let tx = create_test_transaction("test2", components, 1500, 400);
+        
+        let base_fee = 1000u64;
+        let (base_total, priority_total) = tx.calculate_total_fee(base_fee);
+        
+        assert_eq!(base_total, 10_000); // 10 actions * 1000
+        assert_eq!(priority_total, 4_000); // 10 actions * 400
+    }
+    
+    #[test]
+    fn test_base_fee_adjustment() {
+        let config = FeeConfig::default();
+        let mut market = FeeMarket::new(config.clone()).unwrap();
+        
+        let initial_fee = market.current_base_fee;
+        
+        // Create transactions for a full block
+        for i in 0..15 {
+            let components = create_test_components(0, 2, 1);
+            let tx = create_test_transaction(
+                &format!("tx{}", i),
+                components,
+                3000,
+                500,
+            );
+            market.add_to_mempool(tx).unwrap();
+        }
+        
+        // Mine block
+        let block = market.select_transactions_for_block(vec![1, 2, 3, 4]);
+        let next_fee = block.calculate_next_base_fee(&config);
+        
+        // Block should be above target, so fee increases
+        if block.total_actions() > config.target_actions_per_block {
+            assert!(next_fee > initial_fee);
+        }
+        
+        market.process_block(block).unwrap();
+    }
+    
+    #[test]
+    fn test_mempool_management() {
+        let config = FeeConfig::default();
+        let mut market = FeeMarket::new(config).unwrap();
+        
+        // Add transactions
+        for i in 0..10 {
+            let components = create_test_components(1, 1, 0);
+            let tx = create_test_transaction(
+                &format!("mempool{}", i),
+                components,
+                2000 + (i as u64 * 100),
+                300 + (i as u64 * 10),
+            );
+            market.add_to_mempool(tx).unwrap();
+        }
+        
+        let stats = market.mempool_stats();
+        assert_eq!(stats.transaction_count, 10);
+        assert!(stats.total_actions > 0);
+    }
+    
+    #[test]
+    fn test_block_validation() {
+        let config = FeeConfig::default();
+        let mut block = Block::new(0, [0u8; 32], 1000, vec![1, 2, 3], 312_500_000);
+        
+        // Add valid transactions
+        for i in 0..5 {
+            let components = create_test_components(1, 1, 0);
+            let tx = create_test_transaction(
+                &format!("valid{}", i),
+                components,
+                2000,
+                300,
+            );
+            block.add_transaction(tx, &config).unwrap();
+        }
+        
+        assert!(block.validate(&config).is_ok());
+        
+        // Try to exceed max actions
+        for i in 0..30 {
+            let components = create_test_components(2, 2, 0);
+            let tx = create_test_transaction(
+                &format!("overflow{}", i),
+                components,
+                2000,
+                300,
+            );
+            let _ = block.add_transaction(tx, &config);
+        }
+        
+        // Should fail validation if over limit
+        if block.total_actions() > config.max_actions_per_block {
+            assert!(block.validate(&config).is_err());
+        }
+    }
+    
+    #[test]
+    fn test_fee_estimation() {
+        let config = FeeConfig::default();
+        let mut market = FeeMarket::new(config).unwrap();
+        
+        // Add transactions with varying fees
+        for i in 0..20 {
+            let components = create_test_components(1, 1, 0);
+            let tx = create_test_transaction(
+                &format!("estimate{}", i),
+                components,
+                1500 + (i as u64 * 50),
+                200 + (i as u64 * 20),
+            );
+            market.add_to_mempool(tx).unwrap();
+        }
+        
+        let low = market.estimate_fee(10, FeePriority::Low);
+        let medium = market.estimate_fee(10, FeePriority::Medium);
+        let high = market.estimate_fee(10, FeePriority::High);
+        let urgent = market.estimate_fee(10, FeePriority::Urgent);
+        
+        assert!(low.total_fee <= medium.total_fee);
+        assert!(medium.total_fee <= high.total_fee);
+        assert!(high.total_fee <= urgent.total_fee);
+    }
+    
+    #[test]
+    fn test_full_workflow() {
+        let config = FeeConfig::default();
+        let mut market = FeeMarket::new(config).unwrap();
+        
+        // Day 1: Low activity
+        for i in 0..5 {
+            let components = create_test_components(1, 1, 0);
+            let tx = create_test_transaction(
+                &format!("day1_{}", i),
+                components,
+                2000,
+                300,
+            );
+            market.add_to_mempool(tx).unwrap();
+        }
+        
+        let block1 = market.select_transactions_for_block(vec![0xAA]);
+        market.process_block(block1).unwrap();
+        
+        // Day 2: High activity
+        for i in 0..30 {
+            let components = create_test_components(1, 2, 0);
+            let tx = create_test_transaction(
+                &format!("day2_{}", i),
+                components,
+                2500,
+                400,
+            );
+            market.add_to_mempool(tx).unwrap();
+        }
+        
+        // Mine multiple blocks
+        for _ in 0..3 {
+            let block = market.select_transactions_for_block(vec![0xBB]);
+            market.process_block(block).unwrap();
+        }
+        
+        let stats = market.blockchain_stats();
+        assert!(stats.total_blocks >= 4);
+        assert!(stats.total_transactions > 0);
+        assert!(stats.total_base_fee_burned > 0);
+    }
+}
+
+// Main demonstration
+
+fn main() {
+    println!("=== Zcash Dynamic Fee Mechanism - Complete Implementation ===\n");
+    
+    let config = FeeConfig::default();
+    let mut market = FeeMarket::new(config.clone()).unwrap();
+    
+    println!("Configuration:");
+    println!("  Target actions: {}", config.target_actions_per_block);
+    println!("  Max actions: {}", config.max_actions_per_block);
+    println!("  Initial base fee: {} zatoshis/action", config.initial_base_fee);
+    println!("  Fee change rate: 1/{} = {:.2}%\n",
+        config.base_fee_change_denominator,
+        100.0 / config.base_fee_change_denominator as f64);
+    
+    // Simulate realistic network activity
+    println!("=== Simulating Network Activity ===\n");
+    
+    // Day 1: Normal activity
+    println!("Day 1: Normal activity");
+    for i in 0..8 {
+        let components = create_test_components(1, 2, 0);
+        let tx = create_test_transaction(
+            &format!("day1_{}", i),
+            components,
+            2000,
+            300,
+        );
+        market.add_to_mempool(tx).unwrap();
+    }
+    
+    let mempool = market.mempool_stats();
+    println!("  Mempool: {} tx, {} actions", mempool.transaction_count, mempool.total_actions);
+    
+    let block1 = market.select_transactions_for_block(vec![0xAA, 0xBB]);
+    println!("  Block mined: {} tx, {} actions", 
+        block1.transactions.len(), block1.total_actions());
+    println!("  Fees burned: {} zatoshis ({:.8} ZEC)",
+        block1.total_base_fee_burned,
+        zatoshi_to_zec(block1.total_base_fee_burned));
+    println!("  Miner revenue: {} zatoshis ({:.8} ZEC)\n",
+        block1.miner_revenue(),
+        zatoshi_to_zec(block1.miner_revenue()));
+    
+    market.process_block(block1).unwrap();
+    
+    // Day 2: High demand
+    println!("Day 2: Network surge (high demand)");
+    for i in 0..40 {
+        let components = if i % 3 == 0 {
+            create_test_components(2, 1, 0)
+        } else {
+            create_test_components(0, 2, 1)
+        };
+        
+        let tx = create_test_transaction(
+            &format!("day2_{}", i),
+            components,
+            2500 + (i as u64 * 50),
+            400 + (i as u64 * 10),
+        );
+        market.add_to_mempool(tx).unwrap();
+    }
+    
+    let mempool = market.mempool_stats();
+    println!("  Mempool: {} tx, {} actions", mempool.transaction_count, mempool.total_actions);
+    
+    // Mine several blocks
+    for block_num in 2..=5 {
+        let block = market.select_transactions_for_block(vec![0xCC, 0xDD]);
+        println!("\n  Block {} mined:", block_num);
+        println!("    Transactions: {}", block.transactions.len());
+        println!("    Actions: {} ({:.1}% of target)",
+            block.total_actions(),
+            (block.total_actions() as f64 / config.target_actions_per_block as f64) * 100.0);
+        
+        let next_fee = block.calculate_next_base_fee(&config);
+        let change_pct = if block.base_fee_per_action > 0 {
+            ((next_fee as f64 / block.base_fee_per_action as f64) - 1.0) * 100.0
+        } else {
+            0.0
+        };
+        
+        println!("    Base fee: {} -> {} ({:+.2}%)",
+            block.base_fee_per_action, next_fee, change_pct);
+        println!("    Base burned: {} zatoshis ({:.8} ZEC)",
+            block.total_base_fee_burned,
+            zatoshi_to_zec(block.total_base_fee_burned));
+        println!("    Priority fee: {} zatoshis ({:.8} ZEC)",
+            block.total_priority_fee_collected,
+            zatoshi_to_zec(block.total_priority_fee_collected));
+        
+        market.process_block(block).unwrap();
+        
+        let mempool = market.mempool_stats();
+        println!("    Mempool remaining: {} tx, {} actions",
+            mempool.transaction_count, mempool.total_actions);
+    }
+    
+    // Day 3: Return to normal
+    println!("\n\nDay 3: Activity normalizes");
+    for i in 0..7 {
+        let components = create_test_components(1, 1, 1);
+        let tx = create_test_transaction(
+            &format!("day3_{}", i),
+            components,
+            2200,
+            350,
+        );
+        market.add_to_mempool(tx).unwrap();
+    }
+    
+    let block6 = market.select_transactions_for_block(vec![0xEE, 0xFF]);
+    println!("  Block 6 mined: {} tx, {} actions",
+        block6.transactions.len(), block6.total_actions());
+    
+    let next_fee = block6.calculate_next_base_fee(&config);
+    let change_pct = if block6.base_fee_per_action > 0 {
+        ((next_fee as f64 / block6.base_fee_per_action as f64) - 1.0) * 100.0
+    } else {
+        0.0
+    };
+    println!("  Base fee adjustment: {} -> {} ({:+.2}%)\n",
+        block6.base_fee_per_action, next_fee, change_pct);
+    
+    market.process_block(block6).unwrap();
+    
+    // Fee estimation examples
+    println!("\n=== Fee Estimation Examples ===\n");
+    
+    let scenarios = vec![
+        (5, FeePriority::Low, "Small shielded transfer (5 actions), low priority"),
+        (5, FeePriority::High, "Small shielded transfer (5 actions), high priority"),
+        (20, FeePriority::Medium, "Large transaction (20 actions), medium priority"),
+        (50, FeePriority::Urgent, "Very large transaction (50 actions), urgent"),
+    ];
+    
+    for (actions, priority, description) in scenarios {
+        let estimate = market.estimate_fee(actions, priority);
+        let estimate_zec = estimate.to_zec();
+        
+        println!("{}", description);
+        println!("  Actions: {}", actions);
+        println!("  Priority: {:?}", priority);
+        println!("  Base fee: {:.8} ZEC", estimate_zec.base_fee_total);
+        println!("  Priority fee: {:.8} ZEC", estimate_zec.priority_fee_total);
+        println!("  Total: {:.8} ZEC", estimate_zec.total_fee);
+        println!("  Confidence: {:.1}%\n", estimate.confidence * 100.0);
+    }
+    
+    // Blockchain statistics
+    println!("=== Blockchain Statistics ===\n");
+    
+    let stats = market.blockchain_stats();
+    println!("Total blocks: {}", stats.total_blocks);
+    println!("Total transactions: {}", stats.total_transactions);
+    println!("Avg transactions/block: {:.2}", stats.avg_transactions_per_block);
+    println!("Avg actions/block: {:.2}", stats.avg_actions_per_block);
+    println!("\nFee Statistics:");
+    println!("  Total base fee burned: {} zatoshis ({:.8} ZEC)",
+        stats.total_base_fee_burned,
+        zatoshi_to_zec(stats.total_base_fee_burned));
+    println!("  Total priority fee to miners: {} zatoshis ({:.8} ZEC)",
+        stats.total_priority_fee,
+        zatoshi_to_zec(stats.total_priority_fee));
+    
+    let total_fees = stats.total_base_fee_burned + stats.total_priority_fee;
+    let burn_rate = if total_fees > 0 {
+        (stats.total_base_fee_burned as f64 / total_fees as f64) * 100.0
+    } else {
+        0.0
+    };
+    
+    println!("  Total fees: {} zatoshis ({:.8} ZEC)",
+        total_fees, zatoshi_to_zec(total_fees));
+    println!("  Burn rate: {:.2}%", burn_rate);
+    println!("  Miner revenue: {:.2}%", 100.0 - burn_rate);
+    
+    if stats.total_transactions > 0 {
+        let avg_fee = total_fees / stats.total_transactions;
+        println!("  Avg fee/transaction: {} zatoshis ({:.8} ZEC)",
+            avg_fee, zatoshi_to_zec(avg_fee));
+    }
+    
+    println!("\nCurrent state:");
+    println!("  Current base fee: {} zatoshis/action", stats.current_base_fee);
+    println!("  Average base fee: {} zatoshis/action", stats.avg_base_fee);
+    println!("  Mempool size: {} transactions", stats.mempool_size);
+    println!("  Rejected transactions: {}", stats.total_rejected);
+    
+    // Fee history
+    println!("\n=== Fee History (Last 10 Blocks) ===\n");
+    println!("{:<8} {:<12} {:<10} {:<8} {:<12} {:<15}", 
+        "Height", "Base Fee", "Actions", "Txs", "Utilization", "Burned (ZEC)");
+    println!("{}", "-".repeat(75));
+    
+    let history = market.get_fee_history(10);
+    for entry in history.iter().rev() {
+        println!("{:<8} {:<12} {:<10} {:<8} {:<11}% {:<15.8}",
+            entry.height,
+            entry.base_fee,
+            entry.total_actions,
+            entry.transaction_count,
+            entry.utilization_percent,
+            zatoshi_to_zec(entry.base_fee_burned));
+    }
+    
+    // Economic analysis
+    println!("\n=== Economic Analysis ===\n");
+    
+    let block_rewards: Zatoshis = market.blockchain.iter()
+        .map(|b| b.block_reward)
+        .sum();
+    
+    let total_miner_revenue = stats.total_priority_fee + block_rewards;
+    
+    println!("Miner Economics:");
+    println!("  Block rewards: {} zatoshis ({:.2} ZEC)",
+        block_rewards, zatoshi_to_zec(block_rewards));
+    println!("  Priority fees: {} zatoshis ({:.2} ZEC)",
+        stats.total_priority_fee, zatoshi_to_zec(stats.total_priority_fee));
+    println!("  Total revenue: {} zatoshis ({:.2} ZEC)",
+        total_miner_revenue, zatoshi_to_zec(total_miner_revenue));
+    
+    let fee_percentage = if total_miner_revenue > 0 {
+        (stats.total_priority_fee as f64 / total_miner_revenue as f64) * 100.0
+    } else {
+        0.0
+    };
+    println!("  Fee % of revenue: {:.2}%", fee_percentage);
+    
+    println!("\nDeflationary Impact:");
+    let total_supply_impact = zatoshi_to_zec(stats.total_base_fee_burned);
+    println!("  ZEC burned: {:.8} ZEC", total_supply_impact);
+    println!("  Effective supply reduction: {:.8} ZEC", total_supply_impact);
+    
+    // Market state summary
+    println!("\n=== Current Market State ===\n");
+    
+    let state = market.get_state();
+    let mempool_stats = state.mempool_stats;
+    
+    println!("Network Status:");
+    println!("  Current height: {}", state.current_height);
+    println!("  Current base fee: {} zatoshis/action ({:.8} ZEC/action)",
+        state.current_base_fee,
+        zatoshi_to_zec(state.current_base_fee));
+    
+    println!("\nMempool Analysis:");
+    println!("  Pending transactions: {}", mempool_stats.transaction_count);
+    println!("  Total pending actions: {}", mempool_stats.total_actions);
+    println!("  Avg priority score: {:.2}", mempool_stats.avg_priority_score);
+    
+    if mempool_stats.transaction_count > 0 {
+        println!("\n  Priority fee distribution (zatoshis/action):");
+        println!("    25th percentile: {}", mempool_stats.priority_fee_p25);
+        println!("    50th percentile: {}", mempool_stats.priority_fee_p50);
+        println!("    75th percentile: {}", mempool_stats.priority_fee_p75);
+        println!("    90th percentile: {}", mempool_stats.priority_fee_p90);
+        
+        let blocks_to_clear = if config.target_actions_per_block > 0 {
+            (mempool_stats.total_actions + config.target_actions_per_block - 1) 
+                / config.target_actions_per_block
+        } else {
+            0
+        };
+        
+        println!("\n  Estimated blocks to clear mempool: {}", blocks_to_clear);
+        println!("  Estimated time to clear: {:.1} minutes",
+            (blocks_to_clear as f64 * config.block_time_seconds as f64) / 60.0);
+    }
+    
+    // Transaction type analysis
+    println!("\n=== Transaction Type Analysis ===\n");
+    
+    let mut type_counts: HashMap<TransactionType, usize> = HashMap::new();
+    let mut type_actions: HashMap<TransactionType, LogicalActions> = HashMap::new();
+    
+    for block in &market.blockchain {
+        for tx in &block.transactions {
+            *type_counts.entry(tx.tx_type).or_insert(0) += 1;
+            *type_actions.entry(tx.tx_type).or_insert(0) += tx.logical_actions;
+        }
+    }
+    
+    println!("{:<15} {:<10} {:<12} {:<15}", "Type", "Count", "Actions", "Avg Actions/Tx");
+    println!("{}", "-".repeat(55));
+    
+    for tx_type in &[TransactionType::Transparent, TransactionType::Shielded, 
+                     TransactionType::Mixed, TransactionType::Legacy] {
+        if let Some(&count) = type_counts.get(tx_type) {
+            let actions = type_actions.get(tx_type).copied().unwrap_or(0);
+            let avg = if count > 0 { actions as f64 / count as f64 } else { 0.0 };
+            println!("{:<15?} {:<10} {:<12} {:<15.2}", tx_type, count, actions, avg);
+        }
+    }
+    
+    // Recommendations
+    println!("\n=== Fee Strategy Recommendations ===\n");
+    
+    let predicted_3_blocks = market.predict_base_fee(3);
+    let current_fee = market.current_base_fee;
+    
+    if predicted_3_blocks > current_fee * 110 / 100 {
+        println!("⚠️  Fee Market Trend: RISING");
+        println!("   Base fee predicted to increase ~{:.1}% over next 3 blocks",
+            ((predicted_3_blocks as f64 / current_fee as f64) - 1.0) * 100.0);
+        println!("   Recommendation: Submit transactions soon or use higher priority fees");
+    } else if predicted_3_blocks < current_fee * 90 / 100 {
+        println!("✓  Fee Market Trend: FALLING");
+        println!("   Base fee predicted to decrease ~{:.1}% over next 3 blocks",
+            ((current_fee as f64 / predicted_3_blocks as f64) - 1.0) * 100.0);
+        println!("   Recommendation: Wait for lower fees if transaction is not urgent");
+    } else {
+        println!("→  Fee Market Trend: STABLE");
+        println!("   Base fee expected to remain relatively stable");
+        println!("   Recommendation: Current fees are representative of near-term costs");
+    }
+    
+    if mempool_stats.transaction_count > 0 {
+        let congestion_ratio = mempool_stats.total_actions as f64 / 
+            config.target_actions_per_block as f64;
+        
+        println!("\nNetwork Congestion: {:.1}x target capacity", congestion_ratio);
+        
+        if congestion_ratio > 3.0 {
+            println!("   Status: HEAVILY CONGESTED");
+            println!("   Recommendation: Use High or Urgent priority for timely inclusion");
+        } else if congestion_ratio > 1.5 {
+            println!("   Status: MODERATELY CONGESTED");
+            println!("   Recommendation: Use Medium priority for next block inclusion");
+        } else {
+            println!("   Status: LIGHT CONGESTION");
+            println!("   Recommendation: Low priority sufficient for next block");
+        }
+    }
+    
+    println!("\n=== Simulation Complete ===");
+    println!("\nKey Insights:");
+    println!("1. Base fee dynamically adjusts based on block utilization");
+    println!("2. Fee burning creates deflationary pressure on ZEC supply");
+    println!("3. Miners earn priority fees + block rewards");
+    println!("4. Users can estimate fees based on desired confirmation time");
+    println!("5. System balances network efficiency with miner incentives\n");
+}
+
+// Helper function for tests
+fn create_test_components(transparent: usize, sapling: usize, orchard: usize) -> TransactionComponents {
+    TransactionComponents {
+        transparent_inputs: transparent,
+        transparent_outputs: transparent,
+        sapling_spends: sapling,
+        sapling_outputs: sapling,
+        orchard_actions: orchard,
+        joinsplit_descriptions: 0,
+    }
+}
+
+fn create_test_transaction(
+    id: &str,
+    components: TransactionComponents,
+    max_fee: Zatoshis,
+    priority_fee: Zatoshis,
+) -> Transaction {
+    Transaction::new(
+        txid_from_string(id),
+        components,
+        max_fee,
+        priority_fee,
+        1000,
+        4,
+        None,
+    )
+}
