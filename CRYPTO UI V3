@@ -1,0 +1,1101 @@
+import React, { useState, useEffect } from 'react';
+import { 
+  Wallet, ExternalLink, Search, Copy, CheckCircle, Globe, Layers, X, Shield, 
+  Eye, EyeOff, Star, Zap, Filter, Clock, TrendingUp, Users, Lock, Key, 
+  Cpu, Database, Network, BarChart3, Settings, BookOpen, ShieldCheck
+} from 'lucide-react';
+
+const BLOCKCHAIN_EXPLORERS = {
+  'Privacy Coins': [
+    { name: 'Monero', url: 'https://localmonero.co/blocks', icon: 'Ɱ', color: 'bg-orange-600', ticker: 'XMR', featured: true, security: 'high', technology: 'RingCT' },
+    { name: 'Monero Explorer', url: 'https://xmrchain.net', icon: 'Ɱ', color: 'bg-orange-700', ticker: 'XMR', security: 'high', technology: 'RingCT' },
+    { name: 'Zcash', url: 'https://zcashblockexplorer.com', icon: '⚡', color: 'bg-yellow-600', ticker: 'ZEC', featured: true, security: 'high', technology: 'zk-SNARKs' },
+    { name: 'Zcash Mainnet', url: 'https://explorer.zcha.in', icon: '⚡', color: 'bg-yellow-700', ticker: 'ZEC', security: 'high', technology: 'zk-SNARKs' },
+    { name: 'Dash', url: 'https://explorer.dash.org', icon: 'Đ', color: 'bg-blue-600', ticker: 'DASH', security: 'medium', technology: 'CoinJoin' },
+    { name: 'Dash Insight', url: 'https://insight.dashevo.org', icon: 'Đ', color: 'bg-blue-700', ticker: 'DASH', security: 'medium', technology: 'CoinJoin' },
+    { name: 'Horizen', url: 'https://explorer.horizen.io', icon: '◈', color: 'bg-cyan-700', ticker: 'ZEN', security: 'high', technology: 'zk-SNARKs' },
+    { name: 'Verge', url: 'https://verge-blockchain.info', icon: '◎', color: 'bg-gray-700', ticker: 'XVG', security: 'medium', technology: 'Wraith Protocol' },
+    { name: 'PIVX', url: 'https://explorer.pivx.org', icon: '◆', color: 'bg-purple-700', ticker: 'PIVX', security: 'high', technology: 'zk-SNARKs' },
+    { name: 'Firo', url: 'https://explorer.firo.org', icon: '◉', color: 'bg-red-700', ticker: 'FIRO', security: 'high', technology: 'Lelantus' },
+    { name: 'Beam', url: 'https://explorer.beam.mw', icon: '◭', color: 'bg-blue-500', ticker: 'BEAM', security: 'high', technology: 'Mimblewimble' },
+    { name: 'Grin', url: 'https://grin.blockscan.com', icon: '◮', color: 'bg-yellow-500', ticker: 'GRIN', security: 'high', technology: 'Mimblewimble' },
+    { name: 'NavCoin', url: 'https://www.navexplorer.com', icon: '◬', color: 'bg-indigo-600', ticker: 'NAV', security: 'medium', technology: 'NavTech' },
+    { name: 'Decred', url: 'https://dcrdata.decred.org', icon: '◰', color: 'bg-teal-700', ticker: 'DCR', security: 'medium', technology: 'Mixed' },
+    { name: 'Particl', url: 'https://explorer.particl.io', icon: '◱', color: 'bg-green-700', ticker: 'PART', security: 'high', technology: 'RingCT' },
+    { name: 'Oxen', url: 'https://oxen.observer', icon: '◲', color: 'bg-green-600', ticker: 'OXEN', security: 'high', technology: 'Lokinet' },
+  ],
+  'Privacy Tokens (EVM)': [
+    { name: 'Tornado Cash', url: 'https://etherscan.io/address/0x722122df12d4e14e13ac3b6895a86e84145b6967', icon: '🌪️', color: 'bg-gray-800', chainId: 1, ticker: 'TORN', featured: true, security: 'high', technology: 'zk-SNARKs' },
+    { name: 'Secret Network', url: 'https://secretnodes.com', icon: '🔐', color: 'bg-gray-900', ticker: 'SCRT', security: 'high', technology: 'TEE + MPC' },
+    { name: 'Railgun', url: 'https://etherscan.io/token/0xe76C6c83af64e4C60245D8C7dE953DF673a7A33D', icon: '🚂', color: 'bg-purple-800', chainId: 1, ticker: 'RAIL', featured: true, security: 'high', technology: 'zk-SNARKs' },
+    { name: 'Aztec Network', url: 'https://aztec.network', icon: '🔺', color: 'bg-blue-900', ticker: 'AZTEC', security: 'high', technology: 'zk-SNARKs' },
+    { name: 'Incognito', url: 'https://explorer.incognito.org', icon: '👤', color: 'bg-gray-700', ticker: 'PRV', security: 'high', technology: 'Confidential Assets' },
+    { name: 'Keep Network', url: 'https://etherscan.io/token/0x85eee30c52b0b379b046fb0f85f4f3dc3009afec', icon: '🔑', color: 'bg-cyan-800', chainId: 1, ticker: 'KEEP', security: 'medium', technology: 'Threshold Encryption' },
+    { name: 'NuCypher', url: 'https://etherscan.io/token/0x4fe83213d56308330ec302a8bd641f1d0113a4cc', icon: '⚛️', color: 'bg-blue-800', chainId: 1, ticker: 'NU', security: 'medium', technology: 'Proxy Re-encryption' },
+    { name: 'Oasis Network', url: 'https://www.oasisscan.com', icon: '🌴', color: 'bg-blue-700', ticker: 'ROSE', security: 'high', technology: 'Confidential ParaTimes' },
+    { name: 'Dusk Network', url: 'https://explorer.dusk.network', icon: '🌙', color: 'bg-purple-900', ticker: 'DUSK', security: 'high', technology: 'zk-SNARKs' },
+    { name: 'MobileCoin', url: 'https://block.mobilecoin.com', icon: '📱', color: 'bg-green-800', ticker: 'MOB', security: 'high', technology: 'Ring Signatures' },
+    { name: 'Findora', url: 'https://evm.findorascan.io', icon: '🔍', color: 'bg-orange-800', ticker: 'FRA', security: 'high', technology: 'zk-SNARKs' },
+    { name: 'Panther Protocol', url: 'https://www.pantherprotocol.io', icon: '🐆', color: 'bg-gray-800', ticker: 'ZKP', security: 'high', technology: 'zk-SNARKs' },
+  ],
+  'Privacy Mixers & Tools': [
+    { name: 'Tornado Cash', url: 'https://tornadocash.eth.limo', icon: '🌪️', color: 'bg-gray-900', featured: true, security: 'high', technology: 'zk-SNARKs' },
+    { name: 'Cyclone Protocol', url: 'https://cyclone.xyz', icon: '🌀', color: 'bg-blue-800', security: 'high', technology: 'zk-SNARKs' },
+    { name: 'Railway', url: 'https://railway.xyz', icon: '🚄', color: 'bg-purple-700', featured: true, security: 'high', technology: 'zk-SNARKs' },
+    { name: 'Umbra Cash', url: 'https://app.umbra.cash', icon: '☂️', color: 'bg-gray-700', security: 'medium', technology: 'Stealth Addresses' },
+    { name: 'Aztec Connect', url: 'https://zk.money', icon: '🔺', color: 'bg-blue-900', security: 'high', technology: 'zk-SNARKs' },
+    { name: 'Elusiv (Solana)', url: 'https://elusiv.io', icon: '👻', color: 'bg-purple-800', security: 'high', technology: 'zk-SNARKs' },
+    { name: 'Light Protocol', url: 'https://www.lightprotocol.com', icon: '💡', color: 'bg-yellow-700', security: 'high', technology: 'zk-SNARKs' },
+    { name: 'Webb Protocol', url: 'https://www.webb.tools', icon: '🕸️', color: 'bg-indigo-800', security: 'high', technology: 'Zero-Knowledge' },
+    { name: 'Blank Wallet', url: 'https://blockwallet.io', icon: '🔲', color: 'bg-gray-800', security: 'medium', technology: 'Transaction Mixing' },
+    { name: 'Sienna Network', url: 'https://sienna.network', icon: '🌅', color: 'bg-orange-700', security: 'high', technology: 'Secret Contracts' },
+  ],
+  'Privacy Wallets': [
+    { name: 'Zashi Wallet', url: 'https://electriccoin.co/zashi/', icon: '⚡', color: 'bg-yellow-600', ticker: 'ZEC', featured: true, security: 'high', technology: 'Shielded Transactions' },
+    { name: 'Nighthawk Wallet', url: 'https://nighthawkwallet.com', icon: '🦅', color: 'bg-gray-900', ticker: 'ZEC', security: 'high', technology: 'Shielded Transactions' },
+    { name: 'ZecWallet Lite', url: 'https://www.zecwallet.co', icon: '⚡', color: 'bg-yellow-700', ticker: 'ZEC', security: 'high', technology: 'Shielded Transactions' },
+    { name: 'Railway Wallet', url: 'https://railway.xyz', icon: '🚂', color: 'bg-purple-700', ticker: 'RAIL', featured: true, security: 'high', technology: 'Zero-Knowledge' },
+    { name: 'BlockWallet', url: 'https://blockwallet.io', icon: '🔲', color: 'bg-gray-800', featured: true, security: 'high', technology: 'Privacy-First' },
+    { name: 'Wasabi Wallet', url: 'https://wasabiwallet.io', icon: '🟢', color: 'bg-green-700', ticker: 'BTC', security: 'high', technology: 'CoinJoin' },
+    { name: 'Samourai Wallet', url: 'https://samouraiwallet.com', icon: '⚔️', color: 'bg-red-700', ticker: 'BTC', security: 'high', technology: 'Whirlpool' },
+    { name: 'Sparrow Wallet', url: 'https://sparrowwallet.com', icon: '🦅', color: 'bg-blue-700', ticker: 'BTC', security: 'high', technology: 'CoinJoin' },
+    { name: 'Monero GUI', url: 'https://www.getmonero.org/downloads', icon: 'Ɱ', color: 'bg-orange-700', ticker: 'XMR', security: 'high', technology: 'RingCT' },
+    { name: 'Cake Wallet', url: 'https://cakewallet.com', icon: '🎂', color: 'bg-purple-700', ticker: 'XMR', security: 'high', technology: 'Multi-Asset' },
+    { name: 'Monerujo', url: 'https://www.monerujo.io', icon: 'Ɱ', color: 'bg-orange-600', ticker: 'XMR', security: 'high', technology: 'Mobile Privacy' },
+    { name: 'MyMonero', url: 'https://mymonero.com', icon: 'Ɱ', color: 'bg-orange-500', ticker: 'XMR', security: 'medium', technology: 'Web Wallet' },
+    { name: 'Feather Wallet', url: 'https://featherwallet.org', icon: '🪶', color: 'bg-gray-700', ticker: 'XMR', security: 'high', technology: 'Desktop Privacy' },
+    { name: 'Edge Wallet', url: 'https://edge.app', icon: '◆', color: 'bg-blue-600', security: 'medium', technology: 'Multi-Coin' },
+    { name: 'Incognito Wallet', url: 'https://incognito.org', icon: '👤', color: 'bg-gray-800', ticker: 'PRV', security: 'high', technology: 'Confidential Assets' },
+    { name: 'Frame Wallet', url: 'https://frame.sh', icon: '🖼️', color: 'bg-indigo-700', featured: true, security: 'high', technology: 'Desktop Privacy' },
+  ],
+  'Privacy Explorers': [
+    { name: 'Blockchair Privacy', url: 'https://blockchair.com', icon: '🔍', color: 'bg-blue-700', featured: true, security: 'medium', technology: 'Multi-Blockchain' },
+    { name: 'OXT Research', url: 'https://oxt.me', icon: '📊', color: 'bg-purple-700', security: 'high', technology: 'Bitcoin Analytics' },
+    { name: 'Monero Blocks', url: 'https://moneroblocks.info', icon: 'Ɱ', color: 'bg-orange-700', security: 'high', technology: 'Monero Explorer' },
+    { name: 'XMR Chain', url: 'https://xmrchain.net', icon: 'Ɱ', color: 'bg-orange-600', security: 'high', technology: 'Monero Explorer' },
+    { name: 'Zcash Explorer', url: 'https://zcashblockexplorer.com', icon: '⚡', color: 'bg-yellow-600', security: 'high', technology: 'Zcash Explorer' },
+    { name: 'Secret Explorer', url: 'https://www.mintscan.io/secret', icon: '🔐', color: 'bg-gray-900', security: 'high', technology: 'Secret Network' },
+    { name: 'Firo Explorer', url: 'https://explorer.firo.org', icon: '◉', color: 'bg-red-700', security: 'high', technology: 'Firo Explorer' },
+    { name: 'Beam Explorer', url: 'https://explorer.beam.mw', icon: '◭', color: 'bg-blue-500', security: 'high', technology: 'Beam Explorer' },
+    { name: 'Grin Explorer', url: 'https://grin.blockscan.com', icon: '◮', color: 'bg-yellow-500', security: 'high', technology: 'Grin Explorer' },
+  ],
+  'Privacy Analytics': [
+    { name: 'Chainalysis (Research)', url: 'https://www.chainalysis.com', icon: '🔗', color: 'bg-blue-800', security: 'medium', technology: 'Blockchain Analysis' },
+    { name: 'CipherTrace', url: 'https://ciphertrace.com', icon: '🔐', color: 'bg-purple-800', security: 'medium', technology: 'Forensic Analysis' },
+    { name: 'Elliptic', url: 'https://www.elliptic.co', icon: '⭕', color: 'bg-indigo-800', security: 'medium', technology: 'Risk Assessment' },
+    { name: 'TRM Labs', url: 'https://www.trmlabs.com', icon: '🛡️', color: 'bg-gray-800', security: 'medium', technology: 'Compliance Tools' },
+    { name: 'Blockseer', url: 'https://blockseer.com', icon: '👁️', color: 'bg-cyan-800', security: 'medium', technology: 'Visualization' },
+    { name: 'Crystal Blockchain', url: 'https://crystalblockchain.com', icon: '💎', color: 'bg-purple-900', security: 'medium', technology: 'AML Tools' },
+  ],
+  'Privacy DEX & DeFi': [
+    { name: 'Incognito DEX', url: 'https://incognito.org', icon: '👤', color: 'bg-gray-800', security: 'high', technology: 'Confidential Trading' },
+    { name: 'Railway DEX', url: 'https://railway.xyz', icon: '🚂', color: 'bg-purple-700', featured: true, security: 'high', technology: 'Zero-Knowledge' },
+    { name: 'Sienna Swap', url: 'https://app.sienna.network', icon: '🌅', color: 'bg-orange-700', security: 'high', technology: 'Secret Contracts' },
+    { name: 'Secret Swap', url: 'https://www.secretswap.net', icon: '🔐', color: 'bg-gray-900', security: 'high', technology: 'Private Smart Contracts' },
+    { name: 'Shade Protocol', url: 'https://shadeprotocol.io', icon: '🌑', color: 'bg-gray-800', security: 'high', technology: 'Secret Contracts' },
+    { name: 'Penumbra DEX', url: 'https://penumbra.zone', icon: '🌘', color: 'bg-purple-900', security: 'high', technology: 'zk-SNARKs' },
+    { name: 'Aztec DeFi', url: 'https://aztec.network', icon: '🔺', color: 'bg-blue-900', security: 'high', technology: 'zk-SNARKs' },
+  ]
+};
+
+const WALLETS = [
+  { name: 'Zashi Wallet', injected: 'zashi', icon: '⚡', type: 'privacy', description: 'Official Zcash shielded wallet with full privacy', security: 'high', featured: true },
+  { name: 'Railway Wallet', injected: 'railway', icon: '🚂', type: 'privacy', description: 'Private DeFi on Ethereum, Polygon, BSC & more', security: 'high', featured: true },
+  { name: 'BlockWallet', injected: 'blockwallet', icon: '🔲', type: 'privacy', description: 'Privacy-first browser extension wallet', security: 'high', featured: true },
+  { name: 'Wasabi Wallet', injected: 'wasabi', icon: '🟢', type: 'privacy', description: 'Bitcoin privacy via CoinJoin mixing', security: 'high', featured: true },
+  { name: 'Frame', injected: 'frame', icon: '🖼️', type: 'privacy', description: 'Privacy-focused desktop Ethereum wallet', security: 'high', featured: true },
+  { name: 'Samourai Wallet', injected: 'samourai', icon: '⚔️', type: 'privacy', description: 'Bitcoin privacy with Whirlpool mixing', security: 'high' },
+  { name: 'Monero GUI', injected: 'monero', icon: 'Ɱ', type: 'privacy', description: 'Official Monero desktop wallet', security: 'high' },
+  { name: 'MetaMask', injected: 'ethereum', icon: '🦊', type: 'standard', description: 'Popular EVM wallet for Web3', security: 'medium' },
+  { name: 'Brave Wallet', injected: 'brave', icon: '🦁', type: 'standard', description: 'Built into Brave browser', security: 'medium' },
+  { name: 'Rabby', injected: 'rabby', icon: '🐰', type: 'standard', description: 'Multi-chain DeFi wallet', security: 'medium' },
+  { name: 'Rainbow', injected: 'rainbow', icon: '🌈', type: 'standard', description: 'Ethereum wallet for everyone', security: 'medium' },
+  { name: 'Zerion', injected: 'zerion', icon: '◉', type: 'standard', description: 'DeFi portfolio manager', security: 'medium' },
+  { name: 'Phantom', injected: 'phantom', icon: '👻', type: 'standard', description: 'Solana & multi-chain wallet', security: 'medium' },
+  { name: 'Trust Wallet', injected: 'trustWallet', icon: '🛡️', type: 'standard', description: 'Multi-chain mobile wallet', security: 'medium' },
+  { name: 'Coinbase Wallet', injected: 'coinbaseWallet', icon: '🔵', type: 'standard', description: 'Self-custody Web3 wallet', security: 'medium' },
+  { name: 'OKX Wallet', injected: 'okxwallet', icon: '⭐', type: 'standard', description: 'Exchange wallet with Web3', security: 'medium' },
+  { name: 'Ledger Live', injected: 'ledger', icon: '🔐', type: 'hardware', description: 'Hardware wallet integration', security: 'high' },
+  { name: 'Trezor', injected: 'trezor', icon: '🔒', type: 'hardware', description: 'Hardware wallet integration', security: 'high' },
+  { name: 'Enkrypt', injected: 'enkrypt', icon: '🔑', type: 'standard', description: 'Multi-chain browser wallet', security: 'medium' },
+  { name: 'Exodus', injected: 'exodus', icon: '🚪', type: 'standard', description: 'Desktop & mobile wallet', security: 'medium' },
+];
+
+const SECURITY_LEVELS = {
+  high: { color: 'text-green-400', bg: 'bg-green-500/20', label: 'High Security' },
+  medium: { color: 'text-yellow-400', bg: 'bg-yellow-500/20', label: 'Medium Security' },
+  low: { color: 'text-red-400', bg: 'bg-red-500/20', label: 'Low Security' }
+};
+
+const TECHNOLOGY_ICONS = {
+  'zk-SNARKs': <Key className="w-3 h-3" />,
+  'RingCT': <ShieldCheck className="w-3 h-3" />,
+  'CoinJoin': <Users className="w-3 h-3" />,
+  'Mimblewimble': <Lock className="w-3 h-3" />,
+  'Shielded Transactions': <Shield className="w-3 h-3" />,
+  'Zero-Knowledge': <Key className="w-3 h-3" />,
+  'Confidential Assets': <Database className="w-3 h-3" />,
+  'Secret Contracts': <Cpu className="w-3 h-3" />,
+  'Stealth Addresses': <EyeOff className="w-3 h-3" />,
+  'Threshold Encryption': <Lock className="w-3 h-3" />,
+  'Proxy Re-encryption': <Network className="w-3 h-3" />,
+  'Confidential ParaTimes': <Cpu className="w-3 h-3" />,
+  'Ring Signatures': <ShieldCheck className="w-3 h-3" />,
+  'Transaction Mixing': <Users className="w-3 h-3" />,
+  'Privacy-First': <Shield className="w-3 h-3" />,
+  'Whirlpool': <Users className="w-3 h-3" />,
+  'Multi-Asset': <Database className="w-3 h-3" />,
+  'Mobile Privacy': <Shield className="w-3 h-3" />,
+  'Web Wallet': <Globe className="w-3 h-3" />,
+  'Desktop Privacy': <Shield className="w-3 h-3" />,
+  'Multi-Coin': <Database className="w-3 h-3" />,
+  'Multi-Blockchain': <Network className="w-3 h-3" />,
+  'Bitcoin Analytics': <BarChart3 className="w-3 h-3" />,
+  'Monero Explorer': <Search className="w-3 h-3" />,
+  'Zcash Explorer': <Search className="w-3 h-3" />,
+  'Firo Explorer': <Search className="w-3 h-3" />,
+  'Beam Explorer': <Search className="w-3 h-3" />,
+  'Grin Explorer': <Search className="w-3 h-3" />,
+  'Blockchain Analysis': <BarChart3 className="w-3 h-3" />,
+  'Forensic Analysis': <Search className="w-3 h-3" />,
+  'Risk Assessment': <BarChart3 className="w-3 h-3" />,
+  'Compliance Tools': <ShieldCheck className="w-3 h-3" />,
+  'Visualization': <BarChart3 className="w-3 h-3" />,
+  'AML Tools': <ShieldCheck className="w-3 h-3" />,
+  'Confidential Trading': <Lock className="w-3 h-3" />,
+  'Private Smart Contracts': <Cpu className="w-3 h-3" />,
+};
+
+export default function CryptoExplorerHub() {
+  const [selectedCategory, setSelectedCategory] = useState('Privacy Coins');
+  const [selectedExplorer, setSelectedExplorer] = useState(BLOCKCHAIN_EXPLORERS['Privacy Coins'][0]);
+  const [searchAddress, setSearchAddress] = useState('');
+  const [connected, setConnected] = useState(false);
+  const [account, setAccount] = useState('');
+  const [chainId, setChainId] = useState(null);
+  const [balance, setBalance] = useState(null);
+  const [copied, setCopied] = useState(false);
+  const [showWallets, setShowWallets] = useState(false);
+  const [searchFilter, setSearchFilter] = useState('');
+  const [privacyMode, setPrivacyMode] = useState(true);
+  const [walletFilter, setWalletFilter] = useState('all');
+  const [securityFilter, setSecurityFilter] = useState('all');
+  const [showSettings, setShowSettings] = useState(false);
+  const [recentExplorers, setRecentExplorers] = useState([]);
+  const [favorites, setFavorites] = useState(new Set());
+
+  useEffect(() => {
+    checkConnection();
+    if (window.ethereum) {
+      window.ethereum.on('accountsChanged', handleAccountsChanged);
+      window.ethereum.on('chainChanged', handleChainChanged);
+    }
+    
+    // Load recent explorers and favorites from localStorage
+    const savedRecent = localStorage.getItem('recentExplorers');
+    const savedFavorites = localStorage.getItem('favorites');
+    if (savedRecent) setRecentExplorers(JSON.parse(savedRecent));
+    if (savedFavorites) setFavorites(new Set(JSON.parse(savedFavorites)));
+    
+    return () => {
+      if (window.ethereum) {
+        window.ethereum.removeListener('accountsChanged', handleAccountsChanged);
+        window.ethereum.removeListener('chainChanged', handleChainChanged);
+      }
+    };
+  }, []);
+
+  const checkConnection = async () => {
+    if (window.ethereum) {
+      try {
+        const accounts = await window.ethereum.request({ method: 'eth_accounts' });
+        if (accounts.length > 0) {
+          setAccount(accounts[0]);
+          setConnected(true);
+          getChainId();
+          getBalance(accounts[0]);
+        }
+      } catch (err) {
+        console.error('Error checking connection:', err);
+      }
+    }
+  };
+
+  const connectWallet = async (walletType) => {
+    try {
+      let provider = window.ethereum;
+      
+      if (walletType !== 'ethereum' && window[walletType]) {
+        provider = window[walletType];
+      }
+
+      if (!provider) {
+        alert(`Wallet not detected. Please install ${walletType} first.`);
+        return;
+      }
+
+      const accounts = await provider.request({ method: 'eth_requestAccounts' });
+      setAccount(accounts[0]);
+      setConnected(true);
+      setShowWallets(false);
+      getChainId();
+      getBalance(accounts[0]);
+    } catch (err) {
+      console.error('Connection error:', err);
+      alert('Failed to connect wallet');
+    }
+  };
+
+  const disconnectWallet = () => {
+    setConnected(false);
+    setAccount('');
+    setBalance(null);
+    setChainId(null);
+  };
+
+  const getChainId = async () => {
+    if (window.ethereum) {
+      try {
+        const id = await window.ethereum.request({ method: 'eth_chainId' });
+        setChainId(parseInt(id, 16));
+      } catch (err) {
+        console.error('Error getting chain ID:', err);
+      }
+    }
+  };
+
+  const getBalance = async (address) => {
+    if (window.ethereum) {
+      try {
+        const bal = await window.ethereum.request({
+          method: 'eth_getBalance',
+          params: [address, 'latest']
+        });
+        const ethBalance = parseInt(bal, 16) / 1e18;
+        setBalance(ethBalance.toFixed(4));
+      } catch (err) {
+        console.error('Error getting balance:', err);
+      }
+    }
+  };
+
+  const handleAccountsChanged = (accounts) => {
+    if (accounts.length === 0) {
+      disconnectWallet();
+    } else {
+      setAccount(accounts[0]);
+      getBalance(accounts[0]);
+    }
+  };
+
+  const handleChainChanged = () => {
+    window.location.reload();
+  };
+
+  const switchChain = async (targetChainId) => {
+    if (!window.ethereum) {
+      alert('Please connect a wallet first');
+      return;
+    }
+    try {
+      await window.ethereum.request({
+        method: 'wallet_switchEthereumChain',
+        params: [{ chainId: '0x' + targetChainId.toString(16) }],
+      });
+    } catch (err) {
+      console.error('Error switching chain:', err);
+      alert('Failed to switch network. You may need to add it manually in your wallet.');
+    }
+  };
+
+  const copyAddress = () => {
+    navigator.clipboard.writeText(account);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const openExplorer = (explorer, searchTerm) => {
+    let url = explorer.url;
+    if (searchTerm) {
+      url = url + '/address/' + searchTerm;
+    }
+    
+    // Add to recent explorers
+    const recent = [...recentExplorers];
+    const existingIndex = recent.findIndex(e => e.name === explorer.name);
+    if (existingIndex > -1) {
+      recent.splice(existingIndex, 1);
+    }
+    recent.unshift(explorer);
+    if (recent.length > 5) recent.pop();
+    setRecentExplorers(recent);
+    localStorage.setItem('recentExplorers', JSON.stringify(recent));
+    
+    window.open(url, '_blank');
+  };
+
+  const handleSearch = () => {
+    if (searchAddress) {
+      openExplorer(selectedExplorer, searchAddress);
+    } else if (account) {
+      openExplorer(selectedExplorer, account);
+    } else {
+      openExplorer(selectedExplorer);
+    }
+  };
+
+  const toggleFavorite = (explorerName) => {
+    const newFavorites = new Set(favorites);
+    if (newFavorites.has(explorerName)) {
+      newFavorites.delete(explorerName);
+    } else {
+      newFavorites.add(explorerName);
+    }
+    setFavorites(newFavorites);
+    localStorage.setItem('favorites', JSON.stringify([...newFavorites]));
+  };
+
+  const filteredExplorers = BLOCKCHAIN_EXPLORERS[selectedCategory].filter(exp => {
+    const matchesSearch = !searchFilter || exp.name.toLowerCase().includes(searchFilter.toLowerCase());
+    const matchesSecurity = securityFilter === 'all' || exp.security === securityFilter;
+    return matchesSearch && matchesSecurity;
+  });
+
+  const filteredWallets = walletFilter === 'all' 
+    ? WALLETS 
+    : WALLETS.filter(w => w.type === walletFilter);
+
+  const totalExplorers = Object.values(BLOCKCHAIN_EXPLORERS).reduce((sum, arr) => sum + arr.length, 0);
+  const featuredExplorers = Object.values(BLOCKCHAIN_EXPLORERS).flat().filter(exp => exp.featured);
+
+  const maskAddress = (addr) => {
+    if (!privacyMode) return addr;
+    return addr.slice(0, 6) + '•••••' + addr.slice(-4);
+  };
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-gray-900 via-black to-purple-900 text-white">
+      {/* Header */}
+      <div className="bg-gray-900/90 backdrop-blur-md border-b border-purple-500/30 sticky top-0 z-50 shadow-xl shadow-purple-500/10">
+        <div className="max-w-7xl mx-auto px-4 py-4">
+          <div className="flex items-center justify-between flex-wrap gap-4">
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 bg-gradient-to-br from-purple-500 via-pink-500 to-purple-700 rounded-xl flex items-center justify-center shadow-lg shadow-purple-500/50">
+                <Shield className="w-7 h-7" />
+              </div>
+              <div>
+                <h1 className="text-3xl font-bold bg-gradient-to-r from-purple-400 via-pink-400 to-purple-500 bg-clip-text text-transparent">
+                  Privacy Crypto Hub
+                </h1>
+                <p className="text-sm text-gray-400">Anonymous wallets, privacy coins & shielded tokens</p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3 flex-wrap">
+              <button
+                onClick={() => setShowSettings(true)}
+                className="p-2 bg-gray-800 hover:bg-gray-700 border border-gray-600 rounded-xl transition-all"
+                title="Settings"
+              >
+                <Settings className="w-5 h-5" />
+              </button>
+              <button
+                onClick={() => setPrivacyMode(!privacyMode)}
+                className="px-4 py-2 bg-gray-800 hover:bg-gray-700 border border-gray-600 rounded-xl transition-all flex items-center gap-2 shadow-lg hover:shadow-purple-500/30"
+                title={privacyMode ? 'Privacy Mode On' : 'Privacy Mode Off'}
+              >
+                {privacyMode ? <EyeOff className="w-5 h-5 text-purple-400" /> : <Eye className="w-5 h-5 text-gray-400" />}
+                <span className="text-sm font-medium">{privacyMode ? 'Hidden' : 'Visible'}</span>
+              </button>
+              {connected ? (
+                <>
+                  {chainId && (
+                    <div className="px-4 py-2 bg-purple-500/20 border border-purple-500/40 rounded-xl text-sm font-medium">
+                      Chain: {chainId}
+                    </div>
+                  )}
+                  {balance && (
+                    <div className="px-4 py-2 bg-green-500/20 border border-green-500/40 rounded-xl text-sm font-medium">
+                      {privacyMode ? '•••••' : balance} ETH
+                    </div>
+                  )}
+                  <button
+                    onClick={copyAddress}
+                    className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-xl transition-all shadow-lg"
+                  >
+                    {copied ? <CheckCircle className="w-5 h-5 text-green-400" /> : <Copy className="w-5 h-5" />}
+                    <span className="text-sm font-mono font-medium">
+                      {maskAddress(account)}
+                    </span>
+                  </button>
+                  <button
+                    onClick={disconnectWallet}
+                    className="px-5 py-2 bg-red-500/20 hover:bg-red-500/30 border border-red-500/40 rounded-xl transition-all text-sm font-medium"
+                  >
+                    Disconnect
+                  </button>
+                </>
+              ) : (
+                <button
+                  onClick={() => setShowWallets(true)}
+                  className="flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-purple-600 via-pink-600 to-purple-700 hover:from-purple-700 hover:via-pink-700 hover:to-purple-800 rounded-xl transition-all font-bold shadow-lg shadow-purple-500/50 hover:shadow-purple-500/70 hover:scale-105"
+                >
+                  <Wallet className="w-5 h-5" />
+                  Connect Wallet
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Wallet Selection Modal */}
+      {showWallets && (
+        <div className="fixed inset-0 bg-black/90 backdrop-blur-md z-50 flex items-center justify-center p-4 animate-fadeIn">
+          <div className="bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 border-2 border-purple-500/40 rounded-3xl p-8 max-w-5xl w-full max-h-[90vh] overflow-y-auto shadow-2xl shadow-purple-500/30">
+            <div className="flex items-center justify-between mb-6">
+              <div>
+                <h2 className="text-4xl font-bold flex items-center gap-3 bg-gradient-to-r from-purple-400 via-pink-400 to-purple-500 bg-clip-text text-transparent">
+                  <Shield className="w-10 h-10 text-purple-400" />
+                  Connect Privacy Wallet
+                </h2>
+                <p className="text-gray-400 text-base mt-2">Choose from privacy-focused or standard Web3 wallets</p>
+              </div>
+              <button
+                onClick={() => setShowWallets(false)}
+                className="text-gray-400 hover:text-white hover:bg-gray-700/50 p-3 rounded-xl transition-all"
+              >
+                <X className="w-8 h-8" />
+              </button>
+            </div>
+            
+            {/* Wallet Filter Tabs */}
+            <div className="flex gap-3 mb-8 overflow-x-auto pb-2">
+              {['all', 'privacy', 'standard', 'hardware'].map((filter) => (
+                <button
+                  key={filter}
+                  onClick={() => setWalletFilter(filter)}
+                  className={`px-6 py-3 rounded-xl font-bold capitalize whitespace-nowrap transition-all ${
+                    walletFilter === filter
+                      ? 'bg-gradient-to-r from-purple-600 to-pink-600 text-white shadow-lg shadow-purple-500/40 scale-105'
+                      : 'bg-gray-800 text-gray-300 hover:bg-gray-700 hover:scale-105'
+                  }`}
+                >
+                  {filter === 'all' ? `All (${WALLETS.length})` : 
+                   filter === 'privacy' ? `🔒 Privacy (${WALLETS.filter(w => w.type === 'privacy').length})` :
+                   filter === 'standard' ? `Standard (${WALLETS.filter(w => w.type === 'standard').length})` :
+                   `Hardware (${WALLETS.filter(w => w.type === 'hardware').length})`}
+                </button>
+              ))}
+            </div>
+            
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+              {filteredWallets.map((wallet) => (
+                <button
+                  key={wallet.name}
+                  onClick={() => connectWallet(wallet.injected)}
+                  className="flex flex-col items-start gap-3 p-4 bg-gray-800/50 hover:bg-gray-800 border border-gray-700 hover:border-purple-500 rounded-xl transition-all group text-left"
+                >
+                  <div className="flex items-center gap-3 w-full">
+                    <span className="text-2xl">{wallet.icon}</span>
+                    <div className="flex-1">
+                      <div className="font-semibold text-white group-hover:text-purple-400 transition-colors">
+                        {wallet.name}
+                      </div>
+                      <div className={`text-xs px-2 py-1 rounded-full mt-1 ${
+                        SECURITY_LEVELS[wallet.security]?.bg || 'bg-gray-700'
+                      } ${SECURITY_LEVELS[wallet.security]?.color || 'text-gray-300'}`}>
+                        {SECURITY_LEVELS[wallet.security]?.label || 'Unknown'}
+                      </div>
+                    </div>
+                    {wallet.featured && (
+                      <Star className="w-4 h-4 text-yellow-400 fill-current" />
+                    )}
+                  </div>
+                  <p className="text-xs text-gray-400 leading-relaxed">
+                    {wallet.description}
+                  </p>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Settings Modal */}
+      {showSettings && (
+        <div className="fixed inset-0 bg-black/90 backdrop-blur-md z-50 flex items-center justify-center p-4">
+          <div className="bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 border-2 border-purple-500/40 rounded-3xl p-8 max-w-2xl w-full shadow-2xl shadow-purple-500/30">
+            <div className="flex items-center justify-between mb-6">
+              <h2 className="text-3xl font-bold bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">
+                Settings
+              </h2>
+              <button
+                onClick={() => setShowSettings(false)}
+                className="text-gray-400 hover:text-white hover:bg-gray-700/50 p-2 rounded-xl transition-all"
+              >
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+            
+            <div className="space-y-6">
+              <div className="flex items-center justify-between p-4 bg-gray-800/50 rounded-xl">
+                <div>
+                  <h3 className="font-semibold">Privacy Mode</h3>
+                  <p className="text-sm text-gray-400">Hide sensitive information</p>
+                </div>
+                <button
+                  onClick={() => setPrivacyMode(!privacyMode)}
+                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                    privacyMode ? 'bg-purple-600' : 'bg-gray-600'
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                      privacyMode ? 'translate-x-6' : 'translate-x-1'
+                    }`}
+                  />
+                </button>
+              </div>
+              
+              <div className="p-4 bg-gray-800/50 rounded-xl">
+                <h3 className="font-semibold mb-3">Clear Data</h3>
+                <div className="flex gap-3">
+                  <button
+                    onClick={() => {
+                      setRecentExplorers([]);
+                      localStorage.removeItem('recentExplorers');
+                    }}
+                    className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg transition-all text-sm"
+                  >
+                    Clear Recent
+                  </button>
+                  <button
+                    onClick={() => {
+                      setFavorites(new Set());
+                      localStorage.removeItem('favorites');
+                    }}
+                    className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg transition-all text-sm"
+                  >
+                    Clear Favorites
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="max-w-7xl mx-auto px-4 py-8">
+        {/* Quick Stats */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+          <div className="bg-gradient-to-br from-purple-900/40 to-gray-900/40 backdrop-blur-sm rounded-2xl p-6 border border-purple-500/20">
+            <div className="flex items-center gap-3">
+              <div className="p-3 bg-purple-500/20 rounded-xl">
+                <Database className="w-6 h-6 text-purple-400" />
+              </div>
+              <div>
+                <div className="text-2xl font-bold text-white">{totalExplorers}</div>
+                <div className="text-sm text-gray-400">Privacy Tools</div>
+              </div>
+            </div>
+          </div>
+          
+          <div className="bg-gradient-to-br from-blue-900/40 to-gray-900/40 backdrop-blur-sm rounded-2xl p-6 border border-blue-500/20">
+            <div className="flex items-center gap-3">
+              <div className="p-3 bg-blue-500/20 rounded-xl">
+                <Layers className="w-6 h-6 text-blue-400" />
+              </div>
+              <div>
+                <div className="text-2xl font-bold text-white">{Object.keys(BLOCKCHAIN_EXPLORERS).length}</div>
+                <div className="text-sm text-gray-400">Categories</div>
+              </div>
+            </div>
+          </div>
+          
+          <div className="bg-gradient-to-br from-green-900/40 to-gray-900/40 backdrop-blur-sm rounded-2xl p-6 border border-green-500/20">
+            <div className="flex items-center gap-3">
+              <div className="p-3 bg-green-500/20 rounded-xl">
+                <ShieldCheck className="w-6 h-6 text-green-400" />
+              </div>
+              <div>
+                <div className="text-2xl font-bold text-white">
+                  {connected ? 'Connected' : 'Disconnected'}
+                </div>
+                <div className="text-sm text-gray-400">Wallet Status</div>
+              </div>
+            </div>
+          </div>
+          
+          <div className="bg-gradient-to-br from-orange-900/40 to-gray-900/40 backdrop-blur-sm rounded-2xl p-6 border border-orange-500/20">
+            <div className="flex items-center gap-3">
+              <div className="p-3 bg-orange-500/20 rounded-xl">
+                <Wallet className="w-6 h-6 text-orange-400" />
+              </div>
+              <div>
+                <div className="text-2xl font-bold text-white">{WALLETS.length}</div>
+                <div className="text-sm text-gray-400">Supported Wallets</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 xl:grid-cols-4 gap-8">
+          {/* Sidebar */}
+          <div className="xl:col-span-1 space-y-6">
+            {/* Categories */}
+            <div className="bg-gradient-to-br from-gray-900/70 to-gray-800/70 backdrop-blur-sm rounded-2xl p-6 border border-gray-700 shadow-xl">
+              <h2 className="text-xl font-bold mb-4 flex items-center gap-3">
+                <Layers className="w-5 h-5 text-purple-400" />
+                Privacy Categories
+              </h2>
+              <div className="space-y-2">
+                {Object.keys(BLOCKCHAIN_EXPLORERS).map((category) => (
+                  <button
+                    key={category}
+                    onClick={() => {
+                      setSelectedCategory(category);
+                      setSelectedExplorer(BLOCKCHAIN_EXPLORERS[category][0]);
+                      setSearchFilter('');
+                    }}
+                    className={`w-full text-left px-4 py-3 rounded-xl transition-all group ${
+                      selectedCategory === category 
+                        ? 'bg-gradient-to-r from-purple-600 to-pink-600 text-white shadow-lg shadow-purple-500/30' 
+                        : 'bg-gray-800/50 hover:bg-gray-800 text-gray-300 hover:text-white'
+                    }`}
+                  >
+                    <div className="font-semibold flex items-center justify-between">
+                      <span>{category}</span>
+                      <span className="text-xs bg-black/20 px-2 py-1 rounded-full">
+                        {BLOCKCHAIN_EXPLORERS[category].length}
+                      </span>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Recent & Favorites */}
+            <div className="bg-gradient-to-br from-gray-900/70 to-gray-800/70 backdrop-blur-sm rounded-2xl p-6 border border-gray-700 shadow-xl">
+              <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
+                <Clock className="w-5 h-5 text-purple-400" />
+                Quick Access
+              </h3>
+              <div className="space-y-3">
+                {recentExplorers.slice(0, 3).map((explorer, index) => (
+                  <button
+                    key={index}
+                    onClick={() => {
+                      setSelectedExplorer(explorer);
+                      setSelectedCategory(Object.keys(BLOCKCHAIN_EXPLORERS).find(
+                        cat => BLOCKCHAIN_EXPLORERS[cat].some(exp => exp.name === explorer.name)
+                      ) || selectedCategory);
+                    }}
+                    className="w-full flex items-center gap-3 p-3 bg-gray-800/30 hover:bg-gray-800 rounded-lg transition-all group"
+                  >
+                    <div className={`w-8 h-8 ${explorer.color} rounded-lg flex items-center justify-center text-sm font-bold`}>
+                      {explorer.icon}
+                    </div>
+                    <div className="flex-1 text-left">
+                      <div className="text-sm font-medium text-white group-hover:text-purple-400 transition-colors">
+                        {explorer.name}
+                      </div>
+                      <div className="text-xs text-gray-400 truncate">
+                        {explorer.ticker || 'Tool'}
+                      </div>
+                    </div>
+                  </button>
+                ))}
+                {recentExplorers.length === 0 && (
+                  <p className="text-sm text-gray-500 text-center py-4">
+                    No recent explorers
+                  </p>
+                )}
+              </div>
+            </div>
+
+            {/* Security Filter */}
+            <div className="bg-gradient-to-br from-gray-900/70 to-gray-800/70 backdrop-blur-sm rounded-2xl p-6 border border-gray-700 shadow-xl">
+              <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
+                <Filter className="w-5 h-5 text-purple-400" />
+                Security Filter
+              </h3>
+              <div className="space-y-2">
+                {['all', 'high', 'medium'].map((level) => (
+                  <button
+                    key={level}
+                    onClick={() => setSecurityFilter(level)}
+                    className={`w-full text-left px-4 py-2 rounded-lg transition-all ${
+                      securityFilter === level
+                        ? 'bg-purple-600 text-white shadow-lg shadow-purple-500/20'
+                        : 'bg-gray-800/50 hover:bg-gray-800 text-gray-300'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <div className={`w-2 h-2 rounded-full ${
+                        level === 'high' ? 'bg-green-400' :
+                        level === 'medium' ? 'bg-yellow-400' :
+                        'bg-purple-400'
+                      }`} />
+                      {level === 'all' ? 'All Security Levels' :
+                       level === 'high' ? 'High Security Only' :
+                       'Medium Security & Above'}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Main Content */}
+          <div className="xl:col-span-3 space-y-6">
+            {/* Search Bar */}
+            <div className="bg-gradient-to-br from-gray-900/70 to-gray-800/70 backdrop-blur-sm rounded-2xl p-6 border border-gray-700 shadow-xl">
+              <div className="flex gap-4 mb-4">
+                <div className="flex-1 relative">
+                  <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+                  <input
+                    type="text"
+                    value={searchAddress}
+                    onChange={(e) => setSearchAddress(e.target.value)}
+                    placeholder="Enter address, TX hash, or block number..."
+                    className="w-full pl-12 pr-4 py-4 bg-gray-800 border border-gray-600 rounded-xl focus:outline-none focus:border-purple-500 text-white placeholder-gray-400 transition-all"
+                    onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
+                  />
+                </div>
+                <button
+                  onClick={handleSearch}
+                  className="px-8 py-4 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 rounded-xl transition-all font-bold flex items-center gap-2 shadow-lg shadow-purple-500/30 hover:shadow-purple-500/50"
+                >
+                  <Zap className="w-5 h-5" />
+                  Search
+                </button>
+              </div>
+              
+              <div className="flex gap-4">
+                <div className="flex-1 relative">
+                  <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                  <input
+                    type="text"
+                    value={searchFilter}
+                    onChange={(e) => setSearchFilter(e.target.value)}
+                    placeholder="Filter explorers..."
+                    className="w-full pl-10 pr-4 py-3 bg-gray-800 border border-gray-600 rounded-xl focus:outline-none focus:border-purple-500 text-white text-sm placeholder-gray-400 transition-all"
+                  />
+                </div>
+                <button
+                  onClick={() => setSearchFilter('')}
+                  className="px-4 py-3 bg-gray-700 hover:bg-gray-600 rounded-xl transition-all text-sm font-medium"
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+
+            {/* Featured Explorers */}
+            {featuredExplorers.length > 0 && (
+              <div className="bg-gradient-to-br from-purple-900/30 to-gray-900/30 backdrop-blur-sm rounded-2xl p-6 border border-purple-500/30 shadow-xl">
+                <h2 className="text-xl font-bold mb-4 flex items-center gap-3">
+                  <Star className="w-5 h-5 text-yellow-400 fill-current" />
+                  Featured Privacy Tools
+                </h2>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {featuredExplorers.slice(0, 6).map((explorer) => (
+                    <button
+                      key={explorer.name}
+                      onClick={() => {
+                        setSelectedExplorer(explorer);
+                        setSelectedCategory(Object.keys(BLOCKCHAIN_EXPLORERS).find(
+                          cat => BLOCKCHAIN_EXPLORERS[cat].some(exp => exp.name === explorer.name)
+                        ) || selectedCategory);
+                      }}
+                      className="flex items-center gap-4 p-4 bg-gray-800/30 hover:bg-gray-800 border border-gray-700 hover:border-purple-500 rounded-xl transition-all group text-left"
+                    >
+                      <div className={`w-12 h-12 ${explorer.color} rounded-xl flex items-center justify-center text-xl font-bold flex-shrink-0`}>
+                        {explorer.icon}
+                      </div>
+                      <div className="flex-1">
+                        <div className="font-semibold text-white group-hover:text-purple-400 transition-colors">
+                          {explorer.name}
+                        </div>
+                        <div className="text-xs text-gray-400 mt-1">
+                          {explorer.ticker && (
+                            <span className="text-purple-400 font-mono mr-2">{explorer.ticker}</span>
+                          )}
+                          <span className={`px-2 py-1 rounded-full text-xs ${
+                            SECURITY_LEVELS[explorer.security]?.bg || 'bg-gray-700'
+                          } ${SECURITY_LEVELS[explorer.security]?.color || 'text-gray-300'}`}>
+                            {SECURITY_LEVELS[explorer.security]?.label || 'Unknown'}
+                          </span>
+                        </div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Explorers Grid */}
+            <div className="bg-gradient-to-br from-gray-900/70 to-gray-800/70 backdrop-blur-sm rounded-2xl p-6 border border-gray-700 shadow-xl">
+              <div className="flex items-center justify-between mb-6">
+                <h2 className="text-xl font-bold flex items-center gap-3">
+                  <Shield className="w-5 h-5 text-purple-400" />
+                  {selectedCategory}
+                  <span className="text-sm text-gray-400 font-normal">
+                    ({filteredExplorers.length} of {BLOCKCHAIN_EXPLORERS[selectedCategory].length})
+                  </span>
+                </h2>
+                <div className="flex items-center gap-2 text-sm text-gray-400">
+                  <TrendingUp className="w-4 h-4" />
+                  Sorted by relevance
+                </div>
+              </div>
+              
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-h-[600px] overflow-y-auto pr-2">
+                {filteredExplorers.map((explorer) => (
+                  <button
+                    key={explorer.name}
+                    onClick={() => setSelectedExplorer(explorer)}
+                    className={`flex items-center gap-4 p-4 rounded-xl border transition-all group text-left ${
+                      selectedExplorer.name === explorer.name
+                        ? 'bg-purple-600/20 border-purple-500 shadow-lg shadow-purple-500/20'
+                        : 'bg-gray-800/30 border-gray-700 hover:border-purple-500/50 hover:bg-gray-800/50'
+                    }`}
+                  >
+                    <div className={`w-14 h-14 ${explorer.color} rounded-xl flex items-center justify-center text-2xl font-bold flex-shrink-0`}>
+                      {explorer.icon}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1">
+                        <div className="font-semibold text-white group-hover:text-purple-400 transition-colors truncate">
+                          {explorer.name}
+                        </div>
+                        {explorer.featured && (
+                          <Star className="w-4 h-4 text-yellow-400 fill-current flex-shrink-0" />
+                        )}
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleFavorite(explorer.name);
+                          }}
+                          className="text-gray-400 hover:text-yellow-400 transition-colors"
+                        >
+                          <Star className={`w-4 h-4 ${favorites.has(explorer.name) ? 'text-yellow-400 fill-current' : ''}`} />
+                        </button>
+                      </div>
+                      <div className="text-xs text-gray-400 space-y-1">
+                        {explorer.ticker && (
+                          <div className="flex items-center gap-2">
+                            <span className="text-purple-400 font-mono">{explorer.ticker}</span>
+                            <span className={`px-2 py-1 rounded-full ${
+                              SECURITY_LEVELS[explorer.security]?.bg || 'bg-gray-700'
+                            } ${SECURITY_LEVELS[explorer.security]?.color || 'text-gray-300'}`}>
+                              {SECURITY_LEVELS[explorer.security]?.label || 'Unknown'}
+                            </span>
+                          </div>
+                        )}
+                        {explorer.technology && (
+                          <div className="flex items-center gap-2 text-gray-500">
+                            {TECHNOLOGY_ICONS[explorer.technology]}
+                            <span>{explorer.technology}</span>
+                          </div>
+                        )}
+                        {explorer.chainId && (
+                          <div className="flex items-center gap-2">
+                            <span>Chain ID: {explorer.chainId}</span>
+                            {chainId === explorer.chainId && (
+                              <span className="text-green-400 flex items-center gap-1">
+                                ● Connected
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openExplorer(explorer);
+                        }}
+                        className="p-2 bg-gray-700 hover:bg-gray-600 rounded-lg transition-all"
+                        title="Open Explorer"
+                      >
+                        <ExternalLink className="w-4 h-4" />
+                      </button>
+                      {explorer.chainId && window.ethereum && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            switchChain(explorer.chainId);
+                          }}
+                          className="px-2 py-1 bg-purple-500/20 hover:bg-purple-500/30 rounded text-xs transition-all"
+                          title="Switch to this network"
+                        >
+                          Switch
+                        </button>
+                      )}
+                    </div>
+                  </button>
+                ))}
+              </div>
+              
+              {filteredExplorers.length === 0 && (
+                <div className="text-center py-12">
+                  <Search className="w-12 h-12 text-gray-600 mx-auto mb-4" />
+                  <h3 className="text-lg font-semibold text-gray-400 mb-2">No explorers found</h3>
+                  <p className="text-gray-500">Try adjusting your search or filter criteria</p>
+                </div>
+              )}
+            </div>
+
+            {/* Selected Explorer Details */}
+            {selectedExplorer && (
+              <div className="bg-gradient-to-br from-purple-900/30 to-gray-900/30 backdrop-blur-sm rounded-2xl p-8 border border-purple-500/30 shadow-xl">
+                <div className="flex items-start gap-6 mb-6">
+                  <div className={`w-20 h-20 ${selectedExplorer.color} rounded-2xl flex items-center justify-center text-4xl font-bold flex-shrink-0`}>
+                    {selectedExplorer.icon}
+                  </div>
+                  <div className="flex-1">
+                    <div className="flex items-center gap-3 mb-2">
+                      <h3 className="text-3xl font-bold">{selectedExplorer.name}</h3>
+                      {selectedExplorer.featured && (
+                        <div className="flex items-center gap-1 px-3 py-1 bg-yellow-500/20 border border-yellow-500/40 rounded-full text-sm text-yellow-400">
+                          <Star className="w-4 h-4 fill-current" />
+                          Featured
+                        </div>
+                      )}
+                      <div className={`px-3 py-1 rounded-full text-sm font-medium ${
+                        SECURITY_LEVELS[selectedExplorer.security]?.bg || 'bg-gray-700'
+                      } ${SECURITY_LEVELS[selectedExplorer.security]?.color || 'text-gray-300'}`}>
+                        {SECURITY_LEVELS[selectedExplorer.security]?.label || 'Unknown Security'}
+                      </div>
+                    </div>
+                    
+                    {selectedExplorer.ticker && (
+                      <div className="text-purple-400 font-mono text-lg mb-2">{selectedExplorer.ticker}</div>
+                    )}
+                    
+                    <a
+                      href={selectedExplorer.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-purple-400 hover:text-purple-300 text-sm flex items-center gap-2 transition-colors"
+                    >
+                      {selectedExplorer.url.replace('https://', '')} 
+                      <ExternalLink className="w-4 h-4" />
+                    </a>
+                    
+                    {selectedExplorer.technology && (
+                      <div className="flex items-center gap-2 mt-3 text-sm text-gray-400">
+                        {TECHNOLOGY_ICONS[selectedExplorer.technology]}
+                        <span>Technology: {selectedExplorer.technology}</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <button
+                    onClick={() => openExplorer(selectedExplorer)}
+                    className="px-6 py-4 bg-purple-600 hover:bg-purple-700 rounded-xl transition-all font-semibold flex items-center justify-center gap-3"
+                  >
+                    <Globe className="w-5 h-5" />
+                    Open Explorer
+                  </button>
+                  
+                  {connected && (
+                    <button
+                      onClick={() => openExplorer(selectedExplorer, account)}
+                      className="px-6 py-4 bg-gray-700 hover:bg-gray-600 rounded-xl transition-all font-semibold flex items-center justify-center gap-3"
+                    >
+                      <Wallet className="w-5 h-5" />
+                      View My Wallet
+                    </button>
+                  )}
+                  
+                  {selectedExplorer.chainId && window.ethereum && (
+                    <button
+                      onClick={() => switchChain(selectedExplorer.chainId)}
+                      className="px-6 py-4 bg-green-600 hover:bg-green-700 rounded-xl transition-all font-semibold flex items-center justify-center gap-3"
+                    >
+                      <Network className="w-5 h-5" />
+                      Switch Network
+                    </button>
+                  )}
+                </div>
+
+                {selectedExplorer.chainId && (
+                  <div className="mt-6 p-4 bg-gray-800/50 rounded-xl">
+                    <h4 className="font-semibold mb-2 flex items-center gap-2">
+                      <Network className="w-4 h-4 text-purple-400" />
+                      Network Information
+                    </h4>
+                    <div className="text-sm text-gray-400 space-y-1">
+                      <div>Chain ID: <span className="text-white font-mono">{selectedExplorer.chainId}</span></div>
+                      {chainId === selectedExplorer.chainId && (
+                        <div className="text-green-400 flex items-center gap-2">
+                          ● Currently connected to this network
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Security Notice */}
+            <div className="bg-gradient-to-br from-gray-900/70 to-gray-800/70 backdrop-blur-sm rounded-2xl p-6 border border-gray-700 shadow-xl">
+              <h3 className="text-lg font-bold mb-4 flex items-center gap-3">
+                <ShieldCheck className="w-5 h-5 text-green-400" />
+                Privacy & Security Guidelines
+              </h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm text-gray-400">
+                <div className="space-y-3">
+                  <div className="flex items-start gap-3">
+                    <div className="w-6 h-6 bg-green-500/20 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5">
+                      <ShieldCheck className="w-3 h-3 text-green-400" />
+                    </div>
+                    <div>
+                      <div className="font-semibold text-white mb-1">Verify URLs</div>
+                      <p>Always double-check explorer URLs before connecting wallets or entering sensitive data.</p>
+                    </div>
+                  </div>
+                  <div className="flex items-start gap-3">
+                    <div className="w-6 h-6 bg-blue-500/20 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5">
+                      <BookOpen className="w-3 h-3 text-blue-400" />
+                    </div>
+                    <div>
+                      <div className="font-semibold text-white mb-1">Research Protocols</div>
+                      <p>Understand each privacy tool's specific guarantees, limitations, and threat model.</p>
+                    </div>
+                  </div>
+                </div>
+                <div className="space-y-3">
+                  <div className="flex items-start gap-3">
+                    <div className="w-6 h-6 bg-purple-500/20 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5">
+                      <EyeOff className="w-3 h-3 text-purple-400" />
+                    </div>
+                    <div>
+                      <div className="font-semibold text-white mb-1">Use VPN/Tor</div>
+                      <p>Enhance anonymity by using privacy networks when accessing privacy tools.</p>
+                    </div>
+                  </div>
+                  <div className="flex items-start gap-3">
+                    <div className="w-6 h-6 bg-orange-500/20 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5">
+                      <Lock className="w-3 h-3 text-orange-400" />
+                    </div>
+                    <div>
+                      <div className="font-semibold text-white mb-1">Secure Keys</div>
+                      <p>Never share private keys or seed phrases. Use hardware wallets for large amounts.</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
