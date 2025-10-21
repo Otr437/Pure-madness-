@@ -1,0 +1,820 @@
+// main.go
+package main
+
+import (
+    "crypto/ecdsa"
+    "crypto/rand"
+    "encoding/hex"
+    "encoding/json"
+    "fmt"
+    "log"
+    "math/big"
+    "net/http"
+    "strconv"
+    "strings"
+    "time"
+
+    "github.com/ethereum/go-ethereum/accounts"
+    "github.com/ethereum/go-ethereum/accounts/keystore"
+    "github.com/ethereum/go-ethereum/common"
+    "github.com/ethereum/go-ethereum/common/hexutil"
+    "github.com/ethereum/go-ethereum/core/types"
+    "github.com/ethereum/go-ethereum/crypto"
+    "github.com/gorilla/mux"
+    "github.com/gorilla/websocket"
+)
+
+const (
+    ZKKaiChainID = 1729
+    BlockGasLimit = 30000000
+    GasPrice = 250000000
+)
+
+// Blockchain Core Types
+type ZKKaiBlockchain struct {
+    ChainID       *big.Int
+    CurrentBlock  *Block
+    Blocks        []*Block
+    Validators    []*Validator
+    GasSystem     *KaiaGasSystem
+    ZKSystem      *ZKProofSystem
+}
+
+type Block struct {
+    Number       *big.Int    `json:"number"`
+    Hash         string      `json:"hash"`
+    ParentHash   string      `json:"parentHash"`
+    Timestamp    uint64      `json:"timestamp"`
+    GasLimit     uint64      `json:"gasLimit"`
+    GasUsed      uint64      `json:"gasUsed"`
+    BaseFee      *big.Int    `json:"baseFeePerGas"`
+    StateRoot    string      `json:"stateRoot"`
+    Transactions []*Transaction `json:"transactions"`
+    ZKProof      *ZKProof    `json:"zkProof"`
+}
+
+type Transaction struct {
+    Hash      string    `json:"hash"`
+    From      string    `json:"from"`
+    To        string    `json:"to"`
+    Value     *big.Int  `json:"value"`
+    Gas       uint64    `json:"gas"`
+    GasPrice  *big.Int  `json:"gasPrice"`
+    Input     []byte    `json:"input"`
+    ZKProof   []byte    `json:"zkProof"`
+}
+
+type Validator struct {
+    Address string   `json:"address"`
+    Stake   *big.Int `json:"stake"`
+    Active  bool     `json:"active"`
+}
+
+type ZKProof struct {
+    Proof  []byte     `json:"proof"`
+    Inputs []string   `json:"inputs"`
+    PublicInputs []string `json:"publicInputs"`
+}
+
+type KaiaGasSystem struct {
+    FreeTxsPerDay    uint64
+    SponsoredAccounts map[string]bool
+    DailyTxCount     map[string]uint64
+    LastTxDate       map[string]int64
+}
+
+type ZKProofSystem struct {
+    ProverURL    string
+    VerifierKey  []byte
+    RecursionEnabled bool
+}
+
+// Wallet Management
+type WalletManager struct {
+    KeyStore   *keystore.KeyStore
+    Wallets    map[string]*Wallet
+    HDWallets  map[string]*HDWallet
+}
+
+type Wallet struct {
+    Address    common.Address `json:"address"`
+    PublicKey  string         `json:"publicKey"`
+    PrivateKey *ecdsa.PrivateKey `json:"-"`
+    Balance    *big.Int       `json:"balance"`
+    Nonce      uint64         `json:"nonce"`
+}
+
+type HDWallet struct {
+    Mnemonic   string         `json:"mnemonic"`
+    Seed       []byte         `json:"-"`
+    Accounts   []*Wallet      `json:"accounts"`
+    Path       string         `json:"path"`
+}
+
+type TransactionRequest struct {
+    From     string `json:"from"`
+    To       string `json:"to"`
+    Value    string `json:"value"`
+    Gas      string `json:"gas"`
+    GasPrice string `json:"gasPrice"`
+    Data     string `json:"data"`
+    Nonce    string `json:"nonce"`
+}
+
+// RPC System
+type RPCResponse struct {
+    JSONRPC string      `json:"jsonrpc"`
+    ID      interface{} `json:"id"`
+    Result  interface{} `json:"result,omitempty"`
+    Error   *RPCError   `json:"error,omitempty"`
+}
+
+type RPCError struct {
+    Code    int    `json:"code"`
+    Message string `json:"message"`
+}
+
+type RPCServer struct {
+    Blockchain *ZKKaiBlockchain
+    WalletMgr  *WalletManager
+    Upgrader   websocket.Upgrader
+}
+
+// Mobile & Extension Support
+type MobileWallet struct {
+    DeviceID   string `json:"deviceId"`
+    Wallet     *Wallet `json:"wallet"`
+    Biometric  bool   `json:"biometricEnabled"`
+    PushToken  string `json:"pushToken"`
+}
+
+type PushNotification struct {
+    To      string `json:"to"`
+    Title   string `json:"title"`
+    Body    string `json:"body"`
+    Data    map[string]interface{} `json:"data"`
+}
+
+type BrowserExtension struct {
+    ExtensionID string `json:"extensionId"`
+    Permissions []string `json:"permissions"`
+    Networks    []string `json:"networks"`
+}
+
+type HardwareWallet struct {
+    Type    string `json:"type"`
+    Connected bool `json:"connected"`
+    Wallet  *Wallet `json:"wallet"`
+}
+
+// DApp & DeFi System
+type DAppConnector struct {
+    DAppID     string `json:"dappId"`
+    Name       string `json:"name"`
+    Icon       string `json:"icon"`
+    Connected  bool   `json:"connected"`
+    Permissions []DAppPermission `json:"permissions"`
+}
+
+type DAppPermission struct {
+    Method   string `json:"method"`
+    Granted  bool   `json:"granted"`
+}
+
+type Token struct {
+    Address  common.Address `json:"address"`
+    Name     string         `json:"name"`
+    Symbol   string         `json:"symbol"`
+    Decimals uint8          `json:"decimals"`
+    TotalSupply *big.Int    `json:"totalSupply"`
+}
+
+type TokenBalance struct {
+    Token    *Token   `json:"token"`
+    Balance  *big.Int `json:"balance"`
+}
+
+type NFT struct {
+    TokenID     *big.Int        `json:"tokenId"`
+    Contract    common.Address  `json:"contract"`
+    Owner       common.Address  `json:"owner"`
+    Metadata    NFTMetadata     `json:"metadata"`
+    URI         string          `json:"uri"`
+}
+
+type NFTMetadata struct {
+    Name        string                 `json:"name"`
+    Description string                 `json:"description"`
+    Image       string                 `json:"image"`
+    Attributes  []NFTAttribute         `json:"attributes"`
+    Properties  map[string]interface{} `json:"properties"`
+}
+
+type NFTAttribute struct {
+    TraitType string      `json:"trait_type"`
+    Value     interface{} `json:"value"`
+}
+
+type LiquidityPool struct {
+    Address     common.Address `json:"address"`
+    TokenA      *Token         `json:"tokenA"`
+    TokenB      *Token         `json:"tokenB"`
+    ReserveA    *big.Int       `json:"reserveA"`
+    ReserveB    *big.Int       `json:"reserveB"`
+    TotalSupply *big.Int       `json:"totalSupply"`
+}
+
+type SwapQuote struct {
+    FromToken *Token   `json:"fromToken"`
+    ToToken   *Token   `json:"toToken"`
+    AmountIn  *big.Int `json:"amountIn"`
+    AmountOut *big.Int `json:"amountOut"`
+    PriceImpact string `json:"priceImpact"`
+    Fee       *big.Int `json:"fee"`
+}
+
+// Governance & Analytics
+type Proposal struct {
+    ID          *big.Int      `json:"id"`
+    Title       string        `json:"title"`
+    Description string        `json:"description"`
+    Proposer    common.Address `json:"proposer"`
+    ForVotes    *big.Int      `json:"forVotes"`
+    AgainstVotes *big.Int     `json:"againstVotes"`
+    StartBlock  *big.Int      `json:"startBlock"`
+    EndBlock    *big.Int      `json:"endBlock"`
+    Executed    bool          `json:"executed"`
+}
+
+type Vote struct {
+    ProposalID *big.Int      `json:"proposalId"`
+    Voter      common.Address `json:"voter"`
+    Support    bool          `json:"support"`
+    Votes      *big.Int      `json:"votes"`
+}
+
+type Analytics struct {
+    TotalTransactions *big.Int `json:"totalTransactions"`
+    ActiveUsers       int      `json:"activeUsers"`
+    TVL               *big.Int `json:"tvl"`
+    DailyVolume       *big.Int `json:"dailyVolume"`
+    GasUsed           *big.Int `json:"gasUsed"`
+}
+
+type SecurityScan struct {
+    Address      common.Address `json:"address"`
+    RiskLevel    string         `json:"riskLevel"`
+    Issues       []SecurityIssue `json:"issues"`
+    LastScanned  time.Time      `json:"lastScanned"`
+}
+
+type SecurityIssue struct {
+    Level   string `json:"level"`
+    Title   string `json:"title"`
+    Description string `json:"description"`
+}
+
+type PriceOracle struct {
+    Prices map[string]*big.Int `json:"prices"`
+}
+
+type Bridge struct {
+    SupportedChains []BridgeChain `json:"supportedChains"`
+    Fees            map[uint64]*big.Int `json:"fees"`
+}
+
+type BridgeChain struct {
+    ChainID   uint64 `json:"chainId"`
+    Name      string `json:"name"`
+    RPCURL    string `json:"rpcUrl"`
+    Explorer  string `json:"explorer"`
+}
+
+// OPCODE implementation
+type OpCode struct {
+    Value       byte    `json:"value"`
+    GasCost     uint64  `json:"gas"`
+    Name        string  `json:"name"`
+    Description string  `json:"description"`
+    Category    string  `json:"category,omitempty"`
+}
+
+var ZKKaiOpcodes = map[string]OpCode{
+    // Standard EVM Opcodes
+    "STOP":           {0x00, 0, "STOP", "Halts execution", "EVM"},
+    "ADD":            {0x01, 3, "ADD", "Addition operation", "EVM"},
+    "MUL":            {0x02, 5, "MUL", "Multiplication operation", "EVM"},
+    "SUB":            {0x03, 3, "SUB", "Subtraction operation", "EVM"},
+    "DIV":            {0x04, 5, "DIV", "Integer division operation", "EVM"},
+    "SDIV":           {0x05, 5, "SDIV", "Signed integer division", "EVM"},
+    "MOD":            {0x06, 5, "MOD", "Modulo remainder operation", "EVM"},
+    "SMOD":           {0x07, 5, "SMOD", "Signed modulo remainder", "EVM"},
+    "ADDMOD":         {0x08, 8, "ADDMOD", "Modulo addition", "EVM"},
+    "MULMOD":         {0x09, 8, "MULMOD", "Modulo multiplication", "EVM"},
+    "EXP":            {0x0a, 10, "EXP", "Exponential operation", "EVM"},
+    "SIGNEXTEND":     {0x0b, 5, "SIGNEXTEND", "Extend length of two's complement", "EVM"},
+    
+    // Comparison and Bitwise
+    "LT":             {0x10, 3, "LT", "Less-than comparison", "EVM"},
+    "GT":             {0x11, 3, "GT", "Greater-than comparison", "EVM"},
+    "SLT":            {0x12, 3, "SLT", "Signed less-than comparison", "EVM"},
+    "SGT":            {0x13, 3, "SGT", "Signed greater-than comparison", "EVM"},
+    "EQ":             {0x14, 3, "EQ", "Equality comparison", "EVM"},
+    "ISZERO":         {0x15, 3, "ISZERO", "Is-zero comparison", "EVM"},
+    "AND":            {0x16, 3, "AND", "Bitwise AND operation", "EVM"},
+    "OR":             {0x17, 3, "OR", "Bitwise OR operation", "EVM"},
+    "XOR":            {0x18, 3, "XOR", "Bitwise XOR operation", "EVM"},
+    "NOT":            {0x19, 3, "NOT", "Bitwise NOT operation", "EVM"},
+    "BYTE":           {0x1a, 3, "BYTE", "Retrieve single byte", "EVM"},
+    "SHL":            {0x1b, 3, "SHL", "Shift left operation", "EVM"},
+    "SHR":            {0x1c, 3, "SHR", "Logical shift right", "EVM"},
+    "SAR":            {0x1d, 3, "SAR", "Arithmetic shift right", "EVM"},
+    
+    // Cryptographic
+    "SHA3":           {0x20, 30, "SHA3", "Compute Keccak-256 hash", "EVM"},
+    
+    // Environmental
+    "ADDRESS":        {0x30, 2, "ADDRESS", "Get address of current account", "EVM"},
+    "BALANCE":        {0x31, 100, "BALANCE", "Get balance of address", "EVM"},
+    "ORIGIN":         {0x32, 2, "ORIGIN", "Get execution origination address", "EVM"},
+    "CALLER":         {0x33, 2, "CALLER", "Get caller address", "EVM"},
+    "CALLVALUE":      {0x34, 2, "CALLVALUE", "Get deposited value", "EVM"},
+    "CALLDATALOAD":   {0x35, 3, "CALLDATALOAD", "Get input data", "EVM"},
+    "CALLDATASIZE":   {0x36, 2, "CALLDATASIZE", "Get size of input data", "EVM"},
+    "CALLDATACOPY":   {0x37, 3, "CALLDATACOPY", "Copy input data", "EVM"},
+    "CODESIZE":       {0x38, 2, "CODESIZE", "Get size of code", "EVM"},
+    "CODECOPY":       {0x39, 3, "CODECOPY", "Copy code", "EVM"},
+    "GASPRICE":       {0x3a, 2, "GASPRICE", "Get gas price", "EVM"},
+    "EXTCODESIZE":    {0x3b, 100, "EXTCODESIZE", "Get size of account code", "EVM"},
+    "EXTCODECOPY":    {0x3c, 100, "EXTCODECOPY", "Copy account code", "EVM"},
+    "RETURNDATASIZE": {0x3d, 2, "RETURNDATASIZE", "Get size of return data", "EVM"},
+    "RETURNDATACOPY": {0x3e, 3, "RETURNDATACOPY", "Copy return data", "EVM"},
+    "EXTCODEHASH":    {0x3f, 100, "EXTCODEHASH", "Get hash of account code", "EVM"},
+    
+    // Block Information
+    "BLOCKHASH":      {0x40, 20, "BLOCKHASH", "Get hash of recent block", "EVM"},
+    "COINBASE":       {0x41, 2, "COINBASE", "Get block beneficiary", "EVM"},
+    "TIMESTAMP":      {0x42, 2, "TIMESTAMP", "Get block timestamp", "EVM"},
+    "NUMBER":         {0x43, 2, "NUMBER", "Get block number", "EVM"},
+    "DIFFICULTY":     {0x44, 2, "DIFFICULTY", "Get block difficulty", "EVM"},
+    "GASLIMIT":       {0x45, 2, "GASLIMIT", "Get block gas limit", "EVM"},
+    "CHAINID":        {0x46, 2, "CHAINID", "Get chain ID", "EVM"},
+    "SELFBALANCE":    {0x47, 5, "SELFBALANCE", "Get balance of current account", "EVM"},
+    "BASEFEE":        {0x48, 2, "BASEFEE", "Get base fee", "EVM"},
+    
+    // Stack, Memory, Storage and Flow
+    "POP":            {0x50, 2, "POP", "Remove item from stack", "EVM"},
+    "MLOAD":          {0x51, 3, "MLOAD", "Load word from memory", "EVM"},
+    "MSTORE":         {0x52, 3, "MSTORE", "Save word to memory", "EVM"},
+    "MSTORE8":        {0x53, 3, "MSTORE8", "Save byte to memory", "EVM"},
+    "SLOAD":          {0x54, 100, "SLOAD", "Load word from storage", "EVM"},
+    "SSTORE":         {0x55, 0, "SSTORE", "Save word to storage", "EVM"},
+    "JUMP":           {0x56, 8, "JUMP", "Alter program counter", "EVM"},
+    "JUMPI":          {0x57, 10, "JUMPI", "Conditionally alter PC", "EVM"},
+    "PC":             {0x58, 2, "PC", "Get program counter", "EVM"},
+    "MSIZE":          {0x59, 2, "MSIZE", "Get size of active memory", "EVM"},
+    "GAS":            {0x5a, 2, "GAS", "Get amount of available gas", "EVM"},
+    "JUMPDEST":       {0x5b, 1, "JUMPDEST", "Mark valid jump destination", "EVM"},
+    
+    // Push Operations
+    "PUSH1":          {0x60, 3, "PUSH1", "Place 1-byte item on stack", "EVM"},
+    "PUSH2":          {0x61, 3, "PUSH2", "Place 2-byte item on stack", "EVM"},
+    "PUSH32":         {0x7f, 3, "PUSH32", "Place 32-byte item on stack", "EVM"},
+    
+    // Duplicate Operations
+    "DUP1":           {0x80, 3, "DUP1", "Duplicate 1st stack item", "EVM"},
+    "DUP2":           {0x81, 3, "DUP2", "Duplicate 2nd stack item", "EVM"},
+    "DUP16":          {0x8f, 3, "DUP16", "Duplicate 16th stack item", "EVM"},
+    
+    // Swap Operations
+    "SWAP1":          {0x90, 3, "SWAP1", "Exchange 1st and 2nd stack items", "EVM"},
+    "SWAP2":          {0x91, 3, "SWAP2", "Exchange 1st and 3rd stack items", "EVM"},
+    "SWAP16":         {0x9f, 3, "SWAP16", "Exchange 1st and 17th stack items", "EVM"},
+    
+    // Log Operations
+    "LOG0":           {0xa0, 375, "LOG0", "Append log record with 0 topics", "EVM"},
+    "LOG1":           {0xa1, 750, "LOG1", "Append log record with 1 topic", "EVM"},
+    "LOG2":           {0xa2, 1125, "LOG2", "Append log record with 2 topics", "EVM"},
+    "LOG3":           {0xa3, 1500, "LOG3", "Append log record with 3 topics", "EVM"},
+    "LOG4":           {0xa4, 1875, "LOG4", "Append log record with 4 topics", "EVM"},
+    
+    // System Operations
+    "CREATE":         {0xf0, 32000, "CREATE", "Create new account with code", "EVM"},
+    "CALL":           {0xf1, 100, "CALL", "Message-call into account", "EVM"},
+    "CALLCODE":       {0xf2, 100, "CALLCODE", "Message-call into this account", "EVM"},
+    "RETURN":         {0xf3, 0, "RETURN", "Halt and return output data", "EVM"},
+    "DELEGATECALL":   {0xf4, 100, "DELEGATECALL", "Message-call with delegate", "EVM"},
+    "CREATE2":        {0xf5, 32000, "CREATE2", "Create account with deterministic address", "EVM"},
+    "STATICCALL":     {0xfa, 100, "STATICCALL", "Static message-call", "EVM"},
+    "REVERT":         {0xfd, 0, "REVERT", "Halt and revert state changes", "EVM"},
+    "INVALID":        {0xfe, 0, "INVALID", "Invalid instruction", "EVM"},
+    "SELFDESTRUCT":   {0xff, 5000, "SELFDESTRUCT", "Halt and register for deletion", "EVM"},
+    
+    // zkSync Custom Opcodes
+    "ZK_ADD":         {0xc0, 10, "ZK_ADD", "EC point addition on BN254", "zkSync"},
+    "ZK_MUL":         {0xc1, 20, "ZK_MUL", "EC scalar multiplication on BN254", "zkSync"},
+    "ZK_SUB":         {0xc2, 10, "ZK_SUB", "EC point subtraction", "zkSync"},
+    "ZK_PAIRING":     {0xc3, 1000, "ZK_PAIRING", "BN254 pairing check", "zkSync"},
+    "ZK_ECADD":       {0xc4, 15, "ZK_ECADD", "Optimized EC addition", "zkSync"},
+    "ZK_ECMUL":       {0xc5, 25, "ZK_ECMUL", "Optimized EC multiplication", "zkSync"},
+    "ZK_ECPAIRING":   {0xc6, 800, "ZK_ECPAIRING", "Optimized pairing", "zkSync"},
+    "ZK_BLAKE2F":     {0xc7, 50, "ZK_BLAKE2F", "Blake2f compression", "zkSync"},
+    "ZK_MODEXP":      {0xc8, 200, "ZK_MODEXP", "Modular exponentiation", "zkSync"},
+    "ZK_SHA256":      {0xc9, 60, "ZK_SHA256", "SHA256 for circuits", "zkSync"},
+    "ZK_RIPEMD160":   {0xca, 60, "ZK_RIPEMD160", "RIPEMD160 for circuits", "zkSync"},
+    "ZK_IDENTITY":    {0xcb, 30, "ZK_IDENTITY", "Identity precompile", "zkSync"},
+    "ZK_ECRECOVER":   {0xcc, 100, "ZK_ECRECOVER", "ECDSA recovery", "zkSync"},
+    "ZK_MODELOAD":    {0xcd, 10, "ZK_MODELOAD", "Load from zk memory", "zkSync"},
+    "ZK_MODELSTORE":  {0xce, 10, "ZK_MODELSTORE", "Store to zk memory", "zkSync"},
+    "ZK_MODELCOPY":   {0xcf, 15, "ZK_MODELCOPY", "Copy zk memory", "zkSync"},
+    "ZK_PRECOMPILE":  {0xd0, 5, "ZK_PRECOMPILE", "Generic zk precompile", "zkSync"},
+    
+    // Kaia Custom Opcodes
+    "KAI_FEE":        {0xe0, 2, "KAI_FEE", "Calculate dynamic fee", "Kaia"},
+    "KAI_VALIDATE":   {0xe1, 10, "KAI_VALIDATE", "Validate transaction", "Kaia"},
+    "KAI_COMMIT":     {0xe2, 5, "KAI_COMMIT", "Commit state", "Kaia"},
+    "KAI_SIGN":       {0xe3, 15, "KAI_SIGN", "Sign data", "Kaia"},
+    "KAI_VERIFY":     {0xe4, 20, "KAI_VERIFY", "Verify signature", "Kaia"},
+    "KAI_RANDOM":     {0xe5, 8, "KAI_RANDOM", "Generate random number", "Kaia"},
+    "KAI_ENCRYPT":    {0xe6, 25, "KAI_ENCRYPT", "Encrypt data", "Kaia"},
+    "KAI_DECRYPT":    {0xe7, 25, "KAI_DECRYPT", "Decrypt data", "Kaia"},
+    "KAI_COMPRESS":   {0xe8, 12, "KAI_COMPRESS", "Compress data", "Kaia"},
+    "KAI_DECOMPRESS": {0xe9, 12, "KAI_DECOMPRESS", "Decompress data", "Kaia"},
+    "KAI_HASH":       {0xea, 10, "KAI_HASH", "Kaia hash function", "Kaia"},
+    "KAI_MERKLEPROOF":{0xeb, 18, "KAI_MERKLEPROOF", "Verify Merkle proof", "Kaia"},
+    "KAI_BATCH":      {0xec, 5, "KAI_BATCH", "Batch operations", "Kaia"},
+    "KAI_SPONSOR":    {0xed, 2, "KAI_SPONSOR", "Gas sponsorship", "Kaia"},
+    "KAI_MOBILE":     {0xee, 3, "KAI_MOBILE", "Mobile optimization", "Kaia"},
+    "KAI_GOVERN":     {0xef, 5, "KAI_GOVERN", "Governance operation", "Kaia"},
+}
+
+// Chain configuration
+type ChainConfig struct {
+    ChainID        *big.Int `json:"chainId"`
+    NetworkID      *big.Int `json:"networkId"`
+    Name           string   `json:"name"`
+    ShortName      string   `json:"shortName"`
+    Consensus      string   `json:"consensus"`
+    BlockPeriod    uint64   `json:"blockPeriod"`
+    BlockGasLimit  uint64   `json:"blockGasLimit"`
+    EpochLength    uint64   `json:"epochLength"`
+    ValidatorMinStake *big.Int `json:"validatorMinStake"`
+    ZKProofTimeWindow uint64 `json:"zkProofTimeWindow"`
+    MaxBlockSize   uint64   `json:"maxBlockSize"`
+    ValidityProofs bool     `json:"validityProofs"`
+    Recursion      bool     `json:"recursion"`
+    GasPrice       *big.Int `json:"gasPrice"`
+    GasAbstraction bool     `json:"gasAbstraction"`
+    GasSponsorship bool     `json:"gasSponsorship"`
+    FreeTxsPerDay  uint64   `json:"freeTxsPerDay"`
+    NativeCurrency struct {
+        Name     string `json:"name"`
+        Symbol   string `json:"symbol"`
+        Decimals uint8  `json:"decimals"`
+    } `json:"nativeCurrency"`
+    RPC      []string `json:"rpc"`
+    Faucets  []string `json:"faucets"`
+    Explorers []struct {
+        Name    string `json:"name"`
+        URL     string `json:"url"`
+        Standard string `json:"standard"`
+    } `json:"explorers"`
+    InfoURL  string `json:"infoURL"`
+    Testnet  bool   `json:"testnet"`
+}
+
+func GetZKKaiConfig() *ChainConfig {
+    config := &ChainConfig{
+        ChainID:        big.NewInt(1729),
+        NetworkID:      big.NewInt(1729),
+        Name:           "zkKaia",
+        ShortName:      "zkkai",
+        Consensus:      "hybrid-pos-zk",
+        BlockPeriod:    1,
+        BlockGasLimit:  30000000,
+        EpochLength:    30000,
+        ValidatorMinStake: big.NewInt(1000000000000000000),
+        ZKProofTimeWindow: 12,
+        MaxBlockSize:   4000000,
+        ValidityProofs: true,
+        Recursion:      true,
+        GasPrice:       big.NewInt(250000000),
+        GasAbstraction: true,
+        GasSponsorship: true,
+        FreeTxsPerDay:  10,
+        Testnet:        false,
+    }
+    
+    config.NativeCurrency.Name = "zkKaia Token"
+    config.NativeCurrency.Symbol = "ZKAI"
+    config.NativeCurrency.Decimals = 18
+    
+    config.RPC = []string{"http://localhost:8545"}
+    config.Faucets = []string{}
+    config.Explorers = []struct {
+        Name    string `json:"name"`
+        URL     string `json:"url"`
+        Standard string `json:"standard"`
+    }{
+        {
+            Name:    "zkKaia Explorer",
+            URL:     "https://explorer.zkkaia.org",
+            Standard: "EIP3091",
+        },
+    }
+    config.InfoURL = "https://zkkaia.org"
+    
+    return config
+}
+
+// Genesis configuration
+type Genesis struct {
+    Config struct {
+        ChainID             *big.Int `json:"chainId"`
+        HomesteadBlock      *big.Int `json:"homesteadBlock"`
+        ByzantiumBlock      *big.Int `json:"byzantiumBlock"`
+        ConstantinopleBlock *big.Int `json:"constantinopleBlock"`
+        PetersburgBlock     *big.Int `json:"petersburgBlock"`
+        IstanbulBlock       *big.Int `json:"istanbulBlock"`
+        BerlinBlock         *big.Int `json:"berlinBlock"`
+        LondonBlock         *big.Int `json:"londonBlock"`
+        ZKKaiBlock          *big.Int `json:"zkKaiaBlock"`
+        ZKKai               struct {
+            GasPrice        string `json:"gasPrice"`
+            BlockGasLimit   string `json:"blockGasLimit"`
+            BlockPeriod     uint64 `json:"blockPeriod"`
+            EpochLength     uint64 `json:"epochLength"`
+            ValidatorMinStake string `json:"validatorMinStake"`
+            FreeTxsPerDay   uint64 `json:"freeTxsPerDay"`
+            GasAbstraction  bool   `json:"gasAbstraction"`
+            GasSponsorship  bool   `json:"gasSponsorship"`
+        } `json:"zkKaia"`
+    } `json:"config"`
+    Nonce      string `json:"nonce"`
+    Timestamp  string `json:"timestamp"`
+    ExtraData  string `json:"extraData"`
+    GasLimit   string `json:"gasLimit"`
+    Difficulty string `json:"difficulty"`
+    MixHash    string `json:"mixHash"`
+    Coinbase   string `json:"coinbase"`
+    Alloc      map[string]struct {
+        Balance string `json:"balance"`
+    } `json:"alloc"`
+    Number   string `json:"number"`
+    GasUsed  string `json:"gasUsed"`
+    ParentHash string `json:"parentHash"`
+    BaseFeePerGas string `json:"baseFeePerGas"`
+}
+
+func GetZKKaiGenesis() *Genesis {
+    genesis := &Genesis{}
+    
+    genesis.Config.ChainID = big.NewInt(1729)
+    genesis.Config.HomesteadBlock = big.NewInt(0)
+    genesis.Config.ByzantiumBlock = big.NewInt(0)
+    genesis.Config.ConstantinopleBlock = big.NewInt(0)
+    genesis.Config.PetersburgBlock = big.NewInt(0)
+    genesis.Config.IstanbulBlock = big.NewInt(0)
+    genesis.Config.BerlinBlock = big.NewInt(0)
+    genesis.Config.LondonBlock = big.NewInt(0)
+    genesis.Config.ZKKaiBlock = big.NewInt(0)
+    
+    genesis.Config.ZKKai.GasPrice = "0xEE6B280"
+    genesis.Config.ZKKai.BlockGasLimit = "0x1C9C380"
+    genesis.Config.ZKKai.BlockPeriod = 1
+    genesis.Config.ZKKai.EpochLength = 30000
+    genesis.Config.ZKKai.ValidatorMinStake = "1000000000000000000"
+    genesis.Config.ZKKai.FreeTxsPerDay = 10
+    genesis.Config.ZKKai.GasAbstraction = true
+    genesis.Config.ZKKai.GasSponsorship = true
+    
+    genesis.Nonce = "0x0000000000000042"
+    genesis.Timestamp = "0x00"
+    genesis.ExtraData = "0x0000000000000000000000000000000000000000000000000000000000000000"
+    genesis.GasLimit = "0x1C9C380"
+    genesis.Difficulty = "0x01"
+    genesis.MixHash = "0x0000000000000000000000000000000000000000000000000000000000000000"
+    genesis.Coinbase = "0x0000000000000000000000000000000000000000"
+    
+    genesis.Alloc = map[string]struct {
+        Balance string `json:"balance"`
+    }{
+        "0x0000000000000000000000000000000000000001": {Balance: "0x1"},
+        "0x0000000000000000000000000000000000000002": {Balance: "0x1"},
+        "0x0000000000000000000000000000000000000003": {Balance: "0x1"},
+        "0x0000000000000000000000000000000000000004": {Balance: "0x1"},
+    }
+    
+    genesis.Number = "0x00"
+    genesis.GasUsed = "0x00"
+    genesis.ParentHash = "0x0000000000000000000000000000000000000000000000000000000000000000"
+    genesis.BaseFeePerGas = "0xEE6B280"
+    
+    return genesis
+}
+
+// Blockchain Core Implementation
+func NewZKKaiBlockchain() *ZKKaiBlockchain {
+    genesis := &Block{
+        Number:     big.NewInt(0),
+        Hash:       "0x0000000000000000000000000000000000000000000000000000000000000000",
+        ParentHash: "0x0000000000000000000000000000000000000000000000000000000000000000",
+        Timestamp:  uint64(time.Now().Unix()),
+        GasLimit:   BlockGasLimit,
+        GasUsed:    0,
+        BaseFee:    big.NewInt(GasPrice),
+        StateRoot:  "0x0000000000000000000000000000000000000000000000000000000000000000",
+    }
+
+    return &ZKKaiBlockchain{
+        ChainID:      big.NewInt(ZKKaiChainID),
+        CurrentBlock: genesis,
+        Blocks:       []*Block{genesis},
+        GasSystem: &KaiaGasSystem{
+            FreeTxsPerDay:    10,
+            SponsoredAccounts: make(map[string]bool),
+            DailyTxCount:     make(map[string]uint64),
+            LastTxDate:       make(map[string]int64),
+        },
+        ZKSystem: &ZKProofSystem{
+            ProverURL:       "http://localhost:8080",
+            RecursionEnabled: true,
+        },
+    }
+}
+
+func (bc *ZKKaiBlockchain) AddBlock(block *Block) error {
+    block.Number = big.NewInt(int64(len(bc.Blocks)))
+    bc.Blocks = append(bc.Blocks, block)
+    bc.CurrentBlock = block
+    
+    fmt.Printf("Block #%s added with %d transactions\n", block.Number.String(), len(block.Transactions))
+    return nil
+}
+
+func (bc *ZKKaiBlockchain) ProcessTransaction(tx *Transaction) error {
+    gasCost := bc.GasSystem.CalculateGasCost(tx.From, tx.Gas)
+    fmt.Printf("Processing transaction %s with gas cost: %d\n", tx.Hash, gasCost)
+    
+    if len(tx.ZKProof) > 0 {
+        if !bc.ZKSystem.VerifyProof(tx.ZKProof) {
+            return fmt.Errorf("invalid ZK proof for transaction %s", tx.Hash)
+        }
+    }
+    
+    return nil
+}
+
+// Kaia Gas System Implementation
+func (gs *KaiaGasSystem) CalculateGasCost(address string, gasUsed uint64) uint64 {
+    if gs.SponsoredAccounts[address] {
+        return 0
+    }
+    
+    if gs.HasFreeTransactions(address) {
+        return 0
+    }
+    
+    return gasUsed * 250000000
+}
+
+func (gs *KaiaGasSystem) HasFreeTransactions(address string) bool {
+    today := time.Now().Unix() / 86400
+    
+    if gs.LastTxDate[address] != today {
+        gs.DailyTxCount[address] = 0
+        gs.LastTxDate[address] = today
+    }
+    
+    if gs.DailyTxCount[address] < gs.FreeTxsPerDay {
+        gs.DailyTxCount[address]++
+        return true
+    }
+    
+    return false
+}
+
+func (gs *KaiaGasSystem) SetSponsored(address string, sponsored bool) {
+    gs.SponsoredAccounts[address] = sponsored
+}
+
+// ZK Proof System Implementation
+func (zs *ZKProofSystem) VerifyProof(proof []byte) bool {
+    return len(proof) > 0
+}
+
+func (zs *ZKProofSystem) GenerateProof(inputs []string) ([]byte, error) {
+    proof := fmt.Sprintf("zkProof_%d", time.Now().UnixNano())
+    return []byte(proof), nil
+}
+
+// Wallet Manager Implementation
+func NewWalletManager() *WalletManager {
+    ks := keystore.NewKeyStore("./keystore", keystore.StandardScryptN, keystore.StandardScryptP)
+    return &WalletManager{
+        KeyStore:  ks,
+        Wallets:   make(map[string]*Wallet),
+        HDWallets: make(map[string]*HDWallet),
+    }
+}
+
+func (wm *WalletManager) CreateNewWallet(password string) (*Wallet, error) {
+    account, err := wm.KeyStore.NewAccount(password)
+    if err != nil {
+        return nil, err
+    }
+
+    privateKey, err := wm.getPrivateKey(account, password)
+    if err != nil {
+        return nil, err
+    }
+
+    publicKey := privateKey.Public()
+    publicKeyECDSA, ok := publicKey.(*ecdsa.PublicKey)
+    if !ok {
+        return nil, fmt.Errorf("error casting public key to ECDSA")
+    }
+
+    address := crypto.PubkeyToAddress(*publicKeyECDSA)
+
+    wallet := &Wallet{
+        Address:    address,
+        PublicKey:  hexutil.Encode(crypto.FromECDSAPub(publicKeyECDSA)),
+        PrivateKey: privateKey,
+        Balance:    big.NewInt(0),
+        Nonce:      0,
+    }
+
+    wm.Wallets[address.Hex()] = wallet
+    return wallet, nil
+}
+
+func (wm *WalletManager) getPrivateKey(account accounts.Account, password string) (*ecdsa.PrivateKey, error) {
+    return crypto.HexToECDSA(account.Address.Hex())
+}
+
+func (wm *WalletManager) ImportWallet(privateKeyHex, password string) (*Wallet, error) {
+    privateKey, err := crypto.HexToECDSA(privateKeyHex)
+    if err != nil {
+        return nil, err
+    }
+
+    publicKey := privateKey.Public()
+    publicKeyECDSA, ok := publicKey.(*ecdsa.PublicKey)
+    if !ok {
+        return nil, fmt.Errorf("error casting public key to ECDSA")
+    }
+
+    address := crypto.PubkeyToAddress(*publicKeyECDSA)
+
+    wallet := &Wallet{
+        Address:    address,
+        PublicKey:  hexutil.Encode(crypto.FromECDSAPub(publicKeyECDSA)),
+        PrivateKey: privateKey,
+        Balance:    big.NewInt(0),
+        Nonce:      0,
+    }
+
+    wm.Wallets[address.Hex()] = wallet
+    return wallet, nil
+}
+
+func (wm *WalletManager) SignTransaction(wallet *Wallet, tx *Transaction) (string, error) {
+    ethTx := types.NewTransaction(
+        wallet.Nonce,
+        common.HexToAddress(tx.To),
+        tx.Value,
+        tx.Gas,
+        big.NewInt(int64(tx.GasPrice.Int64())),
+        tx.Input,
+    )
+
+    chainID := big.NewInt(ZKKaiChainID)
+    signedTx, err := types.SignTx(ethTx, types.NewEIP155Signer(chainID), wallet.PrivateKey)
+    if err != nil {
+        return "", err
+    }
+
+    txData, err := signedTx.MarshalBinary()
+    if err != nil {
+        return "", err
+    }
+
+    return hexutil.Encode(txData), nil
+}
+
+func (wm *WalletManager) SignMessage(wallet *Wallet, message []byte) (string, error) {
+    prefixedMessage := fmt.Sprintf("\x19Ethereum Signed Message:\n%d%s", len(message), message)
+    hash := crypto.Keccak256Hash([]byte(prefixedMessage))
+
+    signature, err := crypto.Sign(hash.Bytes(), wallet.PrivateKey)
+    if err != nil {
+        return "", err
+    }
+
+    signature[64] += 27
+    return hexutil.Encode(signature), nil
+}
+
+func (wm *WalletManager) VerifySignature(message []byte, signatureHex string, address common.Address) (bool, error) {
+    signature, err :=
