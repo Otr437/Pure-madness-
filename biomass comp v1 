@@ -1,10 +1,4 @@
-"""
-COMPLETE PASTURE BIOMASS ESTIMATION SYSTEM - PRODUCTION READY
-=============================================================
-Real implementation that works with actual field data, satellite imagery, and ground measurements.
-No simulations, no placeholders - working code for real agricultural use.
 
-COMPLETE SYSTEM WITH ALL FUNCTIONALITY
 """
 
 import numpy as np
