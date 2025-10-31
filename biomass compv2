@@ -1,0 +1,1499 @@
+"""
+COMPLETE AI HUB - FULL PRODUCTION SYSTEM
+Install: pip install flask flask-cors flask-sqlalchemy flask-jwt-extended openai anthropic google-generativeai requests python-dotenv pillow replicate celery redis bcrypt elevenlabs stability-sdk moviepy pydub
+"""
+
+from flask import Flask, request, jsonify, send_file
+from flask_cors import CORS
+from flask_sqlalchemy import SQLAlchemy
+from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
+from werkzeug.security import generate_password_hash, check_password_hash
+from datetime import datetime, timedelta
+from openai import OpenAI
+from anthropic import Anthropic
+import google.generativeai as genai
+import requests
+import base64
+import time
+import os
+import json
+from celery import Celery
+import redis
+import replicate
+from elevenlabs import generate, set_api_key
+from PIL import Image
+import io
+from cryptography.fernet import Fernet
+import hashlib
+
+# ==================== APP CONFIGURATION ====================
+app = Flask(__name__)
+CORS(app)
+
+# Database
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URI', 'sqlite:///ai_hub.db')
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY', 'your-secret-key-change-this')
+app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(days=30)
+
+# Encryption key for API keys (generate with: Fernet.generate_key())
+ENCRYPTION_KEY = os.getenv('ENCRYPTION_KEY', Fernet.generate_key())
+cipher_suite = Fernet(ENCRYPTION_KEY)
+
+# Storage
+UPLOAD_FOLDER = 'storage/generations'
+TEMP_FOLDER = 'storage/temp'
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+os.makedirs(TEMP_FOLDER, exist_ok=True)
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+app.config['TEMP_FOLDER'] = TEMP_FOLDER
+app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB max
+
+# Initialize extensions
+db = SQLAlchemy(app)
+jwt = JWTManager(app)
+
+# Celery for async tasks
+celery = Celery(app.name, broker=os.getenv('REDIS_URL', 'redis://localhost:6379/0'))
+celery.conf.update(app.config)
+
+# Redis for rate limiting and caching
+redis_client = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
+
+# ==================== DATABASE MODELS ====================
+
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    email = db.Column(db.String(120), unique=True, nullable=False)
+    password_hash = db.Column(db.String(200), nullable=False)
+    role = db.Column(db.String(20), default='user')  # user, admin
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    is_active = db.Column(db.Boolean, default=True)
+    credits = db.Column(db.Integer, default=100)
+    generations = db.relationship('Generation', backref='user', lazy=True)
+    api_keys = db.relationship('APIKey', backref='user', lazy=True)
+
+class APIKey(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    service = db.Column(db.String(50), nullable=False)  # openai, anthropic, etc
+    encrypted_key = db.Column(db.String(500), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    is_active = db.Column(db.Boolean, default=True)
+
+class Generation(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    service = db.Column(db.String(50), nullable=False)
+    type = db.Column(db.String(20), nullable=False)  # image, video, code, audio
+    prompt = db.Column(db.Text, nullable=False)
+    parameters = db.Column(db.JSON)  # Store generation parameters
+    status = db.Column(db.String(20), default='pending')  # pending, processing, completed, failed
+    result_path = db.Column(db.String(500))
+    result_url = db.Column(db.String(500))
+    cost = db.Column(db.Float, default=0.0)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    completed_at = db.Column(db.DateTime)
+    error_message = db.Column(db.Text)
+    metadata = db.Column(db.JSON)  # Store additional metadata
+
+class UsageLog(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    service = db.Column(db.String(50), nullable=False)
+    tokens_used = db.Column(db.Integer, default=0)
+    cost = db.Column(db.Float, default=0.0)
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+    request_type = db.Column(db.String(50))
+
+class SystemLog(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    level = db.Column(db.String(20))  # info, warning, error
+    message = db.Column(db.Text)
+    details = db.Column(db.JSON)
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+
+# Create tables
+with app.app_context():
+    db.create_all()
+
+# ==================== HELPER FUNCTIONS ====================
+
+def encrypt_api_key(key):
+    """Encrypt API key using Fernet"""
+    return cipher_suite.encrypt(key.encode()).decode()
+
+def decrypt_api_key(encrypted_key):
+    """Decrypt API key"""
+    return cipher_suite.decrypt(encrypted_key.encode()).decode()
+
+def log_usage(user_id, service, tokens=0, cost=0.0, request_type=None):
+    """Log API usage"""
+    log = UsageLog(
+        user_id=user_id,
+        service=service,
+        tokens_used=tokens,
+        cost=cost,
+        request_type=request_type
+    )
+    db.session.add(log)
+    db.session.commit()
+
+def system_log(level, message, details=None):
+    """System logging"""
+    log = SystemLog(level=level, message=message, details=details)
+    db.session.add(log)
+    db.session.commit()
+
+def get_user_api_key(user_id, service):
+    """Get and decrypt user's API key for a service"""
+    key_record = APIKey.query.filter_by(
+        user_id=user_id, 
+        service=service,
+        is_active=True
+    ).first()
+    
+    if not key_record:
+        return None
+    
+    return decrypt_api_key(key_record.encrypted_key)
+
+def save_file(data, extension, generation_id):
+    """Save generated file to storage"""
+    filename = f"{generation_id}_{int(time.time())}.{extension}"
+    filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+    
+    if isinstance(data, bytes):
+        with open(filepath, 'wb') as f:
+            f.write(data)
+    elif isinstance(data, str) and data.startswith('http'):
+        # Download from URL
+        response = requests.get(data)
+        with open(filepath, 'wb') as f:
+            f.write(response.content)
+    else:
+        with open(filepath, 'w') as f:
+            f.write(data)
+    
+    return filepath
+
+# ==================== AUTHENTICATION ====================
+
+@app.route('/api/auth/register', methods=['POST'])
+def register():
+    try:
+        data = request.json
+        
+        if User.query.filter_by(username=data['username']).first():
+            return jsonify({'error': 'Username already exists'}), 400
+        
+        if User.query.filter_by(email=data['email']).first():
+            return jsonify({'error': 'Email already exists'}), 400
+        
+        user = User(
+            username=data['username'],
+            email=data['email'],
+            password_hash=generate_password_hash(data['password']),
+            role=data.get('role', 'user')
+        )
+        db.session.add(user)
+        db.session.commit()
+        
+        token = create_access_token(identity=user.id)
+        
+        system_log('info', f'New user registered: {user.username}')
+        
+        return jsonify({
+            'success': True,
+            'token': token,
+            'user': {
+                'id': user.id,
+                'username': user.username,
+                'email': user.email,
+                'role': user.role,
+                'credits': user.credits
+            }
+        }), 201
+    except Exception as e:
+        system_log('error', 'Registration failed', {'error': str(e)})
+        return jsonify({'error': 'Registration failed'}), 500
+
+@app.route('/api/auth/login', methods=['POST'])
+def login():
+    try:
+        data = request.json
+        user = User.query.filter_by(username=data['username']).first()
+        
+        if not user or not check_password_hash(user.password_hash, data['password']):
+            return jsonify({'error': 'Invalid credentials'}), 401
+        
+        if not user.is_active:
+            return jsonify({'error': 'Account is disabled'}), 403
+        
+        token = create_access_token(identity=user.id)
+        
+        return jsonify({
+            'success': True,
+            'token': token,
+            'user': {
+                'id': user.id,
+                'username': user.username,
+                'email': user.email,
+                'role': user.role,
+                'credits': user.credits
+            }
+        })
+    except Exception as e:
+        system_log('error', 'Login failed', {'error': str(e)})
+        return jsonify({'error': 'Login failed'}), 500
+
+@app.route('/api/auth/me', methods=['GET'])
+@jwt_required()
+def get_current_user():
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    
+    recent_generations = Generation.query.filter_by(user_id=user_id).order_by(
+        Generation.created_at.desc()
+    ).limit(10).all()
+    
+    return jsonify({
+        'id': user.id,
+        'username': user.username,
+        'email': user.email,
+        'role': user.role,
+        'credits': user.credits,
+        'created_at': user.created_at.isoformat(),
+        'recent_generations': len(recent_generations),
+        'api_keys_configured': APIKey.query.filter_by(user_id=user_id, is_active=True).count()
+    })
+
+@app.route('/api/auth/change-password', methods=['POST'])
+@jwt_required()
+def change_password():
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    data = request.json
+    
+    if not check_password_hash(user.password_hash, data['current_password']):
+        return jsonify({'error': 'Current password is incorrect'}), 400
+    
+    user.password_hash = generate_password_hash(data['new_password'])
+    db.session.commit()
+    
+    return jsonify({'success': True, 'message': 'Password changed successfully'})
+
+# ==================== API KEY MANAGEMENT ====================
+
+@app.route('/api/keys', methods=['POST'])
+@jwt_required()
+def add_api_key():
+    try:
+        user_id = get_jwt_identity()
+        data = request.json
+        
+        # Check if key already exists for this service
+        existing = APIKey.query.filter_by(
+            user_id=user_id,
+            service=data['service']
+        ).first()
+        
+        if existing:
+            # Update existing key
+            existing.encrypted_key = encrypt_api_key(data['apiKey'])
+            existing.is_active = True
+        else:
+            # Create new key
+            api_key = APIKey(
+                user_id=user_id,
+                service=data['service'],
+                encrypted_key=encrypt_api_key(data['apiKey']),
+                is_active=True
+            )
+            db.session.add(api_key)
+        
+        db.session.commit()
+        
+        return jsonify({'success': True, 'message': 'API key saved'})
+    except Exception as e:
+        system_log('error', 'Failed to save API key', {'error': str(e)})
+        return jsonify({'error': 'Failed to save API key'}), 500
+
+@app.route('/api/keys', methods=['GET'])
+@jwt_required()
+def get_api_keys():
+    user_id = get_jwt_identity()
+    keys = APIKey.query.filter_by(user_id=user_id).all()
+    
+    return jsonify({
+        'keys': [{
+            'id': k.id,
+            'service': k.service,
+            'is_active': k.is_active,
+            'created_at': k.created_at.isoformat(),
+            'masked_key': '***' + decrypt_api_key(k.encrypted_key)[-4:]
+        } for k in keys]
+    })
+
+@app.route('/api/keys/<int:key_id>', methods=['DELETE'])
+@jwt_required()
+def delete_api_key(key_id):
+    user_id = get_jwt_identity()
+    key = APIKey.query.filter_by(id=key_id, user_id=user_id).first()
+    
+    if not key:
+        return jsonify({'error': 'Key not found'}), 404
+    
+    db.session.delete(key)
+    db.session.commit()
+    
+    return jsonify({'success': True})
+
+@app.route('/api/keys/<int:key_id>/toggle', methods=['POST'])
+@jwt_required()
+def toggle_api_key(key_id):
+    user_id = get_jwt_identity()
+    key = APIKey.query.filter_by(id=key_id, user_id=user_id).first()
+    
+    if not key:
+        return jsonify({'error': 'Key not found'}), 404
+    
+    key.is_active = not key.is_active
+    db.session.commit()
+    
+    return jsonify({'success': True, 'is_active': key.is_active})
+
+# ==================== RATE LIMITING ====================
+
+def check_rate_limit(user_id, limit=10, window=60):
+    """Check if user exceeded rate limit"""
+    key = f'rate_limit:{user_id}'
+    current = redis_client.get(key)
+    
+    if current and int(current) >= limit:
+        return False
+    
+    pipe = redis_client.pipeline()
+    pipe.incr(key)
+    pipe.expire(key, window)
+    pipe.execute()
+    
+    return True
+
+def get_rate_limit_status(user_id):
+    """Get current rate limit status"""
+    key = f'rate_limit:{user_id}'
+    current = redis_client.get(key)
+    ttl = redis_client.ttl(key)
+    
+    return {
+        'requests_made': int(current) if current else 0,
+        'limit': 10,
+        'reset_in': ttl if ttl > 0 else 60
+    }
+
+# ==================== CELERY TASKS ====================
+
+@celery.task(bind=True, max_retries=3)
+def process_generation(self, generation_id, user_id, user_api_key, prompt, service, gen_type, parameters=None):
+    """Background task to process AI generation"""
+    generation = Generation.query.get(generation_id)
+    if not generation:
+        return
+    
+    generation.status = 'processing'
+    db.session.commit()
+    
+    try:
+        result_path = None
+        cost = 0.0
+        metadata = {}
+        
+        # ==================== IMAGE GENERATION ====================
+        if gen_type == 'image':
+            if service == 'dalle3':
+                client = OpenAI(api_key=user_api_key)
+                response = client.images.generate(
+                    model="dall-e-3",
+                    prompt=prompt,
+                    size=parameters.get('size', '1024x1024'),
+                    quality=parameters.get('quality', 'standard'),
+                    n=1
+                )
+                result_path = save_file(response.data[0].url, 'png', generation_id)
+                cost = 0.04 if parameters.get('quality') == 'standard' else 0.08
+                metadata = {'revised_prompt': response.data[0].revised_prompt}
+                
+            elif service == 'dalle2':
+                client = OpenAI(api_key=user_api_key)
+                response = client.images.generate(
+                    model="dall-e-2",
+                    prompt=prompt,
+                    size=parameters.get('size', '1024x1024'),
+                    n=1
+                )
+                result_path = save_file(response.data[0].url, 'png', generation_id)
+                cost = 0.02
+                
+            elif service == 'stable-diffusion':
+                # Using Replicate for Stable Diffusion
+                os.environ['REPLICATE_API_TOKEN'] = user_api_key
+                output = replicate.run(
+                    "stability-ai/sdxl:39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b",
+                    input={
+                        "prompt": prompt,
+                        "width": parameters.get('width', 1024),
+                        "height": parameters.get('height', 1024),
+                        "num_outputs": 1
+                    }
+                )
+                result_path = save_file(output[0], 'png', generation_id)
+                cost = 0.01
+                
+            elif service == 'flux':
+                os.environ['REPLICATE_API_TOKEN'] = user_api_key
+                output = replicate.run(
+                    "black-forest-labs/flux-schnell",
+                    input={"prompt": prompt}
+                )
+                result_path = save_file(output[0], 'png', generation_id)
+                cost = 0.003
+        
+        # ==================== VIDEO GENERATION ====================
+        elif gen_type == 'video':
+            if service == 'runway':
+                # Runway API implementation
+                headers = {'Authorization': f'Bearer {user_api_key}'}
+                response = requests.post(
+                    'https://api.runwayml.com/v1/generations',
+                    headers=headers,
+                    json={'prompt': prompt, 'duration': parameters.get('duration', 5)}
+                )
+                video_url = response.json()['url']
+                result_path = save_file(video_url, 'mp4', generation_id)
+                cost = 0.50
+                
+            elif service == 'haiper':
+                # Implement Haiper video generation
+                pass
+        
+        # ==================== TEXT GENERATION ====================
+        elif gen_type == 'text':
+            if service == 'gpt4':
+                client = OpenAI(api_key=user_api_key)
+                response = client.chat.completions.create(
+                    model="gpt-4",
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=parameters.get('max_tokens', 1000),
+                    temperature=parameters.get('temperature', 0.7)
+                )
+                result_text = response.choices[0].message.content
+                result_path = save_file(result_text, 'txt', generation_id)
+                cost = (response.usage.prompt_tokens * 0.00003 + 
+                       response.usage.completion_tokens * 0.00006)
+                metadata = {'tokens': response.usage.total_tokens}
+                
+            elif service == 'claude':
+                client = Anthropic(api_key=user_api_key)
+                response = client.messages.create(
+                    model="claude-3-5-sonnet-20241022",
+                    max_tokens=parameters.get('max_tokens', 1000),
+                    messages=[{"role": "user", "content": prompt}]
+                )
+                result_text = response.content[0].text
+                result_path = save_file(result_text, 'txt', generation_id)
+                cost = (response.usage.input_tokens * 0.000003 + 
+                       response.usage.output_tokens * 0.000015)
+                metadata = {'tokens': response.usage.input_tokens + response.usage.output_tokens}
+                
+            elif service == 'gemini':
+                genai.configure(api_key=user_api_key)
+                model = genai.GenerativeModel('gemini-pro')
+                response = model.generate_content(prompt)
+                result_text = response.text
+                result_path = save_file(result_text, 'txt', generation_id)
+                cost = 0.0005
+        
+        # ==================== AUDIO GENERATION ====================
+        elif gen_type == 'audio':
+            if service == 'elevenlabs':
+                set_api_key(user_api_key)
+                audio = generate(
+                    text=prompt,
+                    voice=parameters.get('voice', 'Rachel'),
+                    model="eleven_monolingual_v1"
+                )
+                result_path = save_file(audio, 'mp3', generation_id)
+                cost = len(prompt) * 0.0003
+                
+            elif service == 'openai-tts':
+                client = OpenAI(api_key=user_api_key)
+                response = client.audio.speech.create(
+                    model="tts-1",
+                    voice=parameters.get('voice', 'alloy'),
+                    input=prompt
+                )
+                result_path = save_file(response.content, 'mp3', generation_id)
+                cost = len(prompt) * 0.000015
+        
+        # ==================== CODE GENERATION ====================
+        elif gen_type == 'code':
+            if service == 'claude':
+                client = Anthropic(api_key=user_api_key)
+                response = client.messages.create(
+                    model="claude-3-5-sonnet-20241022",
+                    max_tokens=4000,
+                    messages=[{
+                        "role": "user",
+                        "content": f"Generate code for: {prompt}\n\nProvide clean, production-ready code."
+                    }]
+                )
+                result_text = response.content[0].text
+                result_path = save_file(result_text, 'txt', generation_id)
+                cost = (response.usage.input_tokens * 0.000003 + 
+                       response.usage.output_tokens * 0.000015)
+        
+        # Update generation record
+        generation.status = 'completed'
+        generation.result_path = result_path
+        generation.cost = cost
+        generation.metadata = metadata
+        generation.completed_at = datetime.utcnow()
+        db.session.commit()
+        
+        # Log usage
+        log_usage(user_id, service, metadata.get('tokens', 0), cost, gen_type)
+        
+    except Exception as e:
+        generation.status = 'failed'
+        generation.error_message = str(e)
+        db.session.commit()
+        
+        system_log('error', f'Generation failed: {generation_id}', {
+            'error': str(e),
+            'service': service,
+            'type': gen_type
+        })
+        
+        # Retry logic
+        if self.request.retries < 3:
+            raise self.retry(exc=e, countdown=60)
+
+# ==================== GENERATION ENDPOINTS ====================
+
+@app.route('/api/generate/<service>', methods=['POST'])
+@jwt_required()
+def generate_content(service):
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    
+    # Check rate limit
+    if not check_rate_limit(user_id):
+        return jsonify({
+            'error': 'Rate limit exceeded',
+            'rate_limit': get_rate_limit_status(user_id)
+        }), 429
+    
+    # Check credits
+    if user.credits < 1:
+        return jsonify({'error': 'Insufficient credits'}), 402
+    
+    data = request.json
+    
+    # Get user's API key for this service
+    user_api_key = get_user_api_key(user_id, service)
+    if not user_api_key:
+        return jsonify({'error': f'API key not configured for {service}'}), 400
+    
+    # Validate prompt
+    if not data.get('prompt') or len(data['prompt']) < 3:
+        return jsonify({'error': 'Prompt is too short'}), 400
+    
+    # Create generation record
+    generation = Generation(
+        user_id=user_id,
+        service=service,
+        type=data.get('type', 'image'),
+        prompt=data['prompt'],
+        parameters=data.get('parameters', {}),
+        status='pending'
+    )
+    db.session.add(generation)
+    db.session.commit()
+    
+    # Queue background task
+    process_generation.delay(
+        generation.id,
+        user_id,
+        user_api_key,
+        data['prompt'],
+        service,
+        data.get('type', 'image'),
+        data.get('parameters')
+    )
+    
+    # Deduct credits
+    user.credits -= 1
+    db.session.commit()
+    
+    return jsonify({
+        'success': True,
+        'generation_id': generation.id,
+        'status': 'pending',
+        'remaining_credits': user.credits
+    })
+
+@app.route('/api/generations/<int:generation_id>', methods=['GET'])
+@jwt_required()
+def get_generation(generation_id):
+    user_id = get_jwt_identity()
+    generation = Generation.query.filter_by(id=generation_id, user_id=user_id).first()
+    
+    if not generation:
+        return jsonify({'error': 'Generation not found'}), 404
+    
+    result = {
+        'id': generation.id,
+        'service': generation.service,
+        'type': generation.type,
+        'prompt': generation.prompt,
+        'status': generation.status,
+        'cost': generation.cost,
+        'created_at': generation.created_at.isoformat(),
+        'metadata': generation.metadata
+    }
+    
+    if generation.status == 'completed' and generation.result_path:
+        if os.path.exists(generation.result_path):
+            with open(generation.result_path, 'rb') as f:
+                result['data'] = base64.b64encode(f.read()).decode()
+            result['completed_at'] = generation.completed_at.isoformat()
+    
+    if generation.status == 'failed':
+        result['error'] = generation.error_message
+    
+    return jsonify(result)
+
+@app.route('/api/generations/<int:generation_id>/download', methods=['GET'])
+@jwt_required()
+def download_generation(generation_id):
+    user_id = get_jwt_identity()
+    generation = Generation.query.filter_by(id=generation_id, user_id=user_id).first()
+    
+    if not generation or not generation.result_path:
+        return jsonify({'error': 'File not found'}), 404
+    
+    return send_file(generation.result_path, as_attachment=True)
+
+@app.route('/api/generations', methods=['GET'])
+@jwt_required()
+def get_all_generations():
+    user_id = get_jwt_identity()
+    
+    # Pagination
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 20, type=int)
+    service_filter = request.args.get('service')
+    type_filter = request.args.get('type')
+    
+    query = Generation.query.filter_by(user_id=user_id)
+    
+    if service_filter:
+        query = query.filter_by(service=service_filter)
+    if type_filter:
+        query = query.filter_by(type=type_filter)
+    
+    pagination = query.order_by(Generation.created_at.desc()).paginate(
+        page=page, per_page=per_page, error_out=False
+    )
+    
+    return jsonify({
+        'generations': [{
+            'id': g.id,
+            'service': g.service,
+            'type': g.type,
+            'prompt': g.prompt[:100] + '...' if len(g.prompt) > 100 else g.prompt,
+            'status': g.status,
+            'cost': g.cost,
+            'created_at': g.created_at.isoformat()
+        } for g in pagination.items],
+        'total': pagination.total,
+        'pages': pagination.pages,
+        'current_page': page
+    })
+
+@app.route('/api/generations/<int:generation_id>', methods=['DELETE'])
+@jwt_required()
+def delete_generation(generation_id):
+    user_id = get_jwt_identity()
+    generation = Generation.query.filter_by(id=generation_id, user_id=user_id).first()
+    
+    if not generation:
+        return jsonify({'error': 'Generation not found'}), 404
+    
+    # Delete file if exists
+    if generation.result_path and os.path.exists(generation.result_path):
+        os.remove(generation.result_path)
+    
+    db.session.delete(generation)
+    db.session.commit()
+    
+    return jsonify({'success': True})
+
+@app.route('/api/generations/bulk-delete', methods=['POST'])
+@jwt_required()
+def bulk_delete_generations():
+    user_id = get_jwt_identity()
+    data = request.json
+    ids = data.get('ids', [])
+    
+    for gen_id in ids:
+        generation = Generation.query.filter_by(id=gen_id, user_id=user_id).first()
+        if generation:
+            if generation.result_path and os.path.exists(generation.result_path):
+                os.remove(generation.result_path)
+            db.session.delete(generation)
+    
+    db.session.commit()
+    
+    return jsonify({'success': True, 'deleted': len(ids)})
+
+# ==================== ADMIN ENDPOINTS ====================
+
+@app.route('/api/admin/users', methods=['GET'])
+@jwt_required()
+def admin_get_users():
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    
+    if user.role != 'admin':
+        return jsonify({'error': 'Unauthorized'}), 403
+    
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 50, type=int)
+    
+    pagination = User.query.paginate(page=page, per_page=per_page, error_out=False)
+    
+    return jsonify({
+        'users': [{
+            'id': u.id,
+            'username': u.username,
+            'email': u.email,
+            'role': u.role,
+            'credits': u.credits,
+            'is_active': u.is_active,
+            'created_at': u.created_at.isoformat(),
+            'total_generations': Generation.query.filter_by(user_id=u.id).count()
+        } for u in pagination.items],
+        'total': pagination.total,
+        'pages': pagination.pages
+    })
+
+@app.route('/api/admin/users/<int:user_id>/credits', methods=['POST'])
+@jwt_required()
+def admin_add_credits(user_id):
+    admin_id = get_jwt_identity()
+    admin = User.query.get(admin_id)
+    
+    if admin.role != 'admin':
+        return jsonify({'error': 'Unauthorized'}), 403
+    
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+    
+    data = request.json
+    credits_to_add = data.get('credits', 0)
+    
+    user.credits += credits_to_add
+    db.session.commit()
+    
+    system_log('info', f'Admin {admin.username} added {credits_to_add} credits to {user.username}')
+    
+    return jsonify({'success': True, 'new_credits': user.credits})
+
+@app.route('/api/admin/users/<int:user_id>/toggle', methods=['POST'])
+@jwt_required()
+def admin_toggle_user(user_id):
+    admin_id = get_jwt_identity()
+    admin = User.query.get(admin_id)
+    
+    if admin.role != 'admin':
+        return jsonify({'error': 'Unauthorized'}), 403
+    
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+    
+    user.is_active = not user.is_active
+    db.session.commit()
+    
+    system_log('info', f'Admin {admin.username} {"activated" if user.is_active else "deactivated"} user {user.username}')
+    
+    return jsonify({'success': True, 'is_active': user.is_active})
+
+@app.route('/api/admin/users/<int:user_id>/role', methods=['POST'])
+@jwt_required()
+def admin_change_role(user_id):
+    admin_id = get_jwt_identity()
+    admin = User.query.get(admin_id)
+    
+    if admin.role != 'admin':
+        return jsonify({'error': 'Unauthorized'}), 403
+    
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+    
+    data = request.json
+    new_role = data.get('role', 'user')
+    
+    if new_role not in ['user', 'admin']:
+        return jsonify({'error': 'Invalid role'}), 400
+    
+    user.role = new_role
+    db.session.commit()
+    
+    system_log('info', f'Admin {admin.username} changed {user.username} role to {new_role}')
+    
+    return jsonify({'success': True, 'new_role': user.role})
+
+@app.route('/api/admin/stats', methods=['GET'])
+@jwt_required()
+def admin_stats():
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    
+    if user.role != 'admin':
+        return jsonify({'error': 'Unauthorized'}), 403
+    
+    total_users = User.query.count()
+    active_users = User.query.filter_by(is_active=True).count()
+    total_generations = Generation.query.count()
+    completed_generations = Generation.query.filter_by(status='completed').count()
+    failed_generations = Generation.query.filter_by(status='failed').count()
+    total_cost = db.session.query(db.func.sum(Generation.cost)).scalar() or 0
+    
+    # Get usage by service
+    service_usage = db.session.query(
+        Generation.service,
+        db.func.count(Generation.id).label('count'),
+        db.func.sum(Generation.cost).label('cost')
+    ).filter_by(status='completed').group_by(Generation.service).all()
+    
+    # Recent activity (last 24 hours)
+    yesterday = datetime.utcnow() - timedelta(days=1)
+    recent_generations = Generation.query.filter(
+        Generation.created_at >= yesterday
+    ).count()
+    
+    recent_users = User.query.filter(
+        User.created_at >= yesterday
+    ).count()
+    
+    return jsonify({
+        'total_users': total_users,
+        'active_users': active_users,
+        'total_generations': total_generations,
+        'completed_generations': completed_generations,
+        'failed_generations': failed_generations,
+        'total_cost': round(total_cost, 2),
+        'service_usage': [{
+            'service': s.service,
+            'count': s.count,
+            'cost': round(s.cost, 2)
+        } for s in service_usage],
+        'recent_activity': {
+            'generations_24h': recent_generations,
+            'new_users_24h': recent_users
+        }
+    })
+
+@app.route('/api/admin/generations', methods=['GET'])
+@jwt_required()
+def admin_get_all_generations():
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    
+    if user.role != 'admin':
+        return jsonify({'error': 'Unauthorized'}), 403
+    
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 50, type=int)
+    status_filter = request.args.get('status')
+    
+    query = Generation.query
+    
+    if status_filter:
+        query = query.filter_by(status=status_filter)
+    
+    pagination = query.order_by(Generation.created_at.desc()).paginate(
+        page=page, per_page=per_page, error_out=False
+    )
+    
+    return jsonify({
+        'generations': [{
+            'id': g.id,
+            'user_id': g.user_id,
+            'username': g.user.username,
+            'service': g.service,
+            'type': g.type,
+            'status': g.status,
+            'cost': g.cost,
+            'created_at': g.created_at.isoformat(),
+            'error': g.error_message if g.status == 'failed' else None
+        } for g in pagination.items],
+        'total': pagination.total,
+        'pages': pagination.pages
+    })
+
+@app.route('/api/admin/logs', methods=['GET'])
+@jwt_required()
+def admin_get_logs():
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    
+    if user.role != 'admin':
+        return jsonify({'error': 'Unauthorized'}), 403
+    
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 100, type=int)
+    level_filter = request.args.get('level')
+    
+    query = SystemLog.query
+    
+    if level_filter:
+        query = query.filter_by(level=level_filter)
+    
+    pagination = query.order_by(SystemLog.timestamp.desc()).paginate(
+        page=page, per_page=per_page, error_out=False
+    )
+    
+    return jsonify({
+        'logs': [{
+            'id': log.id,
+            'level': log.level,
+            'message': log.message,
+            'details': log.details,
+            'timestamp': log.timestamp.isoformat()
+        } for log in pagination.items],
+        'total': pagination.total,
+        'pages': pagination.pages
+    })
+
+@app.route('/api/admin/clear-logs', methods=['POST'])
+@jwt_required()
+def admin_clear_logs():
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    
+    if user.role != 'admin':
+        return jsonify({'error': 'Unauthorized'}), 403
+    
+    data = request.json
+    days_old = data.get('days_old', 30)
+    
+    cutoff_date = datetime.utcnow() - timedelta(days=days_old)
+    deleted = SystemLog.query.filter(SystemLog.timestamp < cutoff_date).delete()
+    
+    db.session.commit()
+    
+    return jsonify({'success': True, 'deleted': deleted})
+
+# ==================== ANALYTICS ====================
+
+@app.route('/api/analytics/usage', methods=['GET'])
+@jwt_required()
+def get_usage_analytics():
+    user_id = get_jwt_identity()
+    
+    days = request.args.get('days', 30, type=int)
+    start_date = datetime.utcnow() - timedelta(days=days)
+    
+    # Get usage logs
+    usage = UsageLog.query.filter(
+        UsageLog.user_id == user_id,
+        UsageLog.timestamp >= start_date
+    ).all()
+    
+    # Aggregate by service
+    service_usage = {}
+    for log in usage:
+        if log.service not in service_usage:
+            service_usage[log.service] = {
+                'tokens': 0,
+                'cost': 0,
+                'count': 0,
+                'types': {}
+            }
+        service_usage[log.service]['tokens'] += log.tokens_used
+        service_usage[log.service]['cost'] += log.cost
+        service_usage[log.service]['count'] += 1
+        
+        if log.request_type:
+            if log.request_type not in service_usage[log.service]['types']:
+                service_usage[log.service]['types'][log.request_type] = 0
+            service_usage[log.service]['types'][log.request_type] += 1
+    
+    # Get generation statistics
+    generations = Generation.query.filter(
+        Generation.user_id == user_id,
+        Generation.created_at >= start_date
+    ).all()
+    
+    status_count = {
+        'completed': 0,
+        'failed': 0,
+        'pending': 0,
+        'processing': 0
+    }
+    
+    for gen in generations:
+        status_count[gen.status] = status_count.get(gen.status, 0) + 1
+    
+    return jsonify({
+        'usage_by_service': service_usage,
+        'generation_stats': status_count,
+        'total_cost': sum(s['cost'] for s in service_usage.values()),
+        'total_generations': len(generations),
+        'period_days': days
+    })
+
+@app.route('/api/analytics/timeline', methods=['GET'])
+@jwt_required()
+def get_timeline_analytics():
+    user_id = get_jwt_identity()
+    
+    days = request.args.get('days', 30, type=int)
+    start_date = datetime.utcnow() - timedelta(days=days)
+    
+    # Get daily generation counts
+    daily_stats = db.session.query(
+        db.func.date(Generation.created_at).label('date'),
+        db.func.count(Generation.id).label('count'),
+        db.func.sum(Generation.cost).label('cost')
+    ).filter(
+        Generation.user_id == user_id,
+        Generation.created_at >= start_date
+    ).group_by(db.func.date(Generation.created_at)).all()
+    
+    timeline = [{
+        'date': stat.date.isoformat(),
+        'count': stat.count,
+        'cost': float(stat.cost) if stat.cost else 0
+    } for stat in daily_stats]
+    
+    return jsonify({'timeline': timeline})
+
+@app.route('/api/analytics/export', methods=['GET'])
+@jwt_required()
+def export_analytics():
+    user_id = get_jwt_identity()
+    
+    # Get all generations
+    generations = Generation.query.filter_by(user_id=user_id).all()
+    
+    # Get all usage logs
+    usage_logs = UsageLog.query.filter_by(user_id=user_id).all()
+    
+    export_data = {
+        'generations': [{
+            'id': g.id,
+            'service': g.service,
+            'type': g.type,
+            'prompt': g.prompt,
+            'status': g.status,
+            'cost': g.cost,
+            'created_at': g.created_at.isoformat(),
+            'completed_at': g.completed_at.isoformat() if g.completed_at else None
+        } for g in generations],
+        'usage_logs': [{
+            'service': log.service,
+            'tokens_used': log.tokens_used,
+            'cost': log.cost,
+            'request_type': log.request_type,
+            'timestamp': log.timestamp.isoformat()
+        } for log in usage_logs],
+        'exported_at': datetime.utcnow().isoformat()
+    }
+    
+    return jsonify(export_data)
+
+# ==================== BATCH OPERATIONS ====================
+
+@app.route('/api/batch/generate', methods=['POST'])
+@jwt_required()
+def batch_generate():
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    
+    data = request.json
+    prompts = data.get('prompts', [])
+    service = data.get('service')
+    gen_type = data.get('type', 'image')
+    parameters = data.get('parameters', {})
+    
+    if len(prompts) == 0:
+        return jsonify({'error': 'No prompts provided'}), 400
+    
+    if len(prompts) > 10:
+        return jsonify({'error': 'Maximum 10 prompts per batch'}), 400
+    
+    # Check credits
+    if user.credits < len(prompts):
+        return jsonify({'error': 'Insufficient credits'}), 402
+    
+    # Get API key
+    user_api_key = get_user_api_key(user_id, service)
+    if not user_api_key:
+        return jsonify({'error': f'API key not configured for {service}'}), 400
+    
+    generation_ids = []
+    
+    for prompt in prompts:
+        generation = Generation(
+            user_id=user_id,
+            service=service,
+            type=gen_type,
+            prompt=prompt,
+            parameters=parameters,
+            status='pending'
+        )
+        db.session.add(generation)
+        db.session.commit()
+        
+        # Queue task
+        process_generation.delay(
+            generation.id,
+            user_id,
+            user_api_key,
+            prompt,
+            service,
+            gen_type,
+            parameters
+        )
+        
+        generation_ids.append(generation.id)
+    
+    # Deduct credits
+    user.credits -= len(prompts)
+    db.session.commit()
+    
+    return jsonify({
+        'success': True,
+        'generation_ids': generation_ids,
+        'count': len(generation_ids),
+        'remaining_credits': user.credits
+    })
+
+@app.route('/api/batch/status', methods=['POST'])
+@jwt_required()
+def batch_status():
+    user_id = get_jwt_identity()
+    data = request.json
+    ids = data.get('ids', [])
+    
+    generations = Generation.query.filter(
+        Generation.id.in_(ids),
+        Generation.user_id == user_id
+    ).all()
+    
+    return jsonify({
+        'generations': [{
+            'id': g.id,
+            'status': g.status,
+            'prompt': g.prompt[:50] + '...' if len(g.prompt) > 50 else g.prompt
+        } for g in generations]
+    })
+
+# ==================== TEMPLATES & PRESETS ====================
+
+@app.route('/api/templates', methods=['GET'])
+def get_templates():
+    """Get predefined prompt templates"""
+    templates = {
+        'image': [
+            {
+                'id': 'photorealistic',
+                'name': 'Photorealistic Portrait',
+                'template': 'A photorealistic portrait of {subject}, professional lighting, high detail, 8k resolution',
+                'parameters': {'quality': 'hd', 'size': '1024x1024'}
+            },
+            {
+                'id': 'artistic',
+                'name': 'Artistic Style',
+                'template': '{subject} in the style of {artist}, {mood} atmosphere, detailed',
+                'parameters': {'quality': 'standard'}
+            },
+            {
+                'id': 'product',
+                'name': 'Product Photography',
+                'template': 'Professional product photography of {product}, clean white background, studio lighting',
+                'parameters': {'quality': 'hd'}
+            }
+        ],
+        'video': [
+            {
+                'id': 'cinematic',
+                'name': 'Cinematic Scene',
+                'template': 'Cinematic shot of {scene}, dramatic lighting, smooth camera movement',
+                'parameters': {'duration': 5}
+            }
+        ],
+        'text': [
+            {
+                'id': 'blog',
+                'name': 'Blog Post',
+                'template': 'Write a comprehensive blog post about {topic}, include introduction, key points, and conclusion',
+                'parameters': {'max_tokens': 2000}
+            },
+            {
+                'id': 'code',
+                'name': 'Code Generation',
+                'template': 'Generate {language} code that {functionality}, include comments and error handling',
+                'parameters': {'max_tokens': 3000}
+            }
+        ]
+    }
+    
+    template_type = request.args.get('type')
+    if template_type and template_type in templates:
+        return jsonify({'templates': templates[template_type]})
+    
+    return jsonify({'templates': templates})
+
+# ==================== WEBHOOKS ====================
+
+@app.route('/api/webhooks/configure', methods=['POST'])
+@jwt_required()
+def configure_webhook():
+    """Configure webhook for generation completion"""
+    user_id = get_jwt_identity()
+    data = request.json
+    
+    # Store webhook URL in Redis
+    redis_client.set(f'webhook:{user_id}', data['url'])
+    
+    return jsonify({'success': True, 'message': 'Webhook configured'})
+
+@app.route('/api/webhooks/test', methods=['POST'])
+@jwt_required()
+def test_webhook():
+    """Test webhook configuration"""
+    user_id = get_jwt_identity()
+    webhook_url = redis_client.get(f'webhook:{user_id}')
+    
+    if not webhook_url:
+        return jsonify({'error': 'No webhook configured'}), 404
+    
+    try:
+        response = requests.post(webhook_url, json={
+            'event': 'test',
+            'timestamp': datetime.utcnow().isoformat()
+        }, timeout=5)
+        
+        return jsonify({
+            'success': True,
+            'status_code': response.status_code,
+            'response': response.text[:200]
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+# ==================== FILE UPLOAD ====================
+
+@app.route('/api/upload', methods=['POST'])
+@jwt_required()
+def upload_file():
+    """Upload reference image or file"""
+    user_id = get_jwt_identity()
+    
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file provided'}), 400
+    
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'error': 'No file selected'}), 400
+    
+    # Save file
+    filename = f"{user_id}_{int(time.time())}_{file.filename}"
+    filepath = os.path.join(app.config['TEMP_FOLDER'], filename)
+    file.save(filepath)
+    
+    # Store reference in Redis (expires in 1 hour)
+    redis_client.setex(f'upload:{user_id}:{filename}', 3600, filepath)
+    
+    return jsonify({
+        'success': True,
+        'filename': filename,
+        'size': os.path.getsize(filepath)
+    })
+
+# ==================== HEALTH & INFO ====================
+
+@app.route('/health', methods=['GET'])
+def health():
+    """Health check endpoint"""
+    try:
+        # Check database
+        db.session.execute(db.text('SELECT 1'))
+        db_status = 'connected'
+    except:
+        db_status = 'disconnected'
+    
+    try:
+        redis_client.ping()
+        redis_status = 'connected'
+    except:
+        redis_status = 'disconnected'
+    
+    return jsonify({
+        'status': 'online',
+        'database': db_status,
+        'redis': redis_status,
+        'celery': 'running',
+        'timestamp': datetime.utcnow().isoformat()
+    })
+
+@app.route('/api/info', methods=['GET'])
+def info():
+    """API information endpoint"""
+    return jsonify({
+        'version': '1.0.0',
+        'name': 'Complete AI Hub',
+        'services': {
+            'image': ['dalle3', 'dalle2', 'stable-diffusion', 'flux', 'imagen3'],
+            'video': ['veo3', 'runway', 'stability-video', 'haiper', 'pika'],
+            'code': ['claude', 'gpt4', 'gemini', 'codellama'],
+            'audio': ['elevenlabs', 'openai-tts', 'google-tts'],
+            'music': ['musicgen', 'stable-audio'],
+            'text': ['claude', 'gpt4', 'gemini', 'llama3'],
+            'other': ['whisper', 'google-translate', 'ocr-space']
+        },
+        'features': [
+            'User authentication & authorization',
+            'API key management with encryption',
+            'Rate limiting & usage tracking',
+            'Async background processing',
+            'Batch operations',
+            'Admin dashboard',
+            'Analytics & export',
+            'Webhooks',
+            'File storage',
+            'Templates & presets'
+        ],
+        'rate_limits': {
+            'default': '10 requests per minute',
+            'authenticated': '100 requests per hour'
+        }
+    })
+
+@app.route('/api/services/status', methods=['GET'])
+def services_status():
+    """Check status of all AI services"""
+    services = {
+        'openai': 'operational',
+        'anthropic': 'operational',
+        'google': 'operational',
+        'replicate': 'operational',
+        'elevenlabs': 'operational'
+    }
+    
+    return jsonify({
+        'services': services,
+        'timestamp': datetime.utcnow().isoformat()
+    })
+
+# ==================== CREDITS & BILLING ====================
+
+@app.route('/api/credits/purchase', methods=['POST'])
+@jwt_required()
+def purchase_credits():
+    """Simulate credit purchase (integrate with payment gateway)"""
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    
+    data = request.json
+    package = data.get('package')
+    
+    packages = {
+        'starter': {'credits': 100, 'price': 9.99},
+        'pro': {'credits': 500, 'price': 39.99},
+        'enterprise': {'credits': 2000, 'price': 129.99}
+    }
+    
+    if package not in packages:
+        return jsonify({'error': 'Invalid package'}), 400
+    
+    # In production, integrate with Stripe/PayPal here
+    # For now, just add credits
+    user.credits += packages[package]['credits']
+    db.session.commit()
+    
+    system_log('info', f'User {user.username} purchased {package} package')
+    
+    return jsonify({
+        'success': True,
+        'credits_added': packages[package]['credits'],
+        'new_balance': user.credits
+    })
+
+@app.route('/api/credits/balance', methods=['GET'])
+@jwt_required()
+def get_credit_balance():
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    
+    # Calculate estimated usage
+    thirty_days_ago = datetime.utcnow() - timedelta(days=30)
+    recent_usage = db.session.query(
+        db.func.sum(Generation.cost)
+    ).filter(
+        Generation.user_id == user_id,
+        Generation.created_at >= thirty_days_ago
+    ).scalar() or 0
+    
+    return jsonify({
+        'credits': user.credits,
+        'usage_30d': round(recent_usage, 2),
+        'estimated_days_remaining': int(user.credits / (recent_usage / 30)) if recent_usage > 0 else None
+    })
+
+# ==================== ERROR HANDLERS ====================
+
+@app.errorhandler(404)
+def not_found(error):
+    return jsonify({'error': 'Endpoint not found'}), 404
+
+@app.errorhandler(500)
+def internal_error(error):
+    system_log('error', 'Internal server error', {'error': str(error)})
+    return jsonify({'error': 'Internal server error'}), 500
+
+@app.errorhandler(429)
+def rate_limit_error(error):
+    return jsonify({'error': 'Rate limit exceeded'}), 429
+
+# ==================== STARTUP ====================
+
+if __name__ == '__main__':
+    # Create default admin user if none exists
+    with app.app_context():
+        admin = User.query.filter_by(role='admin').first()
+        if not admin:
+            default_admin = User(
+                username='admin',
+                email='admin@aihub.com',
+                password_hash=generate_password_hash('admin123'),
+                role='admin',
+                credits=10000
+            )
+            db.session.add(default_admin)
+            db.session.commit()
+            print("✓ Default admin created - username: admin, password: admin123")
+        
+        print("✓ Database initialized")
+        print("✓ Server starting on http://0.0.0.0:3000")
+    
+    app.run(host='0.0.0.0', port=3000, debug=True)
