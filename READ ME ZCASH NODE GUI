@@ -1,0 +1,1949 @@
+# Zcash Production Node Manager
+
+A Complete, Production-Ready GUI for Managing Zcash Full Nodes
+
+Professional-grade graphical interface for installing, configuring, and managing Zcash full nodes with real-time blockchain monitoring, complete wallet operations, and advanced transaction management.
+
+---
+
+## 📋 Table of Contents
+
+- [Features](#-features)
+- [Prerequisites](#-prerequisites)
+- [Installation](#-installation)
+- [Quick Start](#-quick-start)
+- [Detailed Usage Guide](#-detailed-usage-guide)
+- [Configuration](#-configuration)
+- [RPC Commands Reference](#-rpc-commands-reference)
+- [Troubleshooting](#-troubleshooting)
+- [Security Best Practices](#-security-best-practices)
+- [Contributing](#-contributing)
+- [License](#-license)
+- [Acknowledgments](#-acknowledgments)
+
+---
+
+## ✨ Features
+
+### 🚀 **Automated Installation**
+- **One-Click Full Installation** - Automatically installs all dependencies, clones Zcash repository, fetches parameters, builds from source, and configures the node
+- **Multi-Platform Support** - Works on Linux (Debian/Ubuntu), macOS, and other Unix-like systems
+- **Progress Tracking** - Real-time installation output with step-by-step visual feedback
+- **Smart Detection** - Automatically detects system architecture and OS
+
+### 📊 **Real-Time Monitoring**
+- **Live Blockchain Statistics** - Monitor block height, sync progress, chain status, difficulty, and more
+- **Visual Block Display** - Animated visualization of recent blocks with Zcash brand colors
+- **Network Metrics** - Track peer connections, network hashrate, and bandwidth usage
+- **Mempool Activity** - Real-time mempool size and transaction monitoring
+- **Performance History** - Store and display historical metrics (blocks, peers, mempool size)
+
+### 💰 **Complete Wallet Management**
+- **Balance Checking** - View transparent, shielded, and total balances
+- **Multiple Address Types** - Support for transparent (t-addr) and shielded (z-addr) addresses
+- **Unified Accounts** - Full support for Zcash Unified Addresses and accounts
+- **Backup & Restore** - Easy wallet.dat backup and restore with timestamp
+- **Encryption** - Encrypt wallet with passphrase for enhanced security
+- **Key Management** - Import/export private keys and viewing keys
+- **Wallet Export/Import** - Export entire wallet to text file for backup
+
+### 📤 **Advanced Transaction Features**
+- **Shielded Transactions** - Send private transactions using z_sendmany
+- **Transparent Transactions** - Send transparent transactions using sendtoaddress
+- **Coinbase Shielding** - Shield mining rewards with z_shieldcoinbase
+- **UTXO Merging** - Consolidate UTXOs with z_mergetoaddress
+- **Transaction Tracking** - View transaction history and operation status
+- **Memo Support** - Add encrypted memos to shielded transactions
+- **Multi-Output** - Send to multiple addresses in single transaction
+
+### 🔍 **Block Explorer**
+- **Block Search** - Search by block height or hash
+- **Detailed Block Info** - View complete block details including all transactions
+- **Transaction Details** - Inspect individual transactions with full metadata
+- **Best Block Lookup** - Instantly view the latest block
+- **Block Count** - Get current blockchain height
+
+### ⛏️ **Mining Support (Testnet)**
+- **Block Generation** - Generate blocks on testnet for testing
+- **Mining Info** - View current mining statistics
+- **Template Access** - Get block templates for external miners
+- **Network Hashrate** - Monitor network mining power
+
+### 🌐 **Network Management**
+- **Peer Information** - View detailed information about connected peers
+- **Connection Metrics** - Monitor incoming/outgoing connections
+- **Network Statistics** - Track bandwidth usage and network health
+- **Deprecation Info** - Check node version and upgrade notifications
+
+### ⚙️ **Configuration Management**
+- **Visual Config Editor** - Edit zcash.conf with syntax highlighting
+- **Default Generation** - Generate secure default configuration
+- **Live Reload** - Apply configuration changes with node restart
+- **Backup System** - Automatic config backup before saving
+
+### 📫 **Address Management**
+- **Address Generation** - Create new transparent and shielded addresses
+- **Address Validation** - Verify address format and validity
+- **Address Listing** - View all wallet addresses
+- **Unified Addresses** - Work with modern Zcash unified addresses
+- **Viewing Keys** - Export and import viewing keys for auditing
+
+---
+
+## 🔧 Prerequisites
+
+### System Requirements
+
+**Minimum:**
+- **OS:** Linux (Ubuntu 20.04+, Debian 10+), macOS 10.14+
+- **RAM:** 4 GB (8 GB recommended)
+- **Disk Space:** 50 GB free space (blockchain grows over time)
+- **CPU:** 2 cores (4+ cores recommended for faster sync)
+- **Internet:** Stable broadband connection
+
+**Recommended:**
+- **RAM:** 16 GB
+- **Disk Space:** 100+ GB SSD
+- **CPU:** 4+ cores
+- **Internet:** 10+ Mbps
+
+### Software Dependencies
+
+**Python:**
+```bash
+# Python 3.7 or higher
+python3 --version
+```
+
+**Python Packages:**
+```bash
+# Required
+pip3 install requests
+
+# Optional for development
+pip3 install tkinter  # Usually included with Python
+```
+
+**Build Tools (Automatically installed by the manager):**
+
+**For Linux (Debian/Ubuntu):**
+```bash
+build-essential pkg-config libc6-dev m4 g++-multilib 
+autoconf libtool libncurses5-dev unzip git python3 
+zlib1g-dev wget bsdmainutils automake curl
+```
+
+**For macOS:**
+```bash
+# Requires Homebrew
+brew install autoconf automake libtool pkg-config wget
+```
+
+---
+
+## 📦 Installation
+
+### Method 1: Direct Download (Recommended)
+
+1. **Download the Manager:**
+```bash
+# Create directory
+mkdir -p ~/zcash-manager
+cd ~/zcash-manager
+
+# Download (replace with actual URL)
+wget https://raw.githubusercontent.com/yourusername/zcash-node-manager/main/zcash_manager.py
+# OR
+curl -O https://raw.githubusercontent.com/yourusername/zcash-node-manager/main/zcash_manager.py
+
+# Make executable
+chmod +x zcash_manager.py
+```
+
+2. **Install Python Dependencies:**
+```bash
+pip3 install requests
+```
+
+3. **Run the Manager:**
+```bash
+python3 zcash_manager.py
+```
+
+### Method 2: Clone Repository
+
+```bash
+# Clone repository
+git clone https://github.com/yourusername/zcash-node-manager.git
+cd zcash-node-manager
+
+# Install dependencies
+pip3 install -r requirements.txt
+
+# Run
+python3 zcash_manager.py
+```
+
+### Method 3: One-Line Install
+
+```bash
+curl -sSL https://raw.githubusercontent.com/yourusername/zcash-node-manager/main/install.sh | bash
+```
+
+---
+
+## 🚀 Quick Start
+
+### First-Time Setup (Complete Walkthrough)
+
+#### Step 1: Launch the Application
+```bash
+cd ~/zcash-manager
+python3 zcash_manager.py
+```
+
+The GUI will open showing the **Installation tab** by default.
+
+#### Step 2: Install Zcash Node
+
+1. **Click "FULL AUTOMATIC INSTALL"** button
+2. The system will:
+   - ✅ Install all dependencies (5-10 minutes)
+   - ✅ Clone Zcash repository (~1 GB download)
+   - ✅ Fetch cryptographic parameters (~1 GB download)
+   - ✅ Build Zcash from source (30-60 minutes)
+   - ✅ Generate secure configuration
+
+3. **Monitor Progress** in the installation output window
+
+4. **Wait for completion** - You'll see:
+```
+🎉 INSTALLATION COMPLETE! Start node from Dashboard tab.
+```
+
+#### Step 3: Start Your Node
+
+1. **Switch to "📊 Dashboard" tab**
+2. **Click "▶ Start Node"** button
+3. **Wait 5-10 seconds** for initialization
+4. **Verify Status** - Connection indicator should show "● Online" (green)
+
+#### Step 4: Enable Real-Time Monitoring
+
+1. **Click "🔍 Start Real-Time Monitor"** button
+2. **Switch to "⛓️ Blockchain Monitor" tab**
+3. **Watch live block updates** - New blocks appear every ~75 seconds (mainnet)
+
+#### Step 5: Initial Sync
+
+**First sync takes 1-7 days depending on:**
+- Internet speed
+- CPU performance
+- Disk I/O speed
+- Network (mainnet vs testnet)
+
+**Monitor sync progress:**
+- Dashboard shows "Sync Progress: X.XX%"
+- 100% = Fully synchronized
+- Node is usable during sync but limited functionality
+
+---
+
+## 📖 Detailed Usage Guide
+
+### Dashboard Tab (📊)
+
+**Purpose:** Monitor node status and control node operations
+
+**Controls:**
+- **▶ Start Node** - Launch zcashd daemon
+- **⏹ Stop Node** - Gracefully stop zcashd
+- **🔄 Refresh Status** - Update node information
+- **🔍 Start Monitor** - Enable real-time blockchain monitoring
+- **⏸ Stop Monitor** - Disable monitoring
+
+**Information Displayed:**
+```
+Live Statistics:
+- Block Height: Current blockchain height
+- Sync Progress: Percentage synchronized
+- Chain: Network (main, test, regtest)
+- Connections: Number of peers
+- Mempool: Pending transactions
+
+Node Status:
+- Full output of getinfo
+- Blockchain information
+- Network details
+```
+
+**Common Tasks:**
+
+*Check if node is running:*
+```
+Click "🔄 Refresh Status"
+Look for "✅ Node is RUNNING"
+```
+
+*Restart node after config change:*
+```
+1. Click "⏹ Stop Node"
+2. Wait 5 seconds
+3. Click "▶ Start Node"
+```
+
+### Blockchain Monitor Tab (⛓️)
+
+**Purpose:** Real-time blockchain visualization and monitoring
+
+**Features:**
+- **Live Statistics** - Block height, hash, chain, difficulty, sync status
+- **Visual Blocks** - Recent 20 blocks displayed as colored cards
+- **Mempool Activity** - Current mempool size and statistics
+
+**Block Cards Show:**
+- Block height/number
+- Transaction count
+- Timestamp
+- Zcash brand colors (Gold/Dark Gray alternating)
+
+**Monitoring Updates:**
+- Every 5 seconds
+- Automatic refresh
+- No manual intervention needed
+
+### Block Explorer Tab (🔍)
+
+**Purpose:** Search and explore blockchain data
+
+**Search Methods:**
+
+*By Block Height:*
+```
+1. Enter block number (e.g., 2547893)
+2. Click "Get Block Details"
+3. View complete block information
+```
+
+*By Block Hash:*
+```
+1. Enter full block hash
+2. Click "Get Block Details"
+3. View block details
+```
+
+*Get Latest Block:*
+```
+Click "Get Best Block" - automatically fills in latest block hash
+```
+
+**Information Shown:**
+```
+Block Details:
+- Hash
+- Confirmations
+- Size (bytes)
+- Height
+- Version
+- Merkle Root
+- Timestamp
+- Difficulty
+- Nonce
+- Transaction list with full details
+```
+
+### Wallet Tab (💰)
+
+**Purpose:** Manage wallet and check balances
+
+**Balance Commands:**
+
+*Total Balance (All Types):*
+```
+Click "z_gettotalbalance"
+Returns: {transparent, private, total}
+```
+
+*Specific Address Balance:*
+```
+Click "z_getbalance"
+Enter z-address when prompted
+Returns: Balance for that address
+```
+
+*Wallet Information:*
+```
+Click "getwalletinfo"
+Returns: Wallet version, balance, transaction count, etc.
+```
+
+**Backup & Security:**
+
+*Backup Wallet:*
+```
+1. Click "Backup Wallet"
+2. Choose save location
+3. File saved as: wallet_backup_YYYYMMDD_HHMMSS.dat
+4. Store in secure location (USB drive, encrypted cloud)
+```
+
+*Restore Wallet:*
+```
+⚠️ WARNING: This replaces current wallet!
+
+1. Click "Restore Wallet"
+2. Select backup file
+3. Confirm replacement
+4. Node automatically stops
+5. Restart node to use restored wallet
+```
+
+*Encrypt Wallet:*
+```
+⚠️ CRITICAL: Make backup BEFORE encrypting!
+
+1. Enable experimental features in config:
+   experimentalfeatures=1
+   developerencryptwallet=1
+2. Restart node
+3. Click "encryptwallet"
+4. Enter strong passphrase
+5. Confirm passphrase
+6. Node stops automatically
+7. Restart node
+8. Wallet now encrypted
+```
+
+*Unlock Wallet:*
+```
+1. Click "walletpassphrase"
+2. Enter passphrase
+3. Set timeout (seconds)
+4. Wallet unlocked for specified duration
+```
+
+**Account Management:**
+
+*Create New Account:*
+```
+Click "z_getnewaccount"
+Returns: New account number
+```
+
+*List Accounts:*
+```
+Click "z_listaccounts"
+Returns: All accounts with balances
+```
+
+*Get Account Balance:*
+```
+Click "z_getbalanceforaccount"
+Enter account number
+Returns: Balance for that account
+```
+
+### Transactions Tab (📄)
+
+**Purpose:** Send and track transactions
+
+**Sending Shielded Transaction (Private):**
+
+```
+1. Fill in fields:
+   - From Address: Your z-address
+   - To Address: Recipient z-address
+   - Amount: ZEC amount (e.g., 0.5)
+   - Memo: Optional encrypted message
+
+2. Click "z_sendmany (Shielded)"
+
+3. Transaction submitted
+   - Returns operation ID
+   - Use z_getoperationstatus to check progress
+
+4. Track operation:
+   Click "z_getoperationstatus"
+   Status: queued → executing → success
+```
+
+**Sending Transparent Transaction:**
+
+```
+1. Fill in fields:
+   - To Address: Recipient t-address
+   - Amount: ZEC amount
+
+2. Click "sendtoaddress (Transparent)"
+
+3. Transaction broadcast immediately
+   Returns: Transaction ID (txid)
+```
+
+**Shield Coinbase (Mining Rewards):**
+
+```
+Purpose: Move mining rewards to shielded address
+
+1. Fill in:
+   - From: * (all coinbase) or specific address
+   - To: Your z-address
+
+2. Click "z_shieldcoinbase"
+
+3. Specify:
+   - Limit: Max UTXOs to shield (default 50)
+
+4. Operation queued
+   Check status with z_getoperationstatus
+```
+
+**Merge UTXOs (Consolidate):**
+
+```
+Purpose: Combine many small amounts into one
+
+1. Enter:
+   - From: Comma-separated addresses or *
+   - To: Destination address
+
+2. Click "z_mergetoaddress"
+
+3. UTXOs consolidated
+   Reduces future transaction fees
+```
+
+**View Transaction Details:**
+
+```
+Transparent Transaction:
+1. Click "gettransaction"
+2. Enter txid
+3. View full details
+
+Shielded Transaction:
+1. Click "z_viewtransaction"
+2. Enter txid
+3. View shielded details
+```
+
+**Track Operations:**
+
+```
+Active Operations:
+Click "z_getoperationstatus" - shows all operations
+
+Operation Result:
+Click "z_getoperationresult" - gets final result
+
+List All Operations:
+Click "z_listoperationids" - lists all operation IDs
+```
+
+### Network Tab (🌐)
+
+**Purpose:** Monitor network connections and health
+
+**Network Information:**
+```
+Click "getnetworkinfo"
+
+Returns:
+- Version
+- Subversion
+- Protocol version
+- Local services
+- Time offset
+- Connections
+- Networks (IPv4/IPv6)
+- Relay info
+```
+
+**Peer Information:**
+```
+Click "getpeerinfo"
+
+Returns array of peers:
+- IP address
+- Version
+- Subversion
+- Connection type (inbound/outbound)
+- Ping time
+- Bytes sent/received
+- Connection time
+- Ban score
+```
+
+**Connection Count:**
+```
+Click "getconnectioncount"
+Returns: Number of active peer connections
+```
+
+**Network Totals:**
+```
+Click "getnettotals"
+
+Returns:
+- Total bytes received
+- Total bytes sent
+- Time since node started
+- Upload/download limits
+```
+
+### Mining Tab (⛏️)
+
+**Purpose:** Mining operations (TESTNET ONLY)
+
+⚠️ **WARNING:** Mining is only for TESTNET. Mainnet requires ASIC hardware.
+
+**Get Mining Info:**
+```
+Click "getmininginfo"
+
+Returns:
+- Blocks
+- Current block size
+- Current block weight
+- Difficulty
+- Network hashrate
+- Pool info (if applicable)
+- Chain name
+- Warnings
+```
+
+**Generate Blocks (Testnet):**
+```
+1. Click "generate 1 block"
+2. Enter number of blocks (1-100)
+3. Blocks generated locally
+4. Receive mining rewards
+
+Uses CPU mining (very slow)
+Good for testing transactions
+```
+
+**Get Block Template:**
+```
+Click "getblocktemplate"
+
+Returns template for external miners
+Includes:
+- Block version
+- Previous block hash
+- Transactions
+- Coinbase value
+- Target difficulty
+```
+
+**Network Hashrate:**
+```
+Click "getnetworkhashps"
+
+Returns estimated network hash rate
+Format: hashes per second
+```
+
+### Addresses Tab (📫)
+
+**Purpose:** Manage addresses and keys
+
+**Generate New Addresses:**
+
+*Shielded Address:*
+```
+Click "z_getnewaddress (Shielded)"
+Returns: New z-address (private)
+
+Modern format: Unified Address (starts with u1)
+Legacy formats: Sapling (zs), Sprout (zc)
+```
+
+*Transparent Address:*
+```
+Click "getnewaddress (Transparent)"
+Returns: New t-address (public)
+
+Format: Starts with 't1'
+```
+
+**List Addresses:**
+
+```
+Shielded Addresses:
+Click "z_listaddresses"
+Returns: Array of all z-addresses
+
+Transparent Addresses:
+Click "listaddresses"
+Returns: Array of all t-addresses
+```
+
+**Validate Addresses:**
+
+```
+Transparent:
+1. Click "validateaddress"
+2. Enter t-address
+3. Returns: validity, address type, is mine, account info
+
+Shielded:
+1. Click "z_validateaddress"
+2. Enter z-address
+3. Returns: validity, address type, diversifier index
+```
+
+**Export Keys:**
+
+*Export Private Key:*
+```
+⚠️ KEEP PRIVATE KEYS SECURE!
+
+1. Click "z_exportkey"
+2. Enter z-address
+3. Returns: Private key
+4. Store securely offline
+```
+
+*Export Viewing Key:*
+```
+Allows viewing transactions without spending
+
+1. Click "z_exportviewingkey"
+2. Enter z-address
+3. Returns: Viewing key
+4. Can be shared for auditing
+```
+
+**Import Keys:**
+
+*Import Private Key:*
+```
+1. Click "z_importkey"
+2. Enter private key
+3. Choose rescan (yes/no)
+4. Key imported
+5. If rescan=yes, scans entire blockchain for transactions
+```
+
+*Import Viewing Key:*
+```
+1. Click "z_importviewingkey"
+2. Enter viewing key
+3. Choose rescan
+4. Can view but not spend
+```
+
+**Viewing Key Balance:**
+```
+Click "z_getbalanceforviewingkey"
+Enter viewing key
+Returns: Balance visible to that key
+```
+
+**Unified Addresses:**
+
+```
+Get Address for Account:
+1. Click "z_getaddressforaccount"
+2. Enter account number
+3. Returns unified address
+
+List Receivers:
+1. Click "z_listunifiedreceivers"
+2. Enter unified address
+3. Returns all receiver types (transparent, sapling, orchard)
+```
+
+### Control Tab (⚙️)
+
+**Purpose:** Node control and system information
+
+**Node Information:**
+
+```
+getinfo:
+- Version
+- Protocol version
+- Wallet version
+- Balance
+- Blocks
+- Connections
+- Difficulty
+
+getblockchaininfo:
+- Chain name
+- Blocks
+- Headers
+- Best block hash
+- Difficulty
+- Verification progress
+- Chain work
+- Size on disk
+
+getmempoolinfo:
+- Size (transaction count)
+- Bytes
+- Usage
+- Max mempool size
+```
+
+**Node Control:**
+
+```
+Stop Node:
+Click "stop"
+Gracefully shuts down zcashd
+Waits for current operations to complete
+
+Restart Node:
+Click "Restart Node"
+Stops and starts node with new config
+```
+
+### Configuration Tab (🔧)
+
+**Purpose:** Edit zcash.conf configuration file
+
+**File Location:** `~/.zcash/zcash.conf`
+
+**Load Configuration:**
+```
+Click "Load Config"
+Displays current zcash.conf content
+```
+
+**Edit Configuration:**
+```
+1. Load or generate config
+2. Edit in text editor
+3. Click "Save Config"
+4. Automatic backup created
+5. Restart node to apply
+```
+
+**Generate Default:**
+```
+Click "Generate Default Config"
+
+Creates secure configuration with:
+- Random RPC password
+- Indexing enabled
+- Logging enabled
+- Testnet enabled (change for mainnet)
+- Optimized performance settings
+```
+
+**Important Settings:**
+
+```
+# Network Selection
+testnet=1              # Remove or =0 for mainnet
+regtest=1              # Local testing network
+
+# RPC (Required for GUI)
+server=1
+rpcuser=zcashgui
+rpcpassword=SECURE_RANDOM_PASSWORD
+rpcallowip=127.0.0.1
+rpcport=8232           # 18232 for testnet
+
+# Indexing (Enables full features)
+txindex=1              # Transaction index
+addressindex=1         # Address index
+timestampindex=1       # Timestamp index
+spentindex=1           # Spent index
+
+# Performance
+dbcache=2000           # RAM for database cache (MB)
+maxconnections=50      # Max peer connections
+par=4                  # Script verification threads
+
+# Logging
+debug=1                # Enable debug logging
+logtimestamps=1        # Timestamps in logs
+logips=1               # Log IP addresses
+```
+
+**Restart with New Config:**
+```
+Click "Restart with New Config"
+Saves config and restarts node automatically
+```
+
+---
+
+## ⚙️ Configuration
+
+### Network Configuration
+
+**Mainnet (Default):**
+```conf
+# ~/.zcash/zcash.conf
+server=1
+rpcuser=zcashgui
+rpcpassword=YOUR_SECURE_PASSWORD
+rpcport=8232
+
+# Mainnet is default - don't add testnet=1
+```
+
+**Testnet:**
+```conf
+server=1
+rpcuser=zcashgui
+rpcpassword=YOUR_SECURE_PASSWORD
+rpcport=18232
+testnet=1  # Enable testnet
+
+# Testnet benefits:
+# - Faster sync (smaller blockchain)
+# - Free test ZEC from faucets
+# - Safe for testing
+# - CPU mining works
+```
+
+**Regtest (Local Testing):**
+```conf
+server=1
+rpcuser=zcashgui
+rpcpassword=YOUR_SECURE_PASSWORD
+rpcport=18232
+regtest=1  # Enable regression testing
+
+# Regtest benefits:
+# - Instant block generation
+# - Complete control
+# - No internet needed
+# - Perfect for development
+```
+
+### Performance Tuning
+
+**Low-End System (4GB RAM):**
+```conf
+dbcache=512
+maxconnections=25
+par=2
+```
+
+**Mid-Range System (8GB RAM):**
+```conf
+dbcache=2000
+maxconnections=50
+par=4
+```
+
+**High-End System (16GB+ RAM):**
+```conf
+dbcache=4000
+maxconnections=125
+par=8
+```
+
+### Privacy Configuration
+
+**Maximum Privacy:**
+```conf
+listen=0               # Don't accept incoming
+onlynet=onion          # Only use Tor
+proxy=127.0.0.1:9050   # Tor proxy
+```
+
+**Balanced:**
+```conf
+listen=1
+bind=127.0.0.1
+# Only localhost connections
+```
+
+---
+
+## 📚 RPC Commands Reference
+
+### Quick Reference Table
+
+| Category | Command | Purpose |
+|----------|---------|---------|
+| **Blockchain** | `getblockchaininfo` | Chain status and sync progress |
+| | `getblock` | Get block details |
+| | `getblockhash` | Get block hash by height |
+| | `getbestblockhash` | Get latest block hash |
+| | `getblockcount` | Get current block height |
+| **Wallet** | `z_gettotalbalance` | Get all balances |
+| | `z_getbalance` | Get specific address balance |
+| | `getwalletinfo` | Wallet information |
+| | `listunspent` | List unspent outputs |
+| | `z_listunspent` | List shielded unspent |
+| **Transactions** | `z_sendmany` | Send shielded transaction |
+| | `sendtoaddress` | Send transparent transaction |
+| | `z_shieldcoinbase` | Shield mining rewards |
+| | `z_mergetoaddress` | Consolidate UTXOs |
+| | `listtransactions` | List transactions |
+| | `gettransaction` | Get transaction details |
+| | `z_viewtransaction` | View shielded transaction |
+| **Addresses** | `z_getnewaddress` | Generate shielded address |
+| | `getnewaddress` | Generate transparent address |
+| | `z_listaddresses` | List shielded addresses |
+| | `validateaddress` | Validate transparent address |
+| | `z_validateaddress` | Validate shielded address |
+| **Network** | `getnetworkinfo` | Network status |
+| | `getpeerinfo` | Connected peers |
+| | `getconnectioncount` | Number of connections |
+| **Mining** | `getmininginfo` | Mining statistics |
+| | `generate` | Generate blocks (testnet) |
+| | `getnetworkhashps` | Network hashrate |
+| **Control** | `stop` | Stop node |
+| | `getinfo` | General information |
+
+---
+
+## 🔧 Troubleshooting
+
+### Common Issues
+
+#### 1. Node Won't Start
+
+**Symptom:** Clicking "Start Node" shows error or connection indicator stays red
+
+**Solutions:**
+
+```bash
+# Check if zcashd is already running
+ps aux | grep zcashd
+
+# Kill existing process if found
+killall zcashd
+
+# Check zcashd exists
+ls -la ~/zcash/src/zcashd
+
+# Check configuration
+cat ~/.zcash/zcash.conf
+
+# Check logs
+tail -f ~/.zcash/debug.log
+
+# Try starting manually
+~/zcash/src/zcashd
+
+# Check for error messages
+```
+
+#### 2. RPC Connection Refused
+
+**Symptom:** "Connection refused" errors when clicking commands
+
+**Solutions:**
+
+```bash
+# Verify zcashd is running
+ps aux | grep zcashd
+
+# Check RPC port
+netstat -an | grep 8232
+
+# Verify config has RPC enabled
+grep server ~/.zcash/zcash.conf
+
+# Check RPC credentials match
+grep rpcuser ~/.zcash/zcash.conf
+grep rpcpassword ~/.zcash/zcash.conf
+
+# Try manual RPC call
+curl --user zcashgui:YOUR_PASSWORD \
+  --data-binary '{"jsonrpc": "1.0", "id":"test", "method": "getinfo", "params": [] }' \
+  -H 'content-type: text/plain;' \
+  http://127.0.0.1:8232/
+```
+
+#### 3. Build Failed
+
+**Symptom:** Installation stops during build phase
+
+**Solutions:**
+
+```bash
+# Check available disk space
+df -h
+
+# Check available RAM
+free -h
+
+# Clean previous build
+cd ~/zcash
+./zcutil/clean.sh
+
+# Update system
+sudo apt-get update
+sudo apt-get upgrade
+
+# Install missing dependencies
+sudo apt-get install build-essential pkg-config libc6-dev m4 g++-multilib autoconf libtool libncurses5-dev unzip git python3 zlib1g-dev wget bsdmainutils automake curl
+
+# Try build again
+./zcutil/build.sh -j$(nproc)
+
+# If still fails, build with less cores
+./zcutil/build.sh -j1
+```
+
+#### 4. Slow Sync
+
+**Symptom:** Blockchain sync takes very long time
+
+**Solutions:**
+
+```conf
+# Add to zcash.conf for faster sync
+dbcache=4000        # Increase cache
+maxconnections=125  # More peers
+par=8               # More verification threads
+
+# For SSD
+disablewallet=1     # Disable wallet during initial sync
+# Re-enable after sync complete
+```
+
+```bash
+# Check sync progress
+~/zcash/src/zcash-cli getblockchaininfo
+
+# Monitor debug log
+tail -f ~/.zcash/debug.log
+
+# Check network connectivity
+~/zcash/src/zcash-cli getnetworkinfo
+```
+
+#### 5. GUI Not Responding
+
+**Symptom:** Interface freezes or becomes unresponsive
+
+**Solutions:**
+
+```bash
+# Check Python version
+python3 --version
+# Should be 3.7+
+
+# Check if tkinter is installed
+python3 -c "import tkinter"
+
+# Install tkinter if missing
+# Ubuntu/Debian:
+sudo apt-get install python3-tk
+
+# macOS:
+# Usually included with Python
+
+# Check system resources
+top
+# Look for high CPU/RAM usage
+
+# Restart the GUI
+pkill -f zcash_manager.py
+python3 zcash_manager.py
+```
+
+#### 6. Wallet Not Found
+
+**Symptom:** Wallet operations fail with "wallet not found"
+
+**Solutions:**
+
+```bash
+# Check if wallet exists
+ls -la ~/.zcash/wallet.dat
+
+# If missing, node needs to create it
+# Stop node
+~/zcash/src/zcash-cli stop
+
+# Remove lock files
+rm ~/.zcash/.lock
+rm ~/.zcash/testnet3/.lock  # if testnet
+
+# Start node - will create new wallet
+~/zcash/src/zcashd
+
+# Wait 30 seconds
+sleep 30
+
+# Check wallet created
+ls -la ~/.zcash/wallet.dat
+
+# IMPORTANT: New wallet = new addresses
+# If you had old wallet, restore from backup
+```
+
+#### 7. Transaction Won't Confirm
+
+**Symptom:** Sent transaction stays pending
+
+**Solutions:**
+
+```bash
+# Check transaction status
+~/zcash/src/zcash-cli gettransaction YOUR_TXID
+
+# Check if in mempool
+~/zcash/src/zcash-cli getmempoolinfo
+
+# Check for operation status (shielded tx)
+~/zcash/src/zcash-cli z_getoperationstatus
+
+# Check sync status
+~/zcash/src/zcash-cli getblockchaininfo
+
+# If not synced, transaction won't propagate
+# Wait for full sync
+
+# Check network connections
+~/zcash/src/zcash-cli getconnectioncount
+# Should have >5 connections
+
+# For stuck shielded operation
+~/zcash/src/zcash-cli z_getoperationresult
+```
+
+### Getting Help
+
+**Check Logs:**
+```bash
+# Main log file
+tail -f ~/.zcash/debug.log
+
+# Testnet log
+tail -f ~/.zcash/testnet3/debug.log
+
+# Search for errors
+grep ERROR ~/.zcash/debug.log
+
+# Last 100 lines
+tail -100 ~/.zcash/debug.log
+```
+
+**Zcash Resources:**
+- Official Documentation: https://zcash.readthedocs.io/
+- Community Forum: https://forum.zcashcommunity.com/
+- Discord: https://discord.gg/zcash
+- GitHub Issues: https://github.com/zcash/zcash/issues
+
+**Report Issues:**
+- Create detailed bug report with:
+  - Operating system and version
+  - Python version
+  - Zcash version
+  - Error messages
+  - Steps to reproduce
+  - Log excerpts
+
+---
+
+## 🔒 Security Best Practices
+
+### Critical Security Rules
+
+**1. Protect Your Private Keys**
+```
+NEVER share private keys with anyone
+NEVER enter private keys on websites
+NEVER store private keys unencrypted online
+ALWAYS backup private keys offline
+ALWAYS use hardware wallet for large amounts
+```
+
+**2. Secure Your RPC Connection**
+```conf
+# zcash.conf - Keep RPC local only
+rpcallowip=127.0.0.1
+rpcbind=127.0.0.1
+
+# Use strong random password (generated automatically)
+rpcpassword=LONG_RANDOM_STRING_HERE
+
+# Never expose RPC to internet
+# Never use default passwords
+```
+
+**3. Wallet Security**
+```
+✓ Backup wallet.dat immediately after creation
+✓ Store backups on multiple devices (USB, external HDD)
+✓ Encrypt backups with strong password
+✓ Test restore procedure regularly
+✓ Never store wallet.dat on cloud without encryption
+✓ Encrypt wallet with passphrase if holding funds
+✓ Use different addresses for different purposes
+```
+
+**4. System Security**
+```bash
+# Keep system updated
+sudo apt-get update && sudo apt-get upgrade
+
+# Enable firewall
+sudo ufw enable
+sudo ufw allow ssh
+# Don't allow 8232 from internet
+
+# Use strong SSH keys
+# Disable root SSH login
+# Enable fail2ban
+
+# Regular security audits
+```
+
+**5. Transaction Security**
+```
+Before Sending Large Amount:
+1. Test with small amount first
+2. Verify recipient address multiple times
+3. Use shielded addresses for privacy
+4. Double-check amount and fee
+5. Keep transaction receipts
+6. Wait for confirmations (6+ recommended)
+```
+
+### Backup Procedures
+
+**Critical Files to Backup:**
+```
+~/.zcash/wallet.dat          # YOUR MONEY - MOST IMPORTANT
+~/.zcash/zcash.conf          # Configuration
+~/.zcash/peers.dat           # Network peers (optional)
+```
+
+**Backup Schedule:**
+```
+Immediate:  After creating new addresses
+Daily:      If actively trading
+Weekly:     For casual use
+Monthly:    For cold storage
+```
+
+**Backup Procedure:**
+```bash
+# Stop node
+~/zcash/src/zcash-cli stop
+
+# Wait for shutdown
+sleep 10
+
+# Create encrypted backup
+DATE=$(date +%Y%m%d_%H%M%S)
+tar -czf zcash_backup_$DATE.tar.gz ~/.zcash/wallet.dat ~/.zcash/zcash.conf
+
+# Encrypt backup
+gpg -c zcash_backup_$DATE.tar.gz
+# Enter strong passphrase
+
+# Verify backup
+gpg -d zcash_backup_$DATE.tar.gz.gpg | tar -tzf -
+
+# Copy to multiple locations
+cp zcash_backup_$DATE.tar.gz.gpg /media/usb/
+cp zcash_backup_$DATE.tar.gz.gpg /media/external/
+
+# Delete unencrypted backup
+rm zcash_backup_$DATE.tar.gz
+
+# Restart node
+~/zcash/src/zcashd
+```
+
+**Test Restore:**
+```bash
+# Regularly test restore on different machine
+# Create test directory
+mkdir ~/zcash_test
+cd ~/zcash_test
+
+# Decrypt and extract
+gpg -d zcash_backup_YYYYMMDD_HHMMSS.tar.gz.gpg > backup.tar.gz
+tar -xzf backup.tar.gz
+
+# Verify wallet.dat exists
+ls -la .zcash/wallet.dat
+
+# Success = backup is valid
+```
+
+### Privacy Best Practices
+
+**Use Shielded Addresses:**
+```
+Shielded (z-address):
++ Complete privacy
++ Encrypted memo field
++ Hidden amounts
++ Protected sender/receiver
+- Larger transaction size
+- Longer processing time
+
+Transparent (t-address):
++ Faster transactions
++ Smaller size
++ Lower fees
+- Public amounts
+- Visible sender/receiver
+- No privacy
+```
+
+**Privacy Recommendations:**
+```
+1. Always use z-addresses for receiving
+2. Shield all transparent funds immediately
+3. Don't reuse addresses
+4. Use different addresses for different purposes
+5. Consolidate UTXOs privately
+6. Run your own node (don't trust third parties)
+7. Use Tor for additional network privacy
+```
+
+---
+
+## 🤝 Contributing
+
+### How to Contribute
+
+**Reporting Bugs:**
+```
+1. Check existing issues first
+2. Create detailed bug report with:
+   - OS and version
+   - Python version
+   - Zcash version
+   - Steps to reproduce
+   - Expected vs actual behavior
+   - Log files
+   - Screenshots if applicable
+```
+
+**Feature Requests:**
+```
+1. Search existing requests
+2. Describe feature clearly
+3. Explain use case
+4. Provide examples
+5. Consider implementation difficulty
+```
+
+**Code Contributions:**
+```
+1. Fork repository
+2. Create feature branch
+3. Write clean, documented code
+4. Test thoroughly
+5. Submit pull request
+6. Include:
+   - Description of changes
+   - Testing performed
+   - Breaking changes (if any)
+```
+
+**Documentation:**
+```
+Help improve this README:
+- Fix typos
+- Add examples
+- Clarify confusing sections
+- Add troubleshooting tips
+- Translate to other languages
+```
+
+### Development Setup
+
+```bash
+# Clone repository
+git clone https://github.com/yourusername/zcash-node-manager.git
+cd zcash-node-manager
+
+# Create virtual environment
+python3 -m venv venv
+source venv/bin/activate  # Linux/Mac
+# venv\Scripts\activate   # Windows
+
+# Install development dependencies
+pip install -r requirements-dev.txt
+
+# Run tests
+python -m pytest tests/
+
+# Run linter
+pylint zcash_manager.py
+
+# Run formatter
+black zcash_manager.py
+```
+
+### Code Style
+
+```python
+# Follow PEP 8
+# Use type hints
+# Document functions with docstrings
+# Keep functions focused and small
+# Use meaningful variable names
+# Add comments for complex logic
+
+def example_function(param: str) -> dict:
+    """
+    Brief description of function.
+    
+    Args:
+        param: Description of parameter
+        
+    Returns:
+        Description of return value
+        
+    Raises:
+        ValueError: When param is invalid
+    """
+    pass
+```
+
+---
+
+## 📄 License
+
+This project is licensed under the MIT License.
+
+```
+MIT License
+
+Copyright (c) 2025 Zcash Node Manager Contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+---
+
+## 🙏 Acknowledgments
+
+### Special Thanks
+
+- **Zcash Foundation** - For developing and maintaining Zcash
+- **Electric Coin Company** - For continued Zcash development
+- **Zcash Community** - For testing and feedback
+- **Contributors** - Everyone who has contributed code, documentation, or ideas
+
+### Built With
+
+- **Python 3** - Core programming language
+- **Tkinter** - GUI framework
+- **Requests** - HTTP library for RPC calls
+- **Zcash** - The amazing privacy-focused cryptocurrency
+
+### Zcash Resources
+
+**Official:**
+- Website: https://z.cash
+- Documentation: https://zcash.readthedocs.io/
+- GitHub: https://github.com/zcash/zcash
+- Forum: https://forum.zcashcommunity.com/
+
+**Community:**
+- Discord: https://discord.gg/zcash
+- Twitter: https://twitter.com/zcash
+- Reddit: https://reddit.com/r/zec
+
+**Development:**
+- ZIP Repository: https://github.com/zcash/zips
+- RPC Documentation: https://zcash.github.io/rpc/
+- Protocol Specification: https://zips.z.cash/protocol/protocol.pdf
+
+---
+
+## 📞 Support
+
+### Getting Help
+
+**For Zcash Node Manager Issues:**
+- GitHub Issues: [Create issue]
+- Email: support@example.com
+
+**For General Zcash Questions:**
+- Community Forum: https://forum.zcashcommunity.com/
+- Discord Support Channel: https://discord.gg/zcash
+- Reddit: https://reddit.com/r/zec
+
+**For Security Issues:**
+- Email: security@example.com
+- PGP Key: [Link to public key]
+- Report privately first, public disclosure after fix
+
+### FAQ
+
+**Q: Is this official Zcash software?**
+A: No, this is a community-developed GUI tool for managing Zcash nodes. It uses official Zcash software (zcashd) under the hood.
+
+**Q: Can I use this on mainnet?**
+A: Yes! The default configuration includes testnet for safety, but you can switch to mainnet by removing the testnet=1 line from zcash.conf.
+
+**Q: Is my wallet secure?**
+A: The wallet is as secure as your system. Follow security best practices: encrypt wallet, backup regularly, use strong passwords, keep system updated.
+
+**Q: How long does initial sync take?**
+A: Mainnet: 1-7 days depending on hardware/connection. Testnet: 4-24 hours. Regtest: instant.
+
+**Q: Can I mine Zcash with this?**
+A: CPU mining only works on testnet. Mainnet requires ASIC hardware and mining pools.
+
+**Q: What's the difference between transparent and shielded?**
+A: Transparent (t-addr) are like Bitcoin - public. Shielded (z-addr) are private - encrypted amounts and addresses.
+
+**Q: Do I need to run my own node?**
+A: Not required but recommended for privacy, security, and supporting the network.
+
+**Q: Can I run multiple nodes?**
+A: Yes, use different data directories with -datadir flag and different ports.
+
+**Q: How do I upgrade Zcash?**
+A: Pull latest code (git pull), rebuild (./zcutil/build.sh), restart node.
+
+**Q: What if I lose my wallet?**
+A: Your funds are lost forever. ALWAYS BACKUP YOUR WALLET.
+
+---
+
+## 🔄 Version History
+
+### Version 1.0.0 (Current)
+
+**Initial Release - Complete Production System**
+
+Features:
+- Full Zcash node installation automation
+- Complete wallet management (transparent + shielded)
+- Real-time blockchain monitoring with visual blocks
+- Advanced transaction support (z_sendmany, z_shieldcoinbase, z_mergetoaddress)
+- Comprehensive address management (unified addresses, viewing keys)
+- Block explorer with detailed search
+- Network monitoring and peer management
+- Mining support for testnet
+- Configuration editor with backup
+- 11 specialized tabs for different operations
+- 100+ RPC commands accessible via GUI
+- Security features (wallet encryption, backup/restore)
+- Multi-platform support (Linux, macOS)
+
+Tested On:
+- Ubuntu 20.04, 22.04
+- Debian 11, 12
+- macOS 12, 13
+- Zcash v5.3.0+
+
+Known Issues:
+- Initial build takes 30-60 minutes (expected)
+- GUI may freeze during heavy RPC operations (cosmetic)
+- Some operations require node restart (by design)
+
+---
+
+## 🚀 Roadmap
+
+### Planned Features
+
+**Version 1.1.0:**
+- Automatic Zcash version updates
+- Performance monitoring graphs
+- Transaction history export
+- Custom fee selection
+- Multi-wallet support
+
+**Version 1.2.0:**
+- Hardware wallet integration
+- Tor network configuration wizard
+- Advanced privacy analytics
+- Batch transaction operations
+- Custom RPC command builder
+
+**Version 2.0.0:**
+- Multi-node management
+- Remote node control
+- Mobile companion app
+- REST API for integration
+- Docker containerization
+
+**Community Requests:**
+- Multi-language support
+- Dark/light theme toggle
+- Sound notifications
+- Email alerts
+- Backup encryption wizard
+
+Want to help? Check Contributing section above!
+
+---
+
+## 📊 System Requirements Details
+
+### Minimum Hardware
+
+**For Testnet:**
+```
+CPU:    2 cores @ 2.0 GHz
+RAM:    4 GB
+Disk:   30 GB free (SSD recommended)
+Net:    5 Mbps down, 1 Mbps up
+```
+
+**For Mainnet:**
+```
+CPU:    2 cores @ 2.5 GHz
+RAM:    8 GB
+Disk:   50 GB free (100+ GB recommended, grows over time)
+Net:    10 Mbps down, 2 Mbps up
+```
+
+**For Optimal Performance:**
+```
+CPU:    4+ cores @ 3.0+ GHz
+RAM:    16 GB
+Disk:   500 GB SSD with 100+ GB free
+Net:    50+ Mbps down, 10+ Mbps up
+```
+
+### Disk Space Breakdown
+
+```
+Zcash Blockchain (Mainnet):
+- Current size: ~35 GB
+- Growth rate: ~500 MB/month
+- Plan for: 50+ GB
+
+Zcash Source Code:
+- Size: ~200 MB
+
+Build Dependencies:
+- Size: ~2 GB
+
+Wallet & Config:
+- Size: <100 MB
+
+Total Recommended: 100+ GB free space
+```
+
+### Network Requirements
+
+```
+Bandwidth Usage:
+- Initial sync: 40-50 GB download
+- Ongoing: 10-20 GB/month
+- Peak: 1-5 Mbps during sync
+- Normal: 0.1-0.5 Mbps
+```
+
+---
+
+## 🔧 Advanced Configuration
+
+### Custom Zcash Build Options
+
+```bash
+# Build with different options
+cd ~/zcash
+
+# Clean build
+./zcutil/clean.sh
+
+# Configure with specific options
+./zcutil/build.sh \
+  --disable-tests \
+  --disable-mining \
+  --with-gui=no
+
+# Parallel build with all cores
+./zcutil/build.sh -j$(nproc)
+
+# Single-threaded (for low RAM)
+./zcutil/build.sh -j1
+```
+
+### Multiple Node Setup
+
+```bash
+# Node 1 (Mainnet)
+mkdir -p ~/.zcash_mainnet
+~/zcash/src/zcashd -datadir=$HOME/.zcash_mainnet -port=8233 -rpcport=8232
+
+# Node 2 (Testnet)
+mkdir -p ~/.zcash_testnet
+~/zcash/src/zcashd -datadir=$HOME/.zcash_testnet -testnet -port=18233 -rpcport=18232
+
+# Node 3 (Regtest)
+mkdir -p ~/.zcash_regtest
+~/zcash/src/zcashd -datadir=$HOME/.zcash_regtest -regtest -port=18444 -rpcport=18232
+```
+
+### Tor Configuration
+
+```conf
+# zcash.conf - Run over Tor
+proxy=127.0.0.1:9050
+listen=1
+onlynet=onion
+addnode=zcashsoil4kygkyz.onion
+addnode=zcash.rcp.onion
+```
+
+```bash
+# Install Tor
+sudo apt-get install tor
+
+# Configure Tor
+# Add to /etc/tor/torrc:
+HiddenServiceDir /var/lib/tor/zcash/
+HiddenServicePort 8233 127.0.0.1:8233
+
+# Restart Tor
+sudo systemctl restart tor
+
+# Get your onion address
+sudo cat /var/lib/tor/zcash/hostname
+```
+
+### Pruning (Reduce Disk Usage)
+
+```conf
+# zcash.conf - Enable pruning
+prune=550  # Keep only 550 MB of block data
+
+# WARNING: Cannot serve full blockchain to other nodes
+# Cannot use with txindex=1
+```
+
+---
+
+## 📝 Command Line Usage
+
+### Running Commands Directly
+
+```bash
+# Get blockchain info
+~/zcash/src/zcash-cli getblockchaininfo
+
+# Get wallet balance
+~/zcash/src/zcash-cli z_gettotalbalance
+
+# Generate new address
+~/zcash/src/zcash-cli z_getnewaddress
+
+# Send transaction
+~/zcash/src/zcash-cli z_sendmany "FROM_ADDR" '[{"address":"TO_ADDR","amount":0.01}]'
+
+# Check transaction
+~/zcash/src/zcash-cli gettransaction TXID
+
+# Stop node
+~/zcash/src/zcash-cli stop
+```
+
+### Useful Scripts
+
+**Monitor Sync Progress:**
+```bash
+#!/bin/bash
+# sync_monitor.sh
+while true; do
+  PROGRESS=$(~/zcash/src/zcash-cli getblockchaininfo | grep verificationprogress | awk '{print $2}' | tr -d ',')
+  BLOCKS=$(~/zcash/src/zcash-cli getblockchaininfo | grep '"blocks"' | awk '{print $2}' | tr -d ',')
+  echo "Blocks: $BLOCKS | Progress: $PROGRESS"
+  sleep 30
+done
+```
+
+**Auto-Backup Script:**
+```bash
+#!/bin/bash
+# backup_wallet.sh
+DATE=$(date +%Y%m%d_%H%M%S)
+~/zcash/src/zcash-cli stop
+sleep 10
+tar -czf ~/backups/wallet_$DATE.tar.gz ~/.zcash/wallet.dat
+gpg -c ~/backups/wallet_$DATE.tar.gz
+rm ~/backups/wallet_$DATE.tar.gz
+~/zcash/src/zcashd -daemon
+echo "Backup created: wallet_$DATE.tar.gz.gpg"
+```
+
+---
+
+## 🎓 Learning Resources
+
+### Zcash Basics
+
+**Essential Reading:**
+1. Zcash Protocol Specification: https://zips.z.cash/protocol/protocol.pdf
+2. Zcash Improvement Proposals (ZIPs): https://github.com/zcash/zips
+3. Privacy Technology: https://z.cash/technology/
+
+**Video Tutorials:**
+- Zcash Explained: https://www.youtube.com/zcashchannel
+- Privacy Features Overview
+- How to Use Shielded Addresses
+- Running Your Own Node
+
+### Technical Documentation
+
+**Developer Resources:**
+- RPC API Documentation: https://zcash.github.io/rpc/
+- Developer Guide: https://zcash.readthedocs.io/
+- Source Code: https://github.com/zcash/zcash
+
+**Privacy Technology:**
+- zk-SNARKs Explained
+- Zero-Knowledge Proofs
+- Shielded Transaction Protocol
+- Sapling vs Orchard
+
+---
+
+## 🌟 Project Status
+
+**Current Status:** Active Development
+**Stability:** Production Ready
+**Support:** Community Supported
+**Last Updated:** 2025-01-01
+
+**Project Statistics:**
+- Lines of Code: 2,500+
+- RPC Commands: 100+
+- Supported Platforms: 3
+- Active Users: [Will be updated]
+- GitHub Stars: [Will be updated]
+
+---
+
+**Made with ❤️ for the Zcash Community**
+
+**Support Zcash Development:**
+- Donate to Zcash Foundation
+- Run a full node
+- Contribute code
+- Help others learn
+
+**Questions? Issues? Feedback?**
+Open an issue on GitHub or join our community chat!
+
+---
+
+END OF README
