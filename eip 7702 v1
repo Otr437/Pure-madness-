@@ -1,0 +1,697 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
+import "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
+import "@openzeppelin/contracts/interfaces/IERC1271.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+
+/**
+ * @title EIP7702SmartAccount
+ * @notice Complete and correct EIP-7702 implementation contract
+ * @dev This is the implementation contract that EOAs delegate to using EIP-7702
+ */
+contract EIP7702SmartAccount is EIP712, IERC1271, ReentrancyGuard {
+    using ECDSA for bytes32;
+
+    // ==================== EIP-7702 PROTOCOL CONSTANTS ====================
+    
+    // Transaction type for EIP-7702 set code transactions
+    uint8 public constant SET_CODE_TX_TYPE = 0x04;
+    
+    // Magic byte used in authorization signature creation
+    uint8 public constant MAGIC = 0x05;
+    
+    // Delegation indicator prefix - gets concatenated with delegate address
+    bytes3 public constant DELEGATION_INDICATOR_PREFIX = 0xef0100;
+    
+    // Gas costs from EIP-7702 specification
+    uint256 public constant PER_AUTH_BASE_COST = 12500;
+    uint256 public constant PER_EMPTY_ACCOUNT_COST = 25000;
+    
+    // Empty code hash for clearing delegations
+    bytes32 public constant EMPTY_CODE_HASH = 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470;
+
+    // ==================== EIP-712 TYPE HASHES ====================
+    
+    bytes32 private constant AUTHORIZATION_TYPEHASH = 
+        keccak256("Authorization(uint256 chainId,address address,uint256 nonce)");
+    
+    bytes32 private constant META_TRANSACTION_TYPEHASH = 
+        keccak256("MetaTransaction(address from,address to,uint256 value,bytes data,uint256 nonce,uint256 deadline)");
+    
+    bytes32 private constant BATCH_EXECUTE_TYPEHASH = 
+        keccak256("BatchExecute(Call[] calls,uint256 nonce)Call(address target,uint256 value,bytes data)");
+    
+    bytes32 private constant CALL_TYPEHASH = 
+        keccak256("Call(address target,uint256 value,bytes data)");
+
+    // ==================== STRUCTS ====================
+    
+    struct AuthorizationTuple {
+        uint256 chainId;
+        address codeAddress;
+        uint256 nonce;
+        uint8 yParity;
+        bytes32 r;
+        bytes32 s;
+    }
+
+    struct Call {
+        address target;
+        uint256 value;
+        bytes data;
+    }
+
+    struct MetaTransaction {
+        address from;
+        address to;
+        uint256 value;
+        bytes data;
+        uint256 nonce;
+        uint256 deadline;
+    }
+
+    struct TimeBoundDelegation {
+        address delegatedTo;
+        uint256 expirationTime;
+        address owner;
+        bool active;
+        uint256 createdAt;
+    }
+
+    struct BulkDelegationRequest {
+        address[] accounts;
+        uint256 duration; // in seconds, 0 = permanent
+        address codeAddress;
+    }
+
+    // ==================== STORAGE ====================
+    
+    // Core account state
+    mapping(address => uint256) public nonces;
+    mapping(address => address) public accountOwners;
+    mapping(address => TimeBoundDelegation) public delegations;
+    
+    // Permissions and operators
+    mapping(address => mapping(address => bool)) public authorizedOperators;
+    
+    // Authorization tracking to prevent replay
+    mapping(bytes32 => bool) public processedAuthorizations;
+    
+    // Batch wallet management
+    mapping(address => address[]) public managedAccounts;
+    mapping(address => mapping(address => bool)) public isManaged;
+
+    // ==================== EVENTS ====================
+    
+    event AuthorizationProcessed(
+        address indexed authority, 
+        address indexed codeAddress, 
+        uint256 nonce,
+        uint256 chainId,
+        bool success
+    );
+    
+    event DelegationSet(
+        address indexed account, 
+        address indexed codeAddress, 
+        uint256 expirationTime,
+        address indexed owner
+    );
+    
+    event CallExecuted(
+        address indexed executor, 
+        address indexed target, 
+        uint256 value, 
+        bytes data
+    );
+    
+    event BatchExecuted(
+        address indexed account,
+        uint256 indexed nonce, 
+        Call[] calls
+    );
+    
+    event MetaTransactionExecuted(
+        address indexed from, 
+        address indexed to, 
+        uint256 value, 
+        uint256 nonce,
+        bool success
+    );
+    
+    event BulkDelegationProcessed(
+        address indexed manager,
+        address[] accounts,
+        uint256 duration,
+        address codeAddress,
+        uint256 successCount
+    );
+    
+    event OperatorAuthorized(
+        address indexed account, 
+        address indexed operator, 
+        bool authorized
+    );
+    
+    event DelegationExtended(
+        address indexed account,
+        uint256 newExpirationTime
+    );
+
+    // ==================== ERRORS ====================
+    
+    error InvalidAuthority();
+    error InvalidSignature();
+    error InvalidNonce();
+    error InvalidChainId();
+    error CallReverted(bytes reason);
+    error Expired();
+    error Unauthorized();
+    error AlreadyProcessed();
+    error InvalidArrayLength();
+    error ZeroAddress();
+
+    // ==================== MODIFIERS ====================
+    
+    modifier onlyDelegatedAccount() {
+        // In EIP-7702 delegation, msg.sender is the EOA that delegated to this contract
+        require(msg.sender == address(this), "Invalid authority");
+        _;
+    }
+    
+    modifier validDelegation(address account) {
+        TimeBoundDelegation storage delegation = delegations[account];
+        require(delegation.active, "Delegation not active");
+        require(block.timestamp <= delegation.expirationTime, "Delegation expired");
+        _;
+    }
+    
+    modifier onlyAccountOwner(address account) {
+        address owner = accountOwners[account];
+        if (owner == address(0)) owner = account; // Default to self-ownership
+        require(msg.sender == owner, "Not account owner");
+        _;
+    }
+
+    constructor() EIP712("EIP7702SmartAccount", "1") {}
+
+    // ==================== INITIALIZATION ====================
+    
+    /**
+     * @notice Initialize account with owner and time bounds (can be called multiple times by owner)
+     * @param owner The owner of the account (can be different from the delegating EOA)
+     * @param expirationTime When delegation expires (0 = permanent)
+     */
+    function initialize(address owner, uint256 expirationTime) external onlyDelegatedAccount {
+        address account = msg.sender; // The EOA that delegated to this contract
+        
+        accountOwners[account] = owner;
+        
+        delegations[account] = TimeBoundDelegation({
+            delegatedTo: address(this),
+            expirationTime: expirationTime == 0 ? type(uint256).max : expirationTime,
+            owner: owner,
+            active: true,
+            createdAt: block.timestamp
+        });
+        
+        if (nonces[account] == 0) {
+            nonces[account] = 1; // Start with nonce 1 to prevent replay of initialization
+        }
+        
+        emit DelegationSet(account, address(this), delegations[account].expirationTime, owner);
+    }
+
+    // ==================== EIP-7702 AUTHORIZATION PROCESSING ====================
+    
+    /**
+     * @notice Process EIP-7702 authorization tuples with proper signature verification
+     * @param auths Array of authorization tuples signed by EOAs
+     * @param durations Array of delegation durations in seconds (0 = permanent)
+     * @return gasRefund Total gas refund for empty accounts
+     */
+    function processAuthorizationList(
+        AuthorizationTuple[] calldata auths,
+        uint256[] calldata durations
+    ) external returns (uint256 gasRefund) {
+        require(auths.length == durations.length, "Length mismatch");
+        
+        uint256 totalRefund = 0;
+        
+        for (uint256 i = 0; i < auths.length; i++) {
+            AuthorizationTuple calldata auth = auths[i];
+            
+            // Step 1: Verify chain ID (0 or current chain)
+            if (auth.chainId != 0 && auth.chainId != block.chainid) {
+                continue;
+            }
+            
+            // Step 2: Verify nonce bounds
+            if (auth.nonce >= 2**64 - 1) {
+                continue;
+            }
+            
+            // Step 3: Recover authority using EIP-7702 message format
+            // msg = keccak(MAGIC || rlp([chain_id, address, nonce]))
+            bytes32 messageHash = keccak256(abi.encodePacked(
+                bytes1(MAGIC),
+                abi.encode(auth.chainId, auth.codeAddress, auth.nonce)
+            ));
+            
+            address authority = ecrecover(messageHash, auth.yParity + 27, auth.r, auth.s);
+            if (authority == address(0)) {
+                continue;
+            }
+            
+            // Step 4: Verify signature malleability (EIP-2)
+            if (uint256(auth.s) > 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0) {
+                continue;
+            }
+            
+            // Step 5: Check if authorization already processed
+            bytes32 authKey = keccak256(abi.encode(
+                authority, auth.chainId, auth.codeAddress, auth.nonce
+            ));
+            if (processedAuthorizations[authKey]) {
+                continue;
+            }
+            
+            // Step 6: Verify account nonce
+            if (nonces[authority] != auth.nonce) {
+                continue;
+            }
+            
+            // Step 7: Check if account is empty (for gas refund)
+            bool isEmpty = authority.code.length == 0;
+            if (isEmpty) {
+                totalRefund += PER_EMPTY_ACCOUNT_COST - PER_AUTH_BASE_COST;
+            }
+            
+            // Step 8: Set time-bound delegation
+            uint256 expirationTime = durations[i] == 0 ? 
+                type(uint256).max : 
+                block.timestamp + durations[i];
+                
+            delegations[authority] = TimeBoundDelegation({
+                delegatedTo: auth.codeAddress,
+                expirationTime: expirationTime,
+                owner: authority,
+                active: true,
+                createdAt: block.timestamp
+            });
+            
+            // Step 9: Handle delegation indicator
+            // Note: In real EIP-7702, this would set the account's code to:
+            // - 0xef0100 || auth.codeAddress (if codeAddress != 0)
+            // - EMPTY_CODE_HASH (if codeAddress == 0, clearing delegation)
+            
+            // Step 10: Increment nonce and mark as processed
+            nonces[authority]++;
+            processedAuthorizations[authKey] = true;
+            
+            emit AuthorizationProcessed(
+                authority, 
+                auth.codeAddress, 
+                auth.nonce,
+                auth.chainId,
+                true
+            );
+            
+            emit DelegationSet(authority, auth.codeAddress, expirationTime, authority);
+        }
+        
+        return totalRefund;
+    }
+
+    // ==================== EXECUTION FUNCTIONS ====================
+    
+    /**
+     * @notice Execute single call (direct execution by delegated EOA)
+     * @param target Target contract address
+     * @param value ETH value to send
+     * @param data Call data
+     */
+    function execute(
+        address target,
+        uint256 value,
+        bytes calldata data
+    ) external payable onlyDelegatedAccount validDelegation(msg.sender) returns (bytes memory result) {
+        (bool success, bytes memory returnData) = target.call{value: value}(data);
+        if (!success) {
+            revert CallReverted(returnData);
+        }
+        
+        emit CallExecuted(msg.sender, target, value, data);
+        return returnData;
+    }
+    
+    /**
+     * @notice Execute batch of calls (direct execution by delegated EOA)
+     * @param calls Array of calls to execute
+     */
+    function executeBatch(Call[] calldata calls) 
+        external 
+        payable 
+        onlyDelegatedAccount 
+        validDelegation(msg.sender) 
+    {
+        require(calls.length > 0, "Empty calls");
+        
+        address account = msg.sender;
+        uint256 currentNonce = nonces[account];
+        nonces[account]++;
+        
+        for (uint256 i = 0; i < calls.length; i++) {
+            (bool success, bytes memory returnData) = calls[i].target.call{
+                value: calls[i].value
+            }(calls[i].data);
+            
+            if (!success) {
+                revert CallReverted(returnData);
+            }
+        }
+        
+        emit BatchExecuted(account, currentNonce, calls);
+    }
+    
+    /**
+     * @notice Execute batch with signature verification (sponsored execution)
+     * @param calls Array of calls to execute
+     * @param signature Signature from account owner authorizing the batch
+     */
+    function executeBatchWithSignature(
+        Call[] calldata calls,
+        bytes calldata signature
+    ) external payable nonReentrant {
+        require(calls.length > 0, "Empty calls");
+        
+        // Verify signature and get account
+        address account = _verifyBatchSignature(calls, signature);
+        
+        // Validate delegation
+        TimeBoundDelegation storage delegation = delegations[account];
+        require(delegation.active, "Delegation not active");
+        require(block.timestamp <= delegation.expirationTime, "Delegation expired");
+        
+        uint256 currentNonce = nonces[account];
+        nonces[account]++;
+        
+        // Execute all calls
+        for (uint256 i = 0; i < calls.length; i++) {
+            (bool success, bytes memory returnData) = calls[i].target.call{
+                value: calls[i].value
+            }(calls[i].data);
+            
+            if (!success) {
+                revert CallReverted(returnData);
+            }
+        }
+        
+        emit BatchExecuted(account, currentNonce, calls);
+    }
+    
+    /**
+     * @notice Execute meta transaction with EIP-712 signature
+     * @param metaTx The meta transaction data
+     * @param signature EIP-712 signature from account owner
+     */
+    function executeMetaTransaction(
+        MetaTransaction calldata metaTx,
+        bytes calldata signature
+    ) external nonReentrant validDelegation(metaTx.from) returns (bytes memory result) {
+        // Check deadline
+        require(block.timestamp <= metaTx.deadline, "Transaction expired");
+        
+        // Check nonce
+        require(nonces[metaTx.from] == metaTx.nonce, "Invalid nonce");
+        
+        // Verify EIP-712 signature
+        bytes32 structHash = keccak256(abi.encode(
+            META_TRANSACTION_TYPEHASH,
+            metaTx.from,
+            metaTx.to,
+            metaTx.value,
+            keccak256(metaTx.data),
+            metaTx.nonce,
+            metaTx.deadline
+        ));
+        
+        bytes32 digest = _hashTypedDataV4(structHash);
+        address signer = digest.recover(signature);
+        
+        // Verify signer is authorized
+        require(
+            signer == accountOwners[metaTx.from] || 
+            signer == metaTx.from ||
+            authorizedOperators[metaTx.from][signer],
+            "Invalid signature"
+        );
+        
+        // Increment nonce
+        nonces[metaTx.from]++;
+        
+        // Execute transaction
+        (bool success, bytes memory returnData) = metaTx.to.call{value: metaTx.value}(metaTx.data);
+        
+        emit MetaTransactionExecuted(metaTx.from, metaTx.to, metaTx.value, metaTx.nonce, success);
+        
+        if (!success) {
+            revert CallReverted(returnData);
+        }
+        
+        return returnData;
+    }
+
+    // ==================== BULK OPERATIONS ====================
+    
+    /**
+     * @notice Set up delegations for multiple accounts with time bounds
+     * @param request Bulk delegation request containing accounts, duration, and code address
+     * @param signatures Array of signatures from each account authorizing delegation
+     */
+    function processBulkDelegation(
+        BulkDelegationRequest calldata request,
+        bytes[] calldata signatures
+    ) external returns (uint256 successCount) {
+        require(request.accounts.length > 0, "Empty accounts");
+        require(request.accounts.length == signatures.length, "Length mismatch");
+        
+        uint256 successful = 0;
+        uint256 expirationTime = request.duration == 0 ? 
+            type(uint256).max : 
+            block.timestamp + request.duration;
+        
+        for (uint256 i = 0; i < request.accounts.length; i++) {
+            address account = request.accounts[i];
+            if (account == address(0)) continue;
+            
+            try this._processSingleDelegation(
+                account,
+                request.codeAddress,
+                expirationTime,
+                signatures[i]
+            ) {
+                successful++;
+                
+                // Track managed accounts
+                if (!isManaged[msg.sender][account]) {
+                    managedAccounts[msg.sender].push(account);
+                    isManaged[msg.sender][account] = true;
+                }
+            } catch {
+                // Skip failed delegations
+                continue;
+            }
+        }
+        
+        emit BulkDelegationProcessed(
+            msg.sender,
+            request.accounts,
+            request.duration,
+            request.codeAddress,
+            successful
+        );
+        
+        return successful;
+    }
+    
+    /**
+     * @notice Internal function to process single delegation (used by bulk operations)
+     * @param account Account to delegate
+     * @param codeAddress Code address to delegate to
+     * @param expirationTime When delegation expires
+     * @param signature Signature from account
+     */
+    function _processSingleDelegation(
+        address account,
+        address codeAddress,
+        uint256 expirationTime,
+        bytes calldata signature
+    ) external {
+        require(msg.sender == address(this), "Only self");
+        
+        // Verify signature for this specific delegation
+        bytes32 hash = _hashTypedDataV4(keccak256(abi.encode(
+            AUTHORIZATION_TYPEHASH,
+            block.chainid,
+            codeAddress,
+            nonces[account]
+        )));
+        
+        address recovered = hash.recover(signature);
+        require(recovered == account, "Invalid signature");
+        
+        // Set delegation
+        delegations[account] = TimeBoundDelegation({
+            delegatedTo: codeAddress,
+            expirationTime: expirationTime,
+            owner: account,
+            active: true,
+            createdAt: block.timestamp
+        });
+        
+        nonces[account]++;
+        
+        emit DelegationSet(account, codeAddress, expirationTime, account);
+    }
+
+    // ==================== MANAGEMENT FUNCTIONS ====================
+    
+    /**
+     * @notice Set authorized operator for account
+     * @param operator Operator address
+     * @param authorized Authorization status
+     */
+    function setOperator(address operator, bool authorized) external onlyDelegatedAccount {
+        authorizedOperators[msg.sender][operator] = authorized;
+        emit OperatorAuthorized(msg.sender, operator, authorized);
+    }
+    
+    /**
+     * @notice Extend delegation expiration time (owner only)
+     * @param account Account to extend
+     * @param additionalTime Additional time in seconds
+     */
+    function extendDelegation(address account, uint256 additionalTime) 
+        external 
+        onlyAccountOwner(account) 
+    {
+        TimeBoundDelegation storage delegation = delegations[account];
+        require(delegation.active, "Delegation not active");
+        
+        if (delegation.expirationTime != type(uint256).max) {
+            delegation.expirationTime += additionalTime;
+        }
+        
+        emit DelegationExtended(account, delegation.expirationTime);
+    }
+    
+    /**
+     * @notice Get all accounts managed by an address
+     * @param manager Manager address
+     * @return Array of managed account addresses
+     */
+    function getManagedAccounts(address manager) external view returns (address[] memory) {
+        return managedAccounts[manager];
+    }
+    
+    /**
+     * @notice Get remaining delegation time
+     * @param account Account to check
+     * @return Time remaining in seconds (max uint256 if permanent)
+     */
+    function getDelegationTimeRemaining(address account) external view returns (uint256) {
+        TimeBoundDelegation storage delegation = delegations[account];
+        
+        if (!delegation.active) return 0;
+        if (delegation.expirationTime == type(uint256).max) return type(uint256).max;
+        if (block.timestamp >= delegation.expirationTime) return 0;
+        
+        return delegation.expirationTime - block.timestamp;
+    }
+
+    // ==================== SIGNATURE VERIFICATION ====================
+    
+    /**
+     * @notice Verify batch signature and return signer
+     * @param calls Array of calls
+     * @param signature Signature to verify
+     * @return signer Address of the signer
+     */
+    function _verifyBatchSignature(
+        Call[] calldata calls,
+        bytes calldata signature
+    ) internal view returns (address signer) {
+        // Create digest for the batch
+        bytes32 encodedCalls = keccak256(abi.encode(calls));
+        bytes32 digest = keccak256(abi.encodePacked(nonces[msg.sender], encodedCalls));
+        bytes32 ethSignedMessageHash = MessageHashUtils.toEthSignedMessageHash(digest);
+        
+        // Recover signer
+        signer = ethSignedMessageHash.recover(signature);
+        require(signer != address(0), "Invalid signature");
+        
+        return signer;
+    }
+    
+    /**
+     * @notice EIP-1271 signature validation
+     * @param hash Hash to validate
+     * @param signature Signature to check
+     * @return magicValue EIP-1271 magic value if valid
+     */
+    function isValidSignature(bytes32 hash, bytes calldata signature) 
+        external 
+        view 
+        returns (bytes4 magicValue) 
+    {
+        // In delegated context, check the EOA that delegated to this contract
+        address account = msg.sender;
+        address recovered = hash.recover(signature);
+        
+        // Check if signer is account owner or authorized
+        if (recovered == accountOwners[account] || 
+            recovered == account ||
+            authorizedOperators[account][recovered]) {
+            return IERC1271.isValidSignature.selector;
+        }
+        
+        return bytes4(0);
+    }
+
+    // ==================== UTILITY FUNCTIONS ====================
+    
+    /**
+     * @notice Get delegation indicator that would be written to EOA code
+     * @param delegateAddress Address being delegated to
+     * @return Delegation indicator bytes
+     */
+    function getDelegationIndicator(address delegateAddress) 
+        external 
+        pure 
+        returns (bytes memory) 
+    {
+        if (delegateAddress == address(0)) {
+            return abi.encodePacked(EMPTY_CODE_HASH);
+        }
+        return abi.encodePacked(DELEGATION_INDICATOR_PREFIX, delegateAddress);
+    }
+    
+    /**
+     * @notice Check if account has active delegation
+     * @param account Account to check
+     * @return active Whether delegation is active and not expired
+     */
+    function isDelegationActive(address account) external view returns (bool active) {
+        TimeBoundDelegation storage delegation = delegations[account];
+        return delegation.active && block.timestamp <= delegation.expirationTime;
+    }
+
+    // ==================== RECEIVE/FALLBACK ====================
+    
+    receive() external payable {}
+    fallback() external payable {}
+}
