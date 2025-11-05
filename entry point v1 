@@ -1,0 +1,443 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/interfaces/IERC1271.sol";
+
+/**
+ * @title EIP7702EntryPoint
+ * @notice Entry point contract for EIP-7702 meta transactions and user operations
+ * @dev Separate contract that handles sponsored transactions and batching for EIP-7702 accounts
+ */
+contract EIP7702EntryPoint is ReentrancyGuard {
+    using ECDSA for bytes32;
+
+    // ==================== STRUCTS ====================
+
+    struct UserOperation {
+        address sender;
+        uint256 nonce;
+        bytes initCode;
+        bytes callData;
+        uint256 callGasLimit;
+        uint256 verificationGasLimit;
+        uint256 preVerificationGas;
+        uint256 maxFeePerGas;
+        uint256 maxPriorityFeePerGas;
+        bytes paymasterAndData;
+        bytes signature;
+    }
+
+    struct UserOpInfo {
+        uint256 preOpGas;
+        uint256 prefund;
+        bool userOpSucceeded;
+        uint256 actualGasCost;
+        uint256 actualGasUsed;
+    }
+
+    struct SponsoredCall {
+        address account;
+        address target;
+        uint256 value;
+        bytes data;
+        uint256 nonce;
+        uint256 deadline;
+    }
+
+    struct BatchSponsoredCall {
+        address account;
+        Call[] calls;
+        uint256 nonce;
+        uint256 deadline;
+    }
+
+    struct Call {
+        address target;
+        uint256 value;
+        bytes data;
+    }
+
+    // ==================== STORAGE ====================
+
+    mapping(address => uint256) public deposits;
+    mapping(address => uint256) public nonces;
+    mapping(address => bool) public authorizedRelayers;
+    mapping(bytes32 => bool) public executedOperations;
+
+    address public owner;
+    uint256 public constant MIN_UNSTAKE_DELAY = 1 days;
+
+    // ==================== EVENTS ====================
+
+    event UserOperationEvent(
+        bytes32 indexed userOpHash,
+        address indexed sender,
+        address indexed paymaster,
+        uint256 nonce,
+        bool success,
+        uint256 actualGasCost,
+        uint256 actualGasUsed
+    );
+
+    event Deposited(address indexed account, uint256 totalDeposit);
+    event Withdrawn(address indexed account, address withdrawAddress, uint256 amount);
+    event SponsoredCallExecuted(address indexed sponsor, address indexed account, bool success);
+    event RelayerAuthorized(address indexed relayer, bool authorized);
+
+    // ==================== ERRORS ====================
+
+    error FailedOp(uint256 opIndex, string reason);
+    error InsufficientDeposit();
+    error InvalidSignature();
+    error AlreadyExecuted();
+    error Unauthorized();
+    error CallFailed();
+
+    // ==================== MODIFIERS ====================
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Not owner");
+        _;
+    }
+
+    modifier onlyAuthorizedRelayer() {
+        require(authorizedRelayers[msg.sender] || msg.sender == owner, "Not authorized relayer");
+        _;
+    }
+
+    constructor() {
+        owner = msg.sender;
+        authorizedRelayers[msg.sender] = true;
+    }
+
+    // ==================== ENTRY POINT FUNCTIONS ====================
+
+    /**
+     * @notice Handle multiple user operations in batch
+     * @param ops Array of user operations to execute
+     * @param beneficiary Address to receive gas compensation
+     */
+    function handleOps(
+        UserOperation[] calldata ops,
+        address payable beneficiary
+    ) external nonReentrant onlyAuthorizedRelayer {
+        require(ops.length > 0, "Empty ops array");
+        
+        UserOpInfo[] memory opInfos = new UserOpInfo[](ops.length);
+        uint256 totalGasCost = 0;
+
+        for (uint256 i = 0; i < ops.length; i++) {
+            UserOpInfo memory opInfo = opInfos[i];
+            uint256 preGas = gasleft();
+            
+            try this._handleSingleOp(ops[i], opInfo) returns (bool success) {
+                opInfo.userOpSucceeded = success;
+            } catch Error(string memory reason) {
+                opInfo.userOpSucceeded = false;
+                emit FailedOp(i, reason);
+            } catch {
+                opInfo.userOpSucceeded = false;
+                emit FailedOp(i, "Unknown error");
+            }
+            
+            opInfo.actualGasUsed = preGas - gasleft();
+            opInfo.actualGasCost = opInfo.actualGasUsed * tx.gasprice;
+            totalGasCost += opInfo.actualGasCost;
+            
+            emit UserOperationEvent(
+                getUserOpHash(ops[i]),
+                ops[i].sender,
+                address(0), // No paymaster support in this version
+                ops[i].nonce,
+                opInfo.userOpSucceeded,
+                opInfo.actualGasCost,
+                opInfo.actualGasUsed
+            );
+        }
+
+        // Compensate beneficiary
+        if (totalGasCost > 0 && beneficiary != address(0)) {
+            (bool sent, ) = beneficiary.call{value: totalGasCost}("");
+            require(sent, "Failed to send gas compensation");
+        }
+    }
+
+    /**
+     * @notice Internal function to handle a single user operation
+     * @param op The user operation
+     * @param opInfo Operation info struct
+     * @return success Whether the operation succeeded
+     */
+    function _handleSingleOp(
+        UserOperation calldata op,
+        UserOpInfo memory opInfo
+    ) external returns (bool success) {
+        require(msg.sender == address(this), "Only self");
+        
+        // Validate and execute the operation
+        bytes32 userOpHash = getUserOpHash(op);
+        require(!executedOperations[userOpHash], "Already executed");
+        
+        // Validate signature
+        _validateUserOpSignature(op, userOpHash);
+        
+        // Execute the operation
+        success = _executeUserOp(op);
+        
+        // Mark as executed
+        executedOperations[userOpHash] = true;
+        
+        return success;
+    }
+
+    /**
+     * @notice Execute sponsored call for EIP-7702 account
+     * @param sponsoredCall The sponsored call data
+     * @param accountSignature Signature from the account authorizing the call
+     */
+    function executeSponsoredCall(
+        SponsoredCall calldata sponsoredCall,
+        bytes calldata accountSignature
+    ) external payable nonReentrant onlyAuthorizedRelayer {
+        // Verify deadline
+        require(block.timestamp <= sponsoredCall.deadline, "Call expired");
+        
+        // Verify account signature
+        bytes32 hash = keccak256(abi.encodePacked(
+            sponsoredCall.account,
+            sponsoredCall.target,
+            sponsoredCall.value,
+            keccak256(sponsoredCall.data),
+            sponsoredCall.nonce,
+            sponsoredCall.deadline
+        ));
+        
+        bytes32 ethSignedMessageHash = keccak256(abi.encodePacked(
+            "\x19Ethereum Signed Message:\n32",
+            hash
+        ));
+        
+        address signer = ethSignedMessageHash.recover(accountSignature);
+        require(signer == sponsoredCall.account, "Invalid account signature");
+        
+        // Check nonce
+        require(nonces[sponsoredCall.account] == sponsoredCall.nonce, "Invalid nonce");
+        nonces[sponsoredCall.account]++;
+        
+        // Execute call through the EIP-7702 account
+        (bool success, ) = sponsoredCall.account.call(
+            abi.encodeWithSignature(
+                "execute(address,uint256,bytes)",
+                sponsoredCall.target,
+                sponsoredCall.value,
+                sponsoredCall.data
+            )
+        );
+        
+        emit SponsoredCallExecuted(msg.sender, sponsoredCall.account, success);
+        
+        if (!success) {
+            revert CallFailed();
+        }
+    }
+
+    /**
+     * @notice Execute sponsored batch call for EIP-7702 account
+     * @param batchCall The batch sponsored call data
+     * @param accountSignature Signature from the account authorizing the batch
+     */
+    function executeSponsoredBatch(
+        BatchSponsoredCall calldata batchCall,
+        bytes calldata accountSignature
+    ) external payable nonReentrant onlyAuthorizedRelayer {
+        require(batchCall.calls.length > 0, "Empty calls array");
+        require(block.timestamp <= batchCall.deadline, "Batch expired");
+        
+        // Verify account signature for the batch
+        bytes32 hash = keccak256(abi.encodePacked(
+            batchCall.account,
+            keccak256(abi.encode(batchCall.calls)),
+            batchCall.nonce,
+            batchCall.deadline
+        ));
+        
+        bytes32 ethSignedMessageHash = keccak256(abi.encodePacked(
+            "\x19Ethereum Signed Message:\n32",
+            hash
+        ));
+        
+        address signer = ethSignedMessageHash.recover(accountSignature);
+        require(signer == batchCall.account, "Invalid account signature");
+        
+        // Check nonce
+        require(nonces[batchCall.account] == batchCall.nonce, "Invalid nonce");
+        nonces[batchCall.account]++;
+        
+        // Execute batch through the EIP-7702 account
+        (bool success, ) = batchCall.account.call(
+            abi.encodeWithSignature("executeBatch((address,uint256,bytes)[])", batchCall.calls)
+        );
+        
+        emit SponsoredCallExecuted(msg.sender, batchCall.account, success);
+        
+        if (!success) {
+            revert CallFailed();
+        }
+    }
+
+    // ==================== DEPOSIT/WITHDRAWAL ====================
+
+    /**
+     * @notice Deposit ETH for gas payments
+     * @param account Account to deposit for
+     */
+    function depositTo(address account) external payable {
+        require(account != address(0), "Zero address");
+        deposits[account] += msg.value;
+        emit Deposited(account, deposits[account]);
+    }
+
+    /**
+     * @notice Withdraw deposited ETH
+     * @param withdrawAddress Address to withdraw to
+     * @param amount Amount to withdraw
+     */
+    function withdrawTo(address payable withdrawAddress, uint256 amount) external {
+        require(deposits[msg.sender] >= amount, "Insufficient deposit");
+        require(withdrawAddress != address(0), "Zero address");
+        
+        deposits[msg.sender] -= amount;
+        (bool sent, ) = withdrawAddress.call{value: amount}("");
+        require(sent, "Transfer failed");
+        
+        emit Withdrawn(msg.sender, withdrawAddress, amount);
+    }
+
+    /**
+     * @notice Get deposit balance for account
+     * @param account Account to check
+     * @return Deposit balance
+     */
+    function balanceOf(address account) external view returns (uint256) {
+        return deposits[account];
+    }
+
+    // ==================== VALIDATION ====================
+
+    /**
+     * @notice Validate user operation signature
+     * @param op User operation
+     * @param userOpHash Hash of the user operation
+     */
+    function _validateUserOpSignature(
+        UserOperation calldata op,
+        bytes32 userOpHash
+    ) internal view {
+        // For EIP-7702 accounts, use EIP-1271 signature validation
+        try IERC1271(op.sender).isValidSignature(userOpHash, op.signature) returns (bytes4 result) {
+            require(result == IERC1271.isValidSignature.selector, "Invalid signature");
+        } catch {
+            // Fallback to ECDSA if not EIP-1271 compliant
+            address recovered = userOpHash.recover(op.signature);
+            require(recovered == op.sender, "Invalid signature");
+        }
+    }
+
+    /**
+     * @notice Execute user operation
+     * @param op User operation
+     * @return success Whether execution succeeded
+     */
+    function _executeUserOp(UserOperation calldata op) internal returns (bool success) {
+        // Increment nonce
+        nonces[op.sender]++;
+        
+        // Execute the call data on the sender account
+        (success, ) = op.sender.call{gas: op.callGasLimit}(op.callData);
+        
+        return success;
+    }
+
+    /**
+     * @notice Get user operation hash
+     * @param op User operation
+     * @return Hash of the operation
+     */
+    function getUserOpHash(UserOperation calldata op) public view returns (bytes32) {
+        return keccak256(abi.encode(
+            op.sender,
+            op.nonce,
+            keccak256(op.initCode),
+            keccak256(op.callData),
+            op.callGasLimit,
+            op.verificationGasLimit,
+            op.preVerificationGas,
+            op.maxFeePerGas,
+            op.maxPriorityFeePerGas,
+            keccak256(op.paymasterAndData),
+            block.chainid,
+            address(this)
+        ));
+    }
+
+    // ==================== MANAGEMENT ====================
+
+    /**
+     * @notice Authorize/deauthorize relayer
+     * @param relayer Relayer address
+     * @param authorized Authorization status
+     */
+    function setRelayerAuthorization(address relayer, bool authorized) external onlyOwner {
+        authorizedRelayers[relayer] = authorized;
+        emit RelayerAuthorized(relayer, authorized);
+    }
+
+    /**
+     * @notice Transfer ownership
+     * @param newOwner New owner address
+     */
+    function transferOwnership(address newOwner) external onlyOwner {
+        require(newOwner != address(0), "Zero address");
+        owner = newOwner;
+        authorizedRelayers[newOwner] = true;
+    }
+
+    /**
+     * @notice Emergency withdraw (owner only)
+     * @param to Recipient address
+     * @param amount Amount to withdraw
+     */
+    function emergencyWithdraw(address payable to, uint256 amount) external onlyOwner {
+        require(to != address(0), "Zero address");
+        (bool sent, ) = to.call{value: amount}("");
+        require(sent, "Transfer failed");
+    }
+
+    // ==================== UTILITY ====================
+
+    /**
+     * @notice Check if relayer is authorized
+     * @param relayer Relayer address
+     * @return Whether relayer is authorized
+     */
+    function isAuthorizedRelayer(address relayer) external view returns (bool) {
+        return authorizedRelayers[relayer];
+    }
+
+    /**
+     * @notice Get nonce for account
+     * @param account Account address
+     * @return Current nonce
+     */
+    function getNonce(address account) external view returns (uint256) {
+        return nonces[account];
+    }
+
+    // ==================== RECEIVE ====================
+
+    receive() external payable {
+        depositTo(msg.sender);
+    }
+}
