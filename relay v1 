@@ -1,0 +1,788 @@
+/**
+ * Complete EIP-7702 Off-Chain Relayer Service
+ * Ready-to-deploy implementation with all dependencies
+ */
+
+const express = require('express');
+const cors = require('cors');
+const { ethers } = require('ethers');
+const rateLimit = require('express-rate-limit');
+const helmet = require('helmet');
+const morgan = require('morgan');
+const { body, param, validationResult } = require('express-validator');
+
+// ==================== CONFIGURATION ====================
+
+class RelayerConfig {
+    constructor() {
+        this.rpcUrl = process.env.RPC_URL || 'http://localhost:8545';
+        this.relayerPrivateKey = process.env.RELAYER_PRIVATE_KEY;
+        this.smartAccountAddress = process.env.SMART_ACCOUNT_ADDRESS;
+        this.entryPointAddress = process.env.ENTRY_POINT_ADDRESS;
+        this.chainId = parseInt(process.env.CHAIN_ID) || 1;
+        this.port = parseInt(process.env.PORT) || 3001;
+        this.maxGasPrice = parseFloat(process.env.MAX_GAS_PRICE) || 100; // gwei
+        this.minBalance = ethers.utils.parseEther(process.env.MIN_BALANCE || '0.1');
+        this.maxBatchSize = parseInt(process.env.MAX_BATCH_SIZE) || 50;
+        
+        this.validate();
+    }
+
+    validate() {
+        const required = [
+            'relayerPrivateKey',
+            'smartAccountAddress', 
+            'entryPointAddress'
+        ];
+
+        for (const field of required) {
+            if (!this[field]) {
+                throw new Error(`Missing required config: ${field.toUpperCase()}`);
+            }
+        }
+
+        if (!ethers.utils.isAddress(this.smartAccountAddress)) {
+            throw new Error('Invalid SMART_ACCOUNT_ADDRESS');
+        }
+
+        if (!ethers.utils.isAddress(this.entryPointAddress)) {
+            throw new Error('Invalid ENTRY_POINT_ADDRESS');
+        }
+    }
+}
+
+// ==================== CONTRACT ABIS ====================
+
+const SMART_ACCOUNT_ABI = [
+    "function processAuthorizationList((uint256 chainId, address codeAddress, uint256 nonce, uint8 yParity, bytes32 r, bytes32 s)[] authorizations, uint256[] durations) external returns (uint256 gasRefund)",
+    "function processBulkDelegation((address[] accounts, uint256 duration, address codeAddress) request, bytes[] signatures) external returns (uint256 successCount)",
+    "function executeMetaTransaction((address from, address to, uint256 value, bytes data, uint256 nonce, uint256 deadline) metaTx, bytes signature) external returns (bytes result)",
+    "function executeBatchWithSignature((address target, uint256 value, bytes data)[] calls, bytes signature) external payable",
+    "function initialize(address owner, uint256 expirationTime) external",
+    "function nonces(address) external view returns (uint256)",
+    "function isDelegationActive(address) external view returns (bool)",
+    "function getDelegationTimeRemaining(address) external view returns (uint256)",
+    "function getDelegation(address) external view returns (tuple(address delegatedTo, uint256 expirationTime, address owner, bool active, uint256 createdAt))",
+    "function getManagedAccounts(address) external view returns (address[])"
+];
+
+const ENTRY_POINT_ABI = [
+    "function handleOps((address sender, uint256 nonce, bytes initCode, bytes callData, uint256 callGasLimit, uint256 verificationGasLimit, uint256 preVerificationGas, uint256 maxFeePerGas, uint256 maxPriorityFeePerGas, bytes paymasterAndData, bytes signature)[] ops, address beneficiary) external",
+    "function executeSponsoredCall((address account, address target, uint256 value, bytes data, uint256 nonce, uint256 deadline) sponsoredCall, bytes accountSignature) external payable",
+    "function executeSponsoredBatch((address account, (address target, uint256 value, bytes data)[] calls, uint256 nonce, uint256 deadline) batchCall, bytes accountSignature) external payable",
+    "function depositTo(address account) external payable",
+    "function withdrawTo(address withdrawAddress, uint256 amount) external",
+    "function balanceOf(address) external view returns (uint256)",
+    "function getNonce(address) external view returns (uint256)",
+    "function isAuthorizedRelayer(address) external view returns (bool)"
+];
+
+// ==================== MAIN RELAYER CLASS ====================
+
+class EIP7702Relayer {
+    constructor(config) {
+        this.config = config;
+        this.setupProvider();
+        this.setupContracts();
+        this.setupServer();
+        
+        // State tracking
+        this.operationQueue = [];
+        this.processingQueue = false;
+        this.metrics = {
+            totalOperations: 0,
+            successfulOperations: 0,
+            failedOperations: 0,
+            gasUsed: ethers.BigNumber.from(0),
+            startTime: Date.now()
+        };
+        
+        console.log(`🚀 EIP-7702 Relayer initialized`);
+        console.log(`📍 Relayer Address: ${this.relayerWallet.address}`);
+        console.log(`🏦 Smart Account: ${this.config.smartAccountAddress}`);
+        console.log(`🎯 Entry Point: ${this.config.entryPointAddress}`);
+    }
+
+    setupProvider() {
+        this.provider = new ethers.providers.JsonRpcProvider(this.config.rpcUrl);
+        this.relayerWallet = new ethers.Wallet(this.config.relayerPrivateKey, this.provider);
+        
+        // Test connection
+        this.provider.getNetwork().then(network => {
+            console.log(`🌐 Connected to network: ${network.name} (${network.chainId})`);
+        }).catch(err => {
+            console.error('❌ Failed to connect to network:', err);
+            process.exit(1);
+        });
+    }
+
+    setupContracts() {
+        this.smartAccount = new ethers.Contract(
+            this.config.smartAccountAddress,
+            SMART_ACCOUNT_ABI,
+            this.relayerWallet
+        );
+        
+        this.entryPoint = new ethers.Contract(
+            this.config.entryPointAddress,
+            ENTRY_POINT_ABI,
+            this.relayerWallet
+        );
+    }
+
+    setupServer() {
+        this.app = express();
+        
+        // Security middleware
+        this.app.use(helmet());
+        this.app.use(morgan('combined'));
+        this.app.use(cors({
+            origin: process.env.ALLOWED_ORIGINS?.split(',') || ['http://localhost:3000'],
+            credentials: true
+        }));
+        
+        // Body parsing
+        this.app.use(express.json({ limit: '10mb' }));
+        this.app.use(express.urlencoded({ extended: true }));
+        
+        // Rate limiting
+        const limiter = rateLimit({
+            windowMs: 15 * 60 * 1000, // 15 minutes
+            max: process.env.RATE_LIMIT || 100,
+            message: { error: 'Too many requests, please try again later' }
+        });
+        this.app.use('/api/', limiter);
+        
+        this.setupRoutes();
+    }
+
+    setupRoutes() {
+        // Health and status
+        this.app.get('/health', this.handleHealth.bind(this));
+        this.app.get('/api/status', this.handleStatus.bind(this));
+        
+        // EIP-7702 specific endpoints
+        this.app.post('/api/process-authorizations', [
+            body('authorizations').isArray({ min: 1, max: this.config.maxBatchSize }),
+            body('durations').isArray({ min: 1, max: this.config.maxBatchSize }),
+            body('gasPrice').optional().isNumeric({ min: 1 })
+        ], this.handleProcessAuthorizations.bind(this));
+        
+        this.app.post('/api/bulk-delegation', [
+            body('accounts').isArray({ min: 1, max: this.config.maxBatchSize }),
+            body('duration').isInt({ min: 0 }),
+            body('codeAddress').custom(value => ethers.utils.isAddress(value)),
+            body('signatures').isArray({ min: 1, max: this.config.maxBatchSize })
+        ], this.handleBulkDelegation.bind(this));
+        
+        this.app.post('/api/meta-transaction', [
+            body('metaTx.from').custom(value => ethers.utils.isAddress(value)),
+            body('metaTx.to').custom(value => ethers.utils.isAddress(value)),
+            body('metaTx.value').isString(),
+            body('metaTx.data').isString(),
+            body('metaTx.nonce').isInt({ min: 0 }),
+            body('metaTx.deadline').isInt({ min: Math.floor(Date.now() / 1000) }),
+            body('signature').isString()
+        ], this.handleMetaTransaction.bind(this));
+        
+        this.app.post('/api/sponsored-batch', [
+            body('account').custom(value => ethers.utils.isAddress(value)),
+            body('calls').isArray({ min: 1, max: this.config.maxBatchSize }),
+            body('signature').isString(),
+            body('deadline').isInt({ min: Math.floor(Date.now() / 1000) })
+        ], this.handleSponsoredBatch.bind(this));
+        
+        this.app.post('/api/user-operations', [
+            body('userOps').isArray({ min: 1, max: this.config.maxBatchSize }),
+            body('beneficiary').optional().custom(value => !value || ethers.utils.isAddress(value))
+        ], this.handleUserOperations.bind(this));
+        
+        // Account information endpoints
+        this.app.get('/api/account/:address', [
+            param('address').custom(value => ethers.utils.isAddress(value))
+        ], this.handleGetAccount.bind(this));
+        
+        this.app.get('/api/delegation/:address', [
+            param('address').custom(value => ethers.utils.isAddress(value))
+        ], this.handleGetDelegation.bind(this));
+        
+        this.app.get('/api/nonce/:address', [
+            param('address').custom(value => ethers.utils.isAddress(value))
+        ], this.handleGetNonce.bind(this));
+        
+        this.app.get('/api/managed/:address', [
+            param('address').custom(value => ethers.utils.isAddress(value))
+        ], this.handleGetManagedAccounts.bind(this));
+        
+        // Error handling middleware
+        this.app.use(this.errorHandler.bind(this));
+    }
+
+    // ==================== ROUTE HANDLERS ====================
+
+    async handleHealth(req, res) {
+        try {
+            const balance = await this.provider.getBalance(this.relayerWallet.address);
+            const isHealthy = balance.gte(this.config.minBalance);
+            
+            res.status(isHealthy ? 200 : 503).json({
+                status: isHealthy ? 'healthy' : 'unhealthy',
+                relayer: this.relayerWallet.address,
+                balance: ethers.utils.formatEther(balance),
+                minBalance: ethers.utils.formatEther(this.config.minBalance),
+                timestamp: new Date().toISOString()
+            });
+        } catch (error) {
+            res.status(503).json({ status: 'error', error: error.message });
+        }
+    }
+
+    async handleStatus(req, res) {
+        try {
+            const [balance, gasPrice, blockNumber] = await Promise.all([
+                this.provider.getBalance(this.relayerWallet.address),
+                this.provider.getGasPrice(),
+                this.provider.getBlockNumber()
+            ]);
+
+            const uptime = Date.now() - this.metrics.startTime;
+            const successRate = this.metrics.totalOperations > 0 ? 
+                (this.metrics.successfulOperations / this.metrics.totalOperations * 100).toFixed(2) : 0;
+
+            res.json({
+                relayer: {
+                    address: this.relayerWallet.address,
+                    balance: ethers.utils.formatEther(balance),
+                    isAuthorized: await this.entryPoint.isAuthorizedRelayer(this.relayerWallet.address)
+                },
+                network: {
+                    chainId: this.config.chainId,
+                    blockNumber,
+                    gasPrice: ethers.utils.formatUnits(gasPrice, 'gwei') + ' gwei'
+                },
+                metrics: {
+                    uptime: `${Math.floor(uptime / 1000 / 60)} minutes`,
+                    totalOperations: this.metrics.totalOperations,
+                    successfulOperations: this.metrics.successfulOperations,
+                    failedOperations: this.metrics.failedOperations,
+                    successRate: successRate + '%',
+                    totalGasUsed: ethers.utils.formatEther(this.metrics.gasUsed)
+                },
+                queue: {
+                    pending: this.operationQueue.length,
+                    processing: this.processingQueue
+                }
+            });
+        } catch (error) {
+            res.status(500).json({ error: 'Failed to get status', details: error.message });
+        }
+    }
+
+    async handleProcessAuthorizations(req, res) {
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+            return res.status(400).json({ errors: errors.array() });
+        }
+
+        try {
+            const { authorizations, durations, gasPrice } = req.body;
+            
+            console.log(`📋 Processing ${authorizations.length} authorizations`);
+            
+            // Validate lengths match
+            if (authorizations.length !== durations.length) {
+                return res.status(400).json({ 
+                    error: 'Authorizations and durations arrays must have same length' 
+                });
+            }
+
+            // Validate authorization tuples
+            for (const [index, auth] of authorizations.entries()) {
+                if (!this.validateAuthorizationTuple(auth)) {
+                    return res.status(400).json({ 
+                        error: `Invalid authorization tuple at index ${index}` 
+                    });
+                }
+            }
+
+            const txOptions = {
+                gasLimit: 5000000, // High limit for batch processing
+            };
+
+            if (gasPrice) {
+                txOptions.gasPrice = ethers.utils.parseUnits(gasPrice.toString(), 'gwei');
+            }
+
+            const tx = await this.smartAccount.processAuthorizationList(
+                authorizations,
+                durations,
+                txOptions
+            );
+
+            console.log(`✅ Authorization processing submitted: ${tx.hash}`);
+            
+            this.metrics.totalOperations++;
+            this.metrics.successfulOperations++;
+
+            res.json({
+                success: true,
+                txHash: tx.hash,
+                processedCount: authorizations.length,
+                durations: durations,
+                gasPrice: txOptions.gasPrice ? ethers.utils.formatUnits(txOptions.gasPrice, 'gwei') : 'auto'
+            });
+
+        } catch (error) {
+            console.error('❌ Authorization processing failed:', error);
+            this.metrics.totalOperations++;
+            this.metrics.failedOperations++;
+            
+            res.status(500).json({ 
+                error: 'Authorization processing failed',
+                details: error.message 
+            });
+        }
+    }
+
+    async handleBulkDelegation(req, res) {
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+            return res.status(400).json({ errors: errors.array() });
+        }
+
+        try {
+            const { accounts, duration, codeAddress, signatures } = req.body;
+            
+            console.log(`🔄 Bulk delegation for ${accounts.length} accounts`);
+            console.log(`⏰ Duration: ${duration} seconds (${(duration / 3600).toFixed(1)} hours)`);
+            
+            if (accounts.length !== signatures.length) {
+                return res.status(400).json({ 
+                    error: 'Accounts and signatures arrays must have same length' 
+                });
+            }
+
+            const bulkRequest = {
+                accounts,
+                duration,
+                codeAddress
+            };
+
+            const tx = await this.smartAccount.processBulkDelegation(
+                bulkRequest,
+                signatures,
+                { gasLimit: 8000000 }
+            );
+
+            console.log(`✅ Bulk delegation submitted: ${tx.hash}`);
+            
+            this.metrics.totalOperations++;
+            this.metrics.successfulOperations++;
+
+            res.json({
+                success: true,
+                txHash: tx.hash,
+                accountCount: accounts.length,
+                duration: duration,
+                durationHours: (duration / 3600).toFixed(1),
+                codeAddress
+            });
+
+        } catch (error) {
+            console.error('❌ Bulk delegation failed:', error);
+            this.metrics.totalOperations++;
+            this.metrics.failedOperations++;
+            
+            res.status(500).json({ 
+                error: 'Bulk delegation failed',
+                details: error.message 
+            });
+        }
+    }
+
+    async handleMetaTransaction(req, res) {
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+            return res.status(400).json({ errors: errors.array() });
+        }
+
+        try {
+            const { metaTx, signature } = req.body;
+            
+            console.log(`🔄 Meta transaction: ${metaTx.from} → ${metaTx.to}`);
+            
+            // Check if delegation is active
+            const isActive = await this.smartAccount.isDelegationActive(metaTx.from);
+            if (!isActive) {
+                return res.status(400).json({ error: 'Account delegation is not active' });
+            }
+
+            // Check deadline
+            if (Date.now() / 1000 > metaTx.deadline) {
+                return res.status(400).json({ error: 'Transaction deadline expired' });
+            }
+
+            const tx = await this.smartAccount.executeMetaTransaction(
+                metaTx,
+                signature,
+                { gasLimit: 1000000 }
+            );
+
+            console.log(`✅ Meta transaction executed: ${tx.hash}`);
+            
+            this.metrics.totalOperations++;
+            this.metrics.successfulOperations++;
+
+            res.json({
+                success: true,
+                txHash: tx.hash,
+                from: metaTx.from,
+                to: metaTx.to,
+                value: metaTx.value,
+                nonce: metaTx.nonce
+            });
+
+        } catch (error) {
+            console.error('❌ Meta transaction failed:', error);
+            this.metrics.totalOperations++;
+            this.metrics.failedOperations++;
+            
+            res.status(500).json({ 
+                error: 'Meta transaction failed',
+                details: error.message 
+            });
+        }
+    }
+
+    async handleSponsoredBatch(req, res) {
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+            return res.status(400).json({ errors: errors.array() });
+        }
+
+        try {
+            const { account, calls, signature, deadline } = req.body;
+            
+            console.log(`🔄 Sponsored batch for ${account}: ${calls.length} calls`);
+            
+            // Check deadline
+            if (Date.now() / 1000 > deadline) {
+                return res.status(400).json({ error: 'Batch deadline expired' });
+            }
+
+            const batchCall = {
+                account,
+                calls,
+                nonce: await this.entryPoint.getNonce(account),
+                deadline
+            };
+
+            const tx = await this.entryPoint.executeSponsoredBatch(
+                batchCall,
+                signature,
+                { gasLimit: 2000000 }
+            );
+
+            console.log(`✅ Sponsored batch executed: ${tx.hash}`);
+            
+            this.metrics.totalOperations++;
+            this.metrics.successfulOperations++;
+
+            res.json({
+                success: true,
+                txHash: tx.hash,
+                account,
+                callCount: calls.length,
+                nonce: batchCall.nonce
+            });
+
+        } catch (error) {
+            console.error('❌ Sponsored batch failed:', error);
+            this.metrics.totalOperations++;
+            this.metrics.failedOperations++;
+            
+            res.status(500).json({ 
+                error: 'Sponsored batch failed',
+                details: error.message 
+            });
+        }
+    }
+
+    async handleUserOperations(req, res) {
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+            return res.status(400).json({ errors: errors.array() });
+        }
+
+        try {
+            const { userOps, beneficiary } = req.body;
+            const beneficiaryAddress = beneficiary || this.relayerWallet.address;
+            
+            console.log(`🔄 User operations batch: ${userOps.length} ops`);
+
+            const tx = await this.entryPoint.handleOps(
+                userOps,
+                beneficiaryAddress,
+                { gasLimit: 10000000 }
+            );
+
+            console.log(`✅ User operations executed: ${tx.hash}`);
+            
+            this.metrics.totalOperations++;
+            this.metrics.successfulOperations++;
+
+            res.json({
+                success: true,
+                txHash: tx.hash,
+                operationCount: userOps.length,
+                beneficiary: beneficiaryAddress
+            });
+
+        } catch (error) {
+            console.error('❌ User operations failed:', error);
+            this.metrics.totalOperations++;
+            this.metrics.failedOperations++;
+            
+            res.status(500).json({ 
+                error: 'User operations failed',
+                details: error.message 
+            });
+        }
+    }
+
+    async handleGetAccount(req, res) {
+        try {
+            const { address } = req.params;
+            
+            const [isActive, timeRemaining, nonce, balance, delegation] = await Promise.all([
+                this.smartAccount.isDelegationActive(address),
+                this.smartAccount.getDelegationTimeRemaining(address),
+                this.smartAccount.nonces(address),
+                this.provider.getBalance(address),
+                this.smartAccount.getDelegation(address)
+            ]);
+
+            const remainingHours = timeRemaining.eq(ethers.constants.MaxUint256) ? 
+                'permanent' : 
+                (timeRemaining.toNumber() / 3600).toFixed(2);
+
+            res.json({
+                address,
+                delegation: {
+                    active: isActive,
+                    delegatedTo: delegation.delegatedTo,
+                    owner: delegation.owner,
+                    expirationTime: delegation.expirationTime.toString(),
+                    timeRemaining: timeRemaining.toString(),
+                    timeRemainingHours: remainingHours,
+                    createdAt: delegation.createdAt.toString(),
+                    isPermanent: timeRemaining.eq(ethers.constants.MaxUint256)
+                },
+                nonce: nonce.toString(),
+                balance: ethers.utils.formatEther(balance)
+            });
+
+        } catch (error) {
+            res.status(500).json({ 
+                error: 'Failed to get account info',
+                details: error.message 
+            });
+        }
+    }
+
+    async handleGetDelegation(req, res) {
+        try {
+            const { address } = req.params;
+            
+            const [isActive, timeRemaining, delegation] = await Promise.all([
+                this.smartAccount.isDelegationActive(address),
+                this.smartAccount.getDelegationTimeRemaining(address),
+                this.smartAccount.getDelegation(address)
+            ]);
+
+            const remainingHours = timeRemaining.eq(ethers.constants.MaxUint256) ? 
+                'permanent' : 
+                (timeRemaining.toNumber() / 3600).toFixed(2);
+
+            res.json({
+                address,
+                active: isActive,
+                delegatedTo: delegation.delegatedTo,
+                owner: delegation.owner,
+                expirationTime: delegation.expirationTime.toString(),
+                timeRemaining: timeRemaining.toString(),
+                timeRemainingHours: remainingHours,
+                createdAt: delegation.createdAt.toString(),
+                isPermanent: timeRemaining.eq(ethers.constants.MaxUint256)
+            });
+
+        } catch (error) {
+            res.status(500).json({ 
+                error: 'Failed to get delegation info',
+                details: error.message 
+            });
+        }
+    }
+
+    async handleGetNonce(req, res) {
+        try {
+            const { address } = req.params;
+            const nonce = await this.smartAccount.nonces(address);
+            
+            res.json({
+                address,
+                nonce: nonce.toString()
+            });
+
+        } catch (error) {
+            res.status(500).json({ 
+                error: 'Failed to get nonce',
+                details: error.message 
+            });
+        }
+    }
+
+    async handleGetManagedAccounts(req, res) {
+        try {
+            const { address } = req.params;
+            const managedAccounts = await this.smartAccount.getManagedAccounts(address);
+            
+            res.json({
+                manager: address,
+                managedAccounts,
+                count: managedAccounts.length
+            });
+
+        } catch (error) {
+            res.status(500).json({ 
+                error: 'Failed to get managed accounts',
+                details: error.message 
+            });
+        }
+    }
+
+    // ==================== VALIDATION HELPERS ====================
+
+    validateAuthorizationTuple(auth) {
+        const required = ['chainId', 'codeAddress', 'nonce', 'yParity', 'r', 's'];
+        return required.every(field => auth[field] !== undefined) &&
+               typeof auth.chainId === 'number' &&
+               ethers.utils.isAddress(auth.codeAddress) &&
+               typeof auth.nonce === 'number' &&
+               typeof auth.yParity === 'number' &&
+               typeof auth.r === 'string' &&
+               typeof auth.s === 'string';
+    }
+
+    // ==================== ERROR HANDLING ====================
+
+    errorHandler(error, req, res, next) {
+        console.error('❌ Unhandled error:', error);
+        
+        if (res.headersSent) {
+            return next(error);
+        }
+        
+        res.status(500).json({
+            error: 'Internal server error',
+            details: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
+    }
+
+    // ==================== MONITORING ====================
+
+    startMonitoring() {
+        // Gas price monitoring
+        setInterval(async () => {
+            try {
+                const gasPrice = await this.provider.getGasPrice();
+                const gasPriceGwei = parseFloat(ethers.utils.formatUnits(gasPrice, 'gwei'));
+                
+                if (gasPriceGwei > this.config.maxGasPrice) {
+                    console.warn(`⚠️  High gas price: ${gasPriceGwei.toFixed(2)} gwei (max: ${this.config.maxGasPrice})`);
+                }
+            } catch (error) {
+                console.error('Gas monitoring error:', error.message);
+            }
+        }, 30000);
+
+        // Balance monitoring
+        setInterval(async () => {
+            try {
+                const balance = await this.provider.getBalance(this.relayerWallet.address);
+                if (balance.lt(this.config.minBalance)) {
+                    console.warn(`⚠️  Low relayer balance: ${ethers.utils.formatEther(balance)} ETH`);
+                }
+            } catch (error) {
+                console.error('Balance monitoring error:', error.message);
+            }
+        }, 60000);
+
+        console.log('📊 Monitoring started (gas prices & balance)');
+    }
+
+    // ==================== STARTUP ====================
+
+    start() {
+        return new Promise((resolve, reject) => {
+            this.app.listen(this.config.port, (err) => {
+                if (err) {
+                    reject(err);
+                    return;
+                }
+                
+                console.log(`🚀 EIP-7702 Relayer running on port ${this.config.port}`);
+                console.log(`🔗 Health check: http://localhost:${this.config.port}/health`);
+                console.log(`📊 Status endpoint: http://localhost:${this.config.port}/api/status`);
+                
+                this.startMonitoring();
+                resolve();
+            });
+        });
+    }
+}
+
+// ==================== STARTUP SCRIPT ====================
+
+async function main() {
+    console.log('🔧 Starting EIP-7702 Relayer Service...');
+    
+    try {
+        const config = new RelayerConfig();
+        const relayer = new EIP7702Relayer(config);
+        await relayer.start();
+        
+        console.log('✅ Relayer service started successfully!');
+        console.log('📖 API Documentation:');
+        console.log('   POST /api/process-authorizations - Process EIP-7702 authorization tuples');
+        console.log('   POST /api/bulk-delegation - Set up bulk wallet delegations');
+        console.log('   POST /api/meta-transaction - Execute sponsored meta transactions');
+        console.log('   POST /api/sponsored-batch - Execute sponsored batch calls');
+        console.log('   GET  /api/account/:address - Get account information');
+        console.log('   GET  /api/delegation/:address - Get delegation status');
+        console.log('   GET  /health - Health check');
+        console.log('   GET  /api/status - Relayer status and metrics');
+        
+    } catch (error) {
+        console.error('❌ Failed to start relayer:', error.message);
+        process.exit(1);
+    }
+}
+
+// Handle graceful shutdown
+process.on('SIGINT', () => {
+    console.log('\n🛑 Shutting down relayer service...');
+    process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+    console.log('\n🛑 Shutting down relayer service...');
+    process.exit(0);
+});
+
+// Start the service if this file is run directly
+if (require.main === module) {
+    main().catch(console.error);
+}
+
+module.exports = EIP7702Relayer;
