@@ -1,6 +1,4 @@
-// Zcash Dynamic Fee Mechanism - Combined Implementation
-// Production-ready with scalability features and fast exponential response
-// FIXED: Compilation errors and logic bugs corrected
+// Zcash Dynamic Fee Mechanism 
 
 use std::cmp::{min, max};
 use std::collections::{HashMap, BTreeMap, VecDeque, BinaryHeap, HashSet};
