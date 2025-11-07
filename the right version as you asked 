@@ -1,4 +1,4 @@
-// Zcash Dynamic Fee Mechanism -v10
+/ Zcash Dynamic Fee Mechanism -v10
 
 use std::cmp::{min, max};
 use std::collections::{HashMap, BTreeMap, VecDeque, BinaryHeap};
