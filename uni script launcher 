@@ -1,0 +1,879 @@
+#Requires -Version 5.1
+<#
+.SYNOPSIS
+    Enhanced Universal Script Launcher for Windows
+.DESCRIPTION
+    Professional multi-language script launcher with advanced features:
+    - Supports 11 programming languages
+    - Favorites system for quick access
+    - Recent scripts tracking
+    - Script search functionality
+    - Configuration management
+    - Error logging
+    - Auto-detection of interpreters
+.EXAMPLE
+    .\launcher.ps1
+.NOTES
+    Version: 2.0
+    Author: Enhanced Script Launcher
+#>
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
+# ==================== CONFIGURATION ====================
+
+$script:Config = @{
+    ConfigFile = "$env:USERPROFILE\.scriptlauncher\config.json"
+    LogFile = "$env:USERPROFILE\.scriptlauncher\launcher.log"
+    FavoritesFile = "$env:USERPROFILE\.scriptlauncher\favorites.json"
+    RecentFile = "$env:USERPROFILE\.scriptlauncher\recent.json"
+    MaxRecentScripts = 10
+}
+
+$script:ScriptTypes = @(
+    @{Type="Bash Scripts"; Dir="$env:USERPROFILE\sh"; Ext="*.sh"; Runner="bash"; Icon="🐚"},
+    @{Type="PowerShell Scripts"; Dir="$env:USERPROFILE\ps1"; Ext="*.ps1"; Runner="powershell"; Icon="💙"},
+    @{Type="Batch Scripts"; Dir="$env:USERPROFILE\bat"; Ext="*.bat"; Runner="cmd"; Icon="📦"},
+    @{Type="Python Scripts"; Dir="$env:USERPROFILE\py"; Ext="*.py"; Runner="python"; Icon="🐍"},
+    @{Type="Node.js Scripts"; Dir="$env:USERPROFILE\js"; Ext="*.js"; Runner="node"; Icon="🟢"},
+    @{Type="Java Programs"; Dir="$env:USERPROFILE\java"; Ext="*.java"; Runner="java"; Icon="☕"},
+    @{Type="Ruby Scripts"; Dir="$env:USERPROFILE\rb"; Ext="*.rb"; Runner="ruby"; Icon="💎"},
+    @{Type="Perl Scripts"; Dir="$env:USERPROFILE\pl"; Ext="*.pl"; Runner="perl"; Icon="🐪"},
+    @{Type="Rust Programs"; Dir="$env:USERPROFILE\rs"; Ext="*.rs"; Runner="rustc"; Icon="🦀"},
+    @{Type="Go Programs"; Dir="$env:USERPROFILE\go"; Ext="*.go"; Runner="go"; Icon="🔷"},
+    @{Type="PHP Scripts"; Dir="$env:USERPROFILE\php"; Ext="*.php"; Runner="php"; Icon="🐘"}
+)
+
+# ==================== INITIALIZATION ====================
+
+function Initialize-LauncherEnvironment {
+    $configDir = Split-Path $script:Config.ConfigFile -Parent
+    if (-not (Test-Path $configDir)) {
+        New-Item -ItemType Directory -Path $configDir -Force | Out-Null
+    }
+    
+    if (-not (Test-Path $script:Config.FavoritesFile)) {
+        @() | ConvertTo-Json | Set-Content $script:Config.FavoritesFile
+    }
+    
+    if (-not (Test-Path $script:Config.RecentFile)) {
+        @() | ConvertTo-Json | Set-Content $script:Config.RecentFile
+    }
+}
+
+function Write-Log {
+    param([string]$Message, [string]$Level = "INFO")
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    "$timestamp [$Level] $Message" | Add-Content $script:Config.LogFile -ErrorAction SilentlyContinue
+}
+
+# ==================== DATA MANAGEMENT ====================
+
+function Get-Favorites {
+    try {
+        $content = Get-Content $script:Config.FavoritesFile -Raw | ConvertFrom-Json
+        return @($content)
+    } catch {
+        return @()
+    }
+}
+
+function Add-Favorite {
+    param([string]$ScriptPath)
+    $favorites = Get-Favorites
+    if ($favorites -notcontains $ScriptPath) {
+        $favorites += $ScriptPath
+        $favorites | ConvertTo-Json | Set-Content $script:Config.FavoritesFile
+        Write-Log "Added favorite: $ScriptPath"
+    }
+}
+
+function Remove-Favorite {
+    param([string]$ScriptPath)
+    $favorites = Get-Favorites
+    $favorites = $favorites | Where-Object { $_ -ne $ScriptPath }
+    $favorites | ConvertTo-Json | Set-Content $script:Config.FavoritesFile
+    Write-Log "Removed favorite: $ScriptPath"
+}
+
+function Get-RecentScripts {
+    try {
+        $content = Get-Content $script:Config.RecentFile -Raw | ConvertFrom-Json
+        return @($content)
+    } catch {
+        return @()
+    }
+}
+
+function Add-RecentScript {
+    param([string]$ScriptPath)
+    $recent = Get-RecentScripts
+    $recent = @($ScriptPath) + ($recent | Where-Object { $_ -ne $ScriptPath })
+    $recent = $recent | Select-Object -First $script:Config.MaxRecentScripts
+    $recent | ConvertTo-Json | Set-Content $script:Config.RecentFile
+}
+
+# ==================== INTERPRETER DETECTION ====================
+
+function Test-InterpreterAvailable {
+    param([string]$Runner)
+    
+    $available = switch ($Runner) {
+        "bash" { (Get-Command wsl -ErrorAction SilentlyContinue) -or (Get-Command bash -ErrorAction SilentlyContinue) }
+        "powershell" { $true }
+        "cmd" { $true }
+        default { Get-Command $Runner -ErrorAction SilentlyContinue }
+    }
+    
+    return [bool]$available
+}
+
+function Get-InterpreterStatus {
+    $status = @{}
+    foreach ($st in $script:ScriptTypes) {
+        $status[$st.Runner] = Test-InterpreterAvailable $st.Runner
+    }
+    return $status
+}
+
+# ==================== UI FUNCTIONS ====================
+
+function Show-Header {
+    param([string]$Title = "UNIVERSAL SCRIPT LAUNCHER")
+    Clear-Host
+    Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Cyan
+    Write-Host "              $Title" -ForegroundColor Yellow
+    Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Cyan
+    Write-Host ""
+}
+
+function Show-MainMenu {
+    Show-Header
+    
+    Write-Host "Main Menu:" -ForegroundColor Green
+    Write-Host ""
+    Write-Host "  [1] Browse Scripts by Type" -ForegroundColor White
+    Write-Host "  [2] Recent Scripts" -ForegroundColor White
+    Write-Host "  [3] Favorite Scripts" -ForegroundColor White
+    Write-Host "  [4] Search Scripts" -ForegroundColor White
+    Write-Host "  [5] Create Script Folders" -ForegroundColor White
+    Write-Host "  [6] System Information" -ForegroundColor White
+    Write-Host ""
+    Write-Host "  [
+
+function Show-BrowseMenu {
+    Show-Header "BROWSE SCRIPTS"
+    
+    $folders = @()
+    foreach ($st in $script:ScriptTypes) {
+        if (Test-Path $st.Dir) {
+            $folders += $st
+        }
+    }
+    
+    if ($folders.Count -eq 0) {
+        Write-Host "❌ No script folders found in $env:USERPROFILE" -ForegroundColor Red
+        Write-Host ""
+        Write-Host "Create folders like:" -ForegroundColor Yellow
+        foreach ($st in $script:ScriptTypes) {
+            Write-Host "  $($st.Dir) (for $($st.Type))"
+        }
+        Write-Host ""
+        Read-Host "Press Enter to return"
+        return $null
+    }
+    
+    $interpreterStatus = Get-InterpreterStatus
+    
+    Write-Host "Available script types:" -ForegroundColor Green
+    Write-Host ""
+    for ($i = 0; $i -lt $folders.Count; $i++) {
+        $folder = $folders[$i]
+        $available = $interpreterStatus[$folder.Runner]
+        $statusIcon = if ($available) { "✓" } else { "✗" }
+        $statusColor = if ($available) { "Green" } else { "Red" }
+        
+        Write-Host "  [$($i+1)] " -NoNewline -ForegroundColor White
+        Write-Host "$($folder.Icon) $($folder.Type) " -NoNewline -ForegroundColor White
+        Write-Host "[$statusIcon]" -ForegroundColor $statusColor
+    }
+    Write-Host ""
+    Write-Host "  [B] Back to main menu" -ForegroundColor Gray
+    Write-Host ""
+    
+    do {
+        $choice = Read-Host "Enter your choice"
+        if ($choice -eq 'B' -or $choice -eq 'b') {
+            return $null
+        }
+        if ($choice -match '^\d+$' -and [int]$choice -ge 1 -and [int]$choice -le $folders.Count) {
+            return $folders[[int]$choice - 1]
+        }
+        Write-Host "❌ Invalid choice. Try again." -ForegroundColor Red
+    } while ($true)
+}
+
+function Show-ScriptMenu {
+    param($SelectedFolder)
+    
+    Show-Header "$($SelectedFolder.Icon) $($SelectedFolder.Type)"
+    
+    $scripts = Get-ChildItem -Path $SelectedFolder.Dir -Filter $SelectedFolder.Ext -ErrorAction SilentlyContinue
+    if ($scripts.Count -eq 0) {
+        Write-Host "⚠️  No $($SelectedFolder.Ext) files found in $($SelectedFolder.Dir)" -ForegroundColor Yellow
+        Write-Host ""
+        Read-Host "Press Enter to return"
+        return $null
+    }
+    
+    $favorites = Get-Favorites
+    
+    Write-Host "Available scripts:" -ForegroundColor White
+    Write-Host ""
+    for ($i = 0; $i -lt $scripts.Count; $i++) {
+        $isFavorite = $favorites -contains $scripts[$i].FullName
+        $favIcon = if ($isFavorite) { "⭐" } else { "  " }
+        Write-Host "  [$($i+1)] $favIcon $($scripts[$i].Name)" -ForegroundColor White
+    }
+    Write-Host ""
+    Write-Host "  [B] Back" -ForegroundColor Gray
+    Write-Host ""
+    
+    do {
+        $choice = Read-Host "Enter number to run, number+F to favorite/unfavorite (e.g., 1F), or B"
+        
+        if ($choice -match '^[Bb]$') {
+            return @{Action="Back"}
+        }
+        
+        if ($choice -match '^(\d+)[Ff]$') {
+            $idx = [int]$Matches[1] - 1
+            if ($idx -ge 0 -and $idx -lt $scripts.Count) {
+                $scriptPath = $scripts[$idx].FullName
+                if ($favorites -contains $scriptPath) {
+                    Remove-Favorite $scriptPath
+                    Write-Host "⭐ Removed from favorites" -ForegroundColor Yellow
+                } else {
+                    Add-Favorite $scriptPath
+                    Write-Host "⭐ Added to favorites" -ForegroundColor Green
+                }
+                Start-Sleep -Seconds 1
+                return @{Action="Refresh"; Folder=$SelectedFolder}
+            }
+        }
+        
+        if ($choice -match '^\d+$') {
+            $idx = [int]$choice - 1
+            if ($idx -ge 0 -and $idx -lt $scripts.Count) {
+                return @{Action="Run"; Script=$scripts[$idx]; Folder=$SelectedFolder}
+            }
+        }
+        
+        Write-Host "❌ Invalid choice. Try again." -ForegroundColor Red
+    } while ($true)
+}
+
+function Show-RecentScripts {
+    Show-Header "RECENT SCRIPTS"
+    
+    $recent = Get-RecentScripts
+    if ($recent.Count -eq 0) {
+        Write-Host "⚠️  No recent scripts" -ForegroundColor Yellow
+        Write-Host ""
+        Read-Host "Press Enter to return"
+        return $null
+    }
+    
+    $validScripts = @()
+    foreach ($path in $recent) {
+        if (Test-Path $path) {
+            $validScripts += Get-Item $path
+        }
+    }
+    
+    if ($validScripts.Count -eq 0) {
+        Write-Host "⚠️  No valid recent scripts found" -ForegroundColor Yellow
+        Write-Host ""
+        Read-Host "Press Enter to return"
+        return $null
+    }
+    
+    Write-Host "Recent scripts:" -ForegroundColor White
+    Write-Host ""
+    for ($i = 0; $i -lt $validScripts.Count; $i++) {
+        Write-Host "  [$($i+1)] $($validScripts[$i].Name)" -ForegroundColor White
+        Write-Host "       $($validScripts[$i].DirectoryName)" -ForegroundColor Gray
+    }
+    Write-Host ""
+    Write-Host "  [B] Back" -ForegroundColor Gray
+    Write-Host ""
+    
+    do {
+        $choice = Read-Host "Enter your choice"
+        if ($choice -match '^[Bb]$') {
+            return $null
+        }
+        if ($choice -match '^\d+$' -and [int]$choice -ge 1 -and [int]$choice -le $validScripts.Count) {
+            $selected = $validScripts[[int]$choice - 1]
+            $folder = $script:ScriptTypes | Where-Object { $selected.Extension -eq $_.Ext.Replace('*', '') } | Select-Object -First 1
+            return @{Action="Run"; Script=$selected; Folder=$folder}
+        }
+        Write-Host "❌ Invalid choice. Try again." -ForegroundColor Red
+    } while ($true)
+}
+
+function Show-FavoriteScripts {
+    Show-Header "FAVORITE SCRIPTS"
+    
+    $favorites = Get-Favorites
+    if ($favorites.Count -eq 0) {
+        Write-Host "⚠️  No favorite scripts" -ForegroundColor Yellow
+        Write-Host ""
+        Read-Host "Press Enter to return"
+        return $null
+    }
+    
+    $validScripts = @()
+    foreach ($path in $favorites) {
+        if (Test-Path $path) {
+            $validScripts += Get-Item $path
+        }
+    }
+    
+    if ($validScripts.Count -eq 0) {
+        Write-Host "⚠️  No valid favorite scripts found" -ForegroundColor Yellow
+        Write-Host ""
+        Read-Host "Press Enter to return"
+        return $null
+    }
+    
+    Write-Host "Favorite scripts:" -ForegroundColor White
+    Write-Host ""
+    for ($i = 0; $i -lt $validScripts.Count; $i++) {
+        Write-Host "  [$($i+1)] ⭐ $($validScripts[$i].Name)" -ForegroundColor White
+        Write-Host "       $($validScripts[$i].DirectoryName)" -ForegroundColor Gray
+    }
+    Write-Host ""
+    Write-Host "  [B] Back" -ForegroundColor Gray
+    Write-Host ""
+    
+    do {
+        $choice = Read-Host "Enter number to run, number+R to remove (e.g., 1R), or B"
+        
+        if ($choice -match '^[Bb]$') {
+            return $null
+        }
+        
+        if ($choice -match '^(\d+)[Rr]$') {
+            $idx = [int]$Matches[1] - 1
+            if ($idx -ge 0 -and $idx -lt $validScripts.Count) {
+                Remove-Favorite $validScripts[$idx].FullName
+                Write-Host "🗑️  Removed from favorites" -ForegroundColor Yellow
+                Start-Sleep -Seconds 1
+                return @{Action="Refresh"}
+            }
+        }
+        
+        if ($choice -match '^\d+$') {
+            $idx = [int]$choice - 1
+            if ($idx -ge 0 -and $idx -lt $validScripts.Count) {
+                $selected = $validScripts[$idx]
+                $folder = $script:ScriptTypes | Where-Object { $selected.Extension -eq $_.Ext.Replace('*', '') } | Select-Object -First 1
+                return @{Action="Run"; Script=$selected; Folder=$folder}
+            }
+        }
+        
+        Write-Host "❌ Invalid choice. Try again." -ForegroundColor Red
+    } while ($true)
+}
+
+function Show-SearchScripts {
+    Show-Header "SEARCH SCRIPTS"
+    
+    $searchTerm = Read-Host "Enter search term (or press Enter to cancel)"
+    if ([string]::IsNullOrWhiteSpace($searchTerm)) {
+        return $null
+    }
+    
+    $allScripts = @()
+    foreach ($st in $script:ScriptTypes) {
+        if (Test-Path $st.Dir) {
+            $scripts = Get-ChildItem -Path $st.Dir -Filter $st.Ext -ErrorAction SilentlyContinue
+            foreach ($script in $scripts) {
+                if ($script.Name -like "*$searchTerm*") {
+                    $allScripts += @{Script=$script; Folder=$st}
+                }
+            }
+        }
+    }
+    
+    if ($allScripts.Count -eq 0) {
+        Write-Host ""
+        Write-Host "⚠️  No scripts found matching '$searchTerm'" -ForegroundColor Yellow
+        Write-Host ""
+        Read-Host "Press Enter to return"
+        return $null
+    }
+    
+    Write-Host ""
+    Write-Host "Found $($allScripts.Count) script(s):" -ForegroundColor Green
+    Write-Host ""
+    for ($i = 0; $i -lt $allScripts.Count; $i++) {
+        Write-Host "  [$($i+1)] $($allScripts[$i].Folder.Icon) $($allScripts[$i].Script.Name)" -ForegroundColor White
+        Write-Host "       $($allScripts[$i].Script.DirectoryName)" -ForegroundColor Gray
+    }
+    Write-Host ""
+    Write-Host "  [B] Back" -ForegroundColor Gray
+    Write-Host ""
+    
+    do {
+        $choice = Read-Host "Enter your choice"
+        if ($choice -match '^[Bb]$') {
+            return $null
+        }
+        if ($choice -match '^\d+$' -and [int]$choice -ge 1 -and [int]$choice -le $allScripts.Count) {
+            return @{Action="Run"; Script=$allScripts[[int]$choice - 1].Script; Folder=$allScripts[[int]$choice - 1].Folder}
+        }
+        Write-Host "❌ Invalid choice. Try again." -ForegroundColor Red
+    } while ($true)
+}
+
+function Show-SystemInfo {
+    Show-Header "SYSTEM INFORMATION"
+    
+    $interpreterStatus = Get-InterpreterStatus
+    
+    Write-Host "Interpreter Status:" -ForegroundColor Green
+    Write-Host ""
+    foreach ($st in $script:ScriptTypes) {
+        $available = $interpreterStatus[$st.Runner]
+        $statusIcon = if ($available) { "✓" } else { "✗" }
+        $statusColor = if ($available) { "Green" } else { "Red" }
+        $statusText = if ($available) { "Available" } else { "Not Found" }
+        
+        Write-Host "  $($st.Icon) " -NoNewline
+        Write-Host "$($st.Type.PadRight(25))" -NoNewline -ForegroundColor White
+        Write-Host "[$statusIcon] $statusText" -ForegroundColor $statusColor
+    }
+    
+    Write-Host ""
+    Write-Host "Script Folders:" -ForegroundColor Green
+    Write-Host ""
+    foreach ($st in $script:ScriptTypes) {
+        $exists = Test-Path $st.Dir
+        $icon = if ($exists) { "📁" } else { "📂" }
+        $color = if ($exists) { "Green" } else { "Gray" }
+        Write-Host "  $icon $($st.Dir)" -ForegroundColor $color
+    }
+    
+    Write-Host ""
+    Write-Host "Statistics:" -ForegroundColor Green
+    Write-Host "  Favorites: $(Get-Favorites | Measure-Object | Select-Object -ExpandProperty Count)"
+    Write-Host "  Recent: $(Get-RecentScripts | Measure-Object | Select-Object -ExpandProperty Count)"
+    
+    Write-Host ""
+    Read-Host "Press Enter to return"
+}
+
+# ==================== SCRIPT EXECUTION ====================
+
+function Invoke-Script {
+    param($ScriptInfo)
+    
+    $selected = $ScriptInfo.Script
+    $selectedFolder = $ScriptInfo.Folder
+    
+    Show-Header
+    Write-Host "⚙️  Running: $($selected.Name)" -ForegroundColor Yellow
+    Write-Host "    Type: $($selectedFolder.Type)" -ForegroundColor Gray
+    Write-Host "    Path: $($selected.FullName)" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Cyan
+    Write-Host ""
+    
+    Add-RecentScript $selected.FullName
+    Write-Log "Executing: $($selected.FullName)"
+    
+    try {
+        switch ($selectedFolder.Runner) {
+            "bash" {
+                if (Get-Command wsl -ErrorAction SilentlyContinue) {
+                    wsl bash $selected.FullName
+                } elseif (Get-Command bash -ErrorAction SilentlyContinue) {
+                    bash $selected.FullName
+                } else {
+                    Write-Host "❌ Bash not found. Install WSL or Git Bash." -ForegroundColor Red
+                }
+            }
+            "powershell" {
+                & $selected.FullName
+            }
+            "cmd" {
+                cmd /c $selected.FullName
+            }
+            "python" {
+                if (Get-Command python -ErrorAction SilentlyContinue) {
+                    python $selected.FullName
+                } else {
+                    Write-Host "❌ Python not found. Install from python.org" -ForegroundColor Red
+                }
+            }
+            "node" {
+                if (Get-Command node -ErrorAction SilentlyContinue) {
+                    node $selected.FullName
+                } else {
+                    Write-Host "❌ Node.js not found. Install from nodejs.org" -ForegroundColor Red
+                }
+            }
+            "java" {
+                if (Get-Command javac -ErrorAction SilentlyContinue) {
+                    Write-Host "Compiling $($selected.Name)..." -ForegroundColor Yellow
+                    javac $selected.FullName
+                    if ($LASTEXITCODE -eq 0) {
+                        $className = $selected.BaseName
+                        Push-Location $selected.DirectoryName
+                        java $className
+                        Pop-Location
+                    } else {
+                        Write-Host "❌ Compilation failed" -ForegroundColor Red
+                    }
+                } else {
+                    Write-Host "❌ Java not found. Install JDK." -ForegroundColor Red
+                }
+            }
+            "ruby" {
+                if (Get-Command ruby -ErrorAction SilentlyContinue) {
+                    ruby $selected.FullName
+                } else {
+                    Write-Host "❌ Ruby not found. Install from rubyinstaller.org" -ForegroundColor Red
+                }
+            }
+            "perl" {
+                if (Get-Command perl -ErrorAction SilentlyContinue) {
+                    perl $selected.FullName
+                } else {
+                    Write-Host "❌ Perl not found. Install Strawberry Perl." -ForegroundColor Red
+                }
+            }
+            "rustc" {
+                if (Get-Command rustc -ErrorAction SilentlyContinue) {
+                    Write-Host "Compiling $($selected.Name)..." -ForegroundColor Yellow
+                    $output = Join-Path $env:TEMP "$($selected.BaseName).exe"
+                    rustc $selected.FullName -o $output
+                    if ($LASTEXITCODE -eq 0) {
+                        & $output
+                        Remove-Item $output -ErrorAction SilentlyContinue
+                    } else {
+                        Write-Host "❌ Compilation failed" -ForegroundColor Red
+                    }
+                } else {
+                    Write-Host "❌ Rust not found. Install from rustup.rs" -ForegroundColor Red
+                }
+            }
+            "go" {
+                if (Get-Command go -ErrorAction SilentlyContinue) {
+                    go run $selected.FullName
+                } else {
+                    Write-Host "❌ Go not found. Install from go.dev" -ForegroundColor Red
+                }
+            }
+            "php" {
+                if (Get-Command php -ErrorAction SilentlyContinue) {
+                    php $selected.FullName
+                } else {
+                    Write-Host "❌ PHP not found. Install from php.net" -ForegroundColor Red
+                }
+            }
+        }
+        Write-Log "Completed: $($selected.FullName)" -Level "SUCCESS"
+    } catch {
+        Write-Host ""
+        Write-Host "❌ Error running script: $_" -ForegroundColor Red
+        Write-Log "Error: $_" -Level "ERROR"
+    }
+    
+    Write-Host ""
+    Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Cyan
+    Write-Host "✅ Execution finished" -ForegroundColor Green
+    Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Cyan
+    Write-Host ""
+    Read-Host "Press Enter to continue"
+}
+
+# ==================== MAIN PROGRAM ====================
+
+try {
+    Initialize-LauncherEnvironment
+    Write-Log "Launcher started"
+    
+    do {
+        $mainChoice = Show-MainMenu
+        
+        switch ($mainChoice) {
+            'Browse' {
+                do {
+                    $selectedFolder = Show-BrowseMenu
+                    if ($null -eq $selectedFolder) { break }
+                    if ($selectedFolder -eq 'Refresh') { continue }
+                    
+                    do {
+                        $result = Show-ScriptMenu -SelectedFolder $selectedFolder
+                        if ($null -eq $result) { break }
+                        
+                        switch ($result.Action) {
+                            'Run' { Invoke-Script -ScriptInfo $result }
+                            'Refresh' { continue }
+                            'Back' { break }
+                        }
+                    } while ($result.Action -eq 'Refresh')
+                } while ($selectedFolder -eq 'Refresh')
+            }
+            'QuickLaunch' {
+                do {
+                    $selectedFolder = Show-QuickLaunchMenu
+                    if ($null -eq $selectedFolder) { break }
+                    if ($selectedFolder -eq 'Refresh') { continue }
+                    
+                    do {
+                        $result = Show-QuickLaunchScripts -SelectedFolder $selectedFolder
+                        if ($null -eq $result) { break }
+                        
+                        switch ($result.Action) {
+                            'Run' { Invoke-Script -ScriptInfo $result }
+                            'Refresh' { continue }
+                            'Back' { break }
+                        }
+                    } while ($result.Action -eq 'Refresh')
+                } while ($selectedFolder -eq 'Refresh')
+            }
+            'Recent' {
+                do {
+                    $result = Show-RecentScripts
+                    if ($null -eq $result) { break }
+                    
+                    if ($result.Action -eq 'Run') {
+                        Invoke-Script -ScriptInfo $result
+                    }
+                } while ($result.Action -eq 'Refresh')
+            }
+            'Favorites' {
+                do {
+                    $result = Show-FavoriteScripts
+                    if ($null -eq $result) { break }
+                    
+                    if ($result.Action -eq 'Run') {
+                        Invoke-Script -ScriptInfo $result
+                    } elseif ($result.Action -eq 'Refresh') {
+                        continue
+                    } else {
+                        break
+                    }
+                } while ($result.Action -eq 'Refresh')
+            }
+            'Search' {
+                $result = Show-SearchScripts
+                if ($null -ne $result -and $result.Action -eq 'Run') {
+                    Invoke-Script -ScriptInfo $result
+                }
+            }
+            'CreateFolders' {
+                Show-CreateFolders
+            }
+            'Info' {
+                Show-SystemInfo
+            }
+            'Quit' {
+                break
+            }
+        }
+    } while ($mainChoice -ne 'Quit')
+    
+    Write-Log "Launcher exited normally"
+} catch {
+    Write-Host ""
+    Write-Host "❌ Fatal error: $_" -ForegroundColor Red
+    Write-Log "Fatal error: $_" -Level "FATAL"
+    Write-Host ""
+    Read-Host "Press Enter to exit"
+} finally {
+    Write-Host ""
+    Write-Host "Goodbye! 👋" -ForegroundColor Green
+}-Command bash -ErrorAction SilentlyContinue) {
+                    bash $selected.FullName
+                } else {
+                    Write-Host "❌ Bash not found. Install WSL or Git Bash." -ForegroundColor Red
+                }
+            }
+            "powershell" {
+                & $selected.FullName
+            }
+            "cmd" {
+                cmd /c $selected.FullName
+            }
+            "python" {
+                if (Get-Command python -ErrorAction SilentlyContinue) {
+                    python $selected.FullName
+                } else {
+                    Write-Host "❌ Python not found. Install from python.org" -ForegroundColor Red
+                }
+            }
+            "node" {
+                if (Get-Command node -ErrorAction SilentlyContinue) {
+                    node $selected.FullName
+                } else {
+                    Write-Host "❌ Node.js not found. Install from nodejs.org" -ForegroundColor Red
+                }
+            }
+            "java" {
+                if (Get-Command javac -ErrorAction SilentlyContinue) {
+                    Write-Host "Compiling $($selected.Name)..." -ForegroundColor Yellow
+                    javac $selected.FullName
+                    if ($LASTEXITCODE -eq 0) {
+                        $className = $selected.BaseName
+                        Push-Location $selected.DirectoryName
+                        java $className
+                        Pop-Location
+                    } else {
+                        Write-Host "❌ Compilation failed" -ForegroundColor Red
+                    }
+                } else {
+                    Write-Host "❌ Java not found. Install JDK." -ForegroundColor Red
+                }
+            }
+            "ruby" {
+                if (Get-Command ruby -ErrorAction SilentlyContinue) {
+                    ruby $selected.FullName
+                } else {
+                    Write-Host "❌ Ruby not found. Install from rubyinstaller.org" -ForegroundColor Red
+                }
+            }
+            "perl" {
+                if (Get-Command perl -ErrorAction SilentlyContinue) {
+                    perl $selected.FullName
+                } else {
+                    Write-Host "❌ Perl not found. Install Strawberry Perl." -ForegroundColor Red
+                }
+            }
+            "rustc" {
+                if (Get-Command rustc -ErrorAction SilentlyContinue) {
+                    Write-Host "Compiling $($selected.Name)..." -ForegroundColor Yellow
+                    $output = Join-Path $env:TEMP "$($selected.BaseName).exe"
+                    rustc $selected.FullName -o $output
+                    if ($LASTEXITCODE -eq 0) {
+                        & $output
+                        Remove-Item $output -ErrorAction SilentlyContinue
+                    } else {
+                        Write-Host "❌ Compilation failed" -ForegroundColor Red
+                    }
+                } else {
+                    Write-Host "❌ Rust not found. Install from rustup.rs" -ForegroundColor Red
+                }
+            }
+            "go" {
+                if (Get-Command go -ErrorAction SilentlyContinue) {
+                    go run $selected.FullName
+                } else {
+                    Write-Host "❌ Go not found. Install from go.dev" -ForegroundColor Red
+                }
+            }
+            "php" {
+                if (Get-Command php -ErrorAction SilentlyContinue) {
+                    php $selected.FullName
+                } else {
+                    Write-Host "❌ PHP not found. Install from php.net" -ForegroundColor Red
+                }
+            }
+        }
+        Write-Log "Completed: $($selected.FullName)" -Level "SUCCESS"
+    } catch {
+        Write-Host ""
+        Write-Host "❌ Error running script: $_" -ForegroundColor Red
+        Write-Log "Error: $_" -Level "ERROR"
+    }
+    
+    Write-Host ""
+    Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Cyan
+    Write-Host "✅ Execution finished" -ForegroundColor Green
+    Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Cyan
+    Write-Host ""
+    Read-Host "Press Enter to continue"
+}
+
+# ==================== MAIN PROGRAM ====================
+
+try {
+    Initialize-LauncherEnvironment
+    Write-Log "Launcher started"
+    
+    do {
+        $mainChoice = Show-MainMenu
+        
+        switch ($mainChoice) {
+            'Browse' {
+                do {
+                    $selectedFolder = Show-BrowseMenu
+                    if ($null -eq $selectedFolder) { break }
+                    
+                    do {
+                        $result = Show-ScriptMenu -SelectedFolder $selectedFolder
+                        if ($null -eq $result) { break }
+                        
+                        switch ($result.Action) {
+                            'Run' { Invoke-Script -ScriptInfo $result }
+                            'Refresh' { continue }
+                            'Back' { break }
+                        }
+                    } while ($result.Action -eq 'Refresh')
+                } while ($false)
+            }
+            'Recent' {
+                do {
+                    $result = Show-RecentScripts
+                    if ($null -eq $result) { break }
+                    
+                    if ($result.Action -eq 'Run') {
+                        Invoke-Script -ScriptInfo $result
+                    }
+                } while ($result.Action -eq 'Refresh')
+            }
+            'Favorites' {
+                do {
+                    $result = Show-FavoriteScripts
+                    if ($null -eq $result) { break }
+                    
+                    if ($result.Action -eq 'Run') {
+                        Invoke-Script -ScriptInfo $result
+                    } elseif ($result.Action -eq 'Refresh') {
+                        continue
+                    } else {
+                        break
+                    }
+                } while ($result.Action -eq 'Refresh')
+            }
+            'Search' {
+                $result = Show-SearchScripts
+                if ($null -ne $result -and $result.Action -eq 'Run') {
+                    Invoke-Script -ScriptInfo $result
+                }
+            }
+            'Info' {
+                Show-SystemInfo
+            }
+            'Quit' {
+                break
+            }
+        }
+    } while ($mainChoice -ne 'Quit')
+    
+    Write-Log "Launcher exited normally"
+} catch {
+    Write-Host ""
+    Write-Host "❌ Fatal error: $_" -ForegroundColor Red
+    Write-Log "Fatal error: $_" -Level "FATAL"
+    Write-Host ""
+    Read-Host "Press Enter to exit"
+} finally {
+    Write-Host ""
+    Write-Host "Goodbye! 👋" -ForegroundColor Green
+}
