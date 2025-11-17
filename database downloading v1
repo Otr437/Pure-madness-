@@ -1,0 +1,322 @@
+#!/usr/bin/env python3
+"""
+Comprehensive Vulnerability Database Downloader
+Supports downloading from multiple security databases:
+- OSV (Open Source Vulnerabilities)
+- NVD (National Vulnerability Database)
+- CISA KEV (Known Exploited Vulnerabilities)
+- GitHub Security Advisories
+- Exploit-DB
+- VulnDB
+- InTheWild.io
+- Snyk Vulnerability Database
+
+Usage examples:
+  python vuln_downloader.py --osv-ecosystem npm
+  python vuln_downloader.py --nvd-recent
+  python vuln_downloader.py --cisa-kev
+  python vuln_downloader.py --github-advisories
+  python vuln_downloader.py --exploitdb
+  python vuln_downloader.py --all
+"""
+
+import sys
+import argparse
+import requests
+import os
+import json
+from pathlib import Path
+from datetime import datetime, timedelta
+import time
+
+class VulnDownloader:
+    def __init__(self, output_dir="./vuln_data"):
+        self.output_dir = output_dir
+        self.success_count = 0
+        self.total_count = 0
+        
+    def download_file(self, url, output_path, description="file", headers=None):
+        """Download a file with progress indication"""
+        print(f"\nDownloading {description}...")
+        print(f"URL: {url}")
+        print(f"Saving to: {output_path}")
+        
+        self.total_count += 1
+        
+        try:
+            response = requests.get(url, stream=True, headers=headers or {}, timeout=30)
+            response.raise_for_status()
+            
+            # Create directory if it doesn't exist
+            Path(os.path.dirname(output_path)).mkdir(parents=True, exist_ok=True)
+            
+            file_size = response.headers.get('Content-Length')
+            if file_size:
+                file_size = int(file_size)
+                print(f"File size: {file_size / (1024*1024):.2f} MB")
+            
+            with open(output_path, 'wb') as f:
+                downloaded = 0
+                chunk_size = 8192
+                
+                for chunk in response.iter_content(chunk_size=chunk_size):
+                    if chunk:
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        
+                        if file_size:
+                            progress = (downloaded / file_size) * 100
+                            print(f"\rProgress: {progress:.1f}%", end='', flush=True)
+            
+            print(f"\n✓ Downloaded successfully!")
+            self.success_count += 1
+            return True
+            
+        except Exception as e:
+            print(f"\n✗ Error: {e}")
+            return False
+
+    # ============= OSV Functions =============
+    
+    def download_osv_ecosystem(self, ecosystem):
+        """Download OSV data for specific ecosystem"""
+        url = f"https://storage.googleapis.com/osv-vulnerabilities/{ecosystem}/all.zip"
+        output_file = os.path.join(self.output_dir, "osv", f"{ecosystem}_all.zip")
+        return self.download_file(url, output_file, f"OSV - {ecosystem}")
+
+    def download_osv_global(self):
+        """Download global OSV data"""
+        url = "https://storage.googleapis.com/osv-vulnerabilities/all.zip"
+        output_file = os.path.join(self.output_dir, "osv", "osv_global_all.zip")
+        return self.download_file(url, output_file, "OSV - Global Data")
+
+    def download_osv_modified(self):
+        """Download OSV modified IDs"""
+        url = "https://storage.googleapis.com/osv-vulnerabilities/modified_id.csv"
+        output_file = os.path.join(self.output_dir, "osv", "modified_id.csv")
+        return self.download_file(url, output_file, "OSV - Modified IDs")
+
+    # ============= NVD Functions =============
+    
+    def download_nvd_recent(self):
+        """Download recent NVD CVEs (last 8 days)"""
+        url = "https://nvd.nist.gov/feeds/json/cve/1.1/nvdcve-1.1-recent.json.gz"
+        output_file = os.path.join(self.output_dir, "nvd", "nvdcve-recent.json.gz")
+        return self.download_file(url, output_file, "NVD - Recent CVEs")
+
+    def download_nvd_modified(self):
+        """Download modified NVD CVEs"""
+        url = "https://nvd.nist.gov/feeds/json/cve/1.1/nvdcve-1.1-modified.json.gz"
+        output_file = os.path.join(self.output_dir, "nvd", "nvdcve-modified.json.gz")
+        return self.download_file(url, output_file, "NVD - Modified CVEs")
+
+    def download_nvd_year(self, year):
+        """Download NVD CVEs for specific year"""
+        url = f"https://nvd.nist.gov/feeds/json/cve/1.1/nvdcve-1.1-{year}.json.gz"
+        output_file = os.path.join(self.output_dir, "nvd", f"nvdcve-{year}.json.gz")
+        return self.download_file(url, output_file, f"NVD - Year {year}")
+
+    # ============= CISA KEV Functions =============
+    
+    def download_cisa_kev(self):
+        """Download CISA Known Exploited Vulnerabilities catalog"""
+        formats = {
+            'json': 'https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json',
+            'csv': 'https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.csv'
+        }
+        
+        success = True
+        for fmt, url in formats.items():
+            output_file = os.path.join(self.output_dir, "cisa", f"kev.{fmt}")
+            if not self.download_file(url, output_file, f"CISA KEV - {fmt.upper()}"):
+                success = False
+        return success
+
+    # ============= GitHub Advisory Functions =============
+    
+    def download_github_advisories(self, ecosystem=None):
+        """Download GitHub Security Advisories via their repository"""
+        # GitHub advisory database is available as a git repository
+        url = "https://github.com/github/advisory-database/archive/refs/heads/main.zip"
+        output_file = os.path.join(self.output_dir, "github", "advisory-database-main.zip")
+        return self.download_file(url, output_file, "GitHub Advisory Database")
+
+    # ============= Exploit-DB Functions =============
+    
+    def download_exploitdb(self):
+        """Download Exploit-DB database"""
+        url = "https://gitlab.com/exploit-database/exploitdb/-/archive/main/exploitdb-main.zip"
+        output_file = os.path.join(self.output_dir, "exploitdb", "exploitdb-main.zip")
+        return self.download_file(url, output_file, "Exploit-DB Database")
+
+    def download_exploitdb_csv(self):
+        """Download Exploit-DB files.csv"""
+        url = "https://gitlab.com/exploit-database/exploitdb/-/raw/main/files_exploits.csv"
+        output_file = os.path.join(self.output_dir, "exploitdb", "files_exploits.csv")
+        return self.download_file(url, output_file, "Exploit-DB CSV")
+
+    # ============= InTheWild.io Functions =============
+    
+    def download_inthewild(self):
+        """Download InTheWild exploited vulnerabilities list"""
+        url = "https://inthewild.io/api/exploited"
+        output_file = os.path.join(self.output_dir, "inthewild", "exploited.json")
+        
+        print(f"\nFetching InTheWild.io exploited vulnerabilities...")
+        self.total_count += 1
+        
+        try:
+            response = requests.get(url, timeout=30)
+            response.raise_for_status()
+            
+            Path(os.path.dirname(output_file)).mkdir(parents=True, exist_ok=True)
+            
+            with open(output_file, 'w') as f:
+                json.dump(response.json(), f, indent=2)
+            
+            print(f"✓ Downloaded to: {output_file}")
+            self.success_count += 1
+            return True
+            
+        except Exception as e:
+            print(f"✗ Error: {e}")
+            return False
+
+    # ============= VulnDB Functions =============
+    
+    def download_vulndb_recent(self):
+        """Download recent VulnDB entries (requires API key)"""
+        print("\n⚠ Note: VulnDB requires an API key for access")
+        print("Visit https://vuldb.com/?api for API information")
+        return False
+
+    # ============= Additional Sources =============
+    
+    def download_rustsec(self):
+        """Download RustSec Advisory Database"""
+        url = "https://github.com/RustSec/advisory-db/archive/refs/heads/main.zip"
+        output_file = os.path.join(self.output_dir, "rustsec", "advisory-db-main.zip")
+        return self.download_file(url, output_file, "RustSec Advisory Database")
+
+    def download_pypa_advisories(self):
+        """Download Python Package Advisory Database"""
+        url = "https://github.com/pypa/advisory-database/archive/refs/heads/main.zip"
+        output_file = os.path.join(self.output_dir, "pypa", "advisory-database-main.zip")
+        return self.download_file(url, output_file, "PyPA Advisory Database")
+
+    def download_rubygems_advisories(self):
+        """Download Ruby Advisory Database"""
+        url = "https://github.com/rubysec/ruby-advisory-db/archive/refs/heads/master.zip"
+        output_file = os.path.join(self.output_dir, "rubygems", "ruby-advisory-db-master.zip")
+        return self.download_file(url, output_file, "RubyGems Advisory Database")
+
+    def print_summary(self):
+        """Print download summary"""
+        print("\n" + "="*60)
+        print("DOWNLOAD SUMMARY")
+        print("="*60)
+        print(f"Successful: {self.success_count}/{self.total_count}")
+        print(f"Failed: {self.total_count - self.success_count}/{self.total_count}")
+        print(f"Output directory: {self.output_dir}")
+        print(f"Completed at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print("="*60)
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Download vulnerability data from multiple sources",
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    
+    # OSV options
+    parser.add_argument('--osv-ecosystem', action='append', help='OSV ecosystem (npm, PyPI, Go, etc.)')
+    parser.add_argument('--osv-global', action='store_true', help='OSV global data')
+    parser.add_argument('--osv-modified', action='store_true', help='OSV modified IDs')
+    
+    # NVD options
+    parser.add_argument('--nvd-recent', action='store_true', help='NVD recent CVEs')
+    parser.add_argument('--nvd-modified', action='store_true', help='NVD modified CVEs')
+    parser.add_argument('--nvd-year', type=int, help='NVD CVEs for specific year')
+    parser.add_argument('--nvd-all-years', action='store_true', help='NVD all years (2002-2024)')
+    
+    # Other databases
+    parser.add_argument('--cisa-kev', action='store_true', help='CISA Known Exploited Vulnerabilities')
+    parser.add_argument('--github-advisories', action='store_true', help='GitHub Advisory Database')
+    parser.add_argument('--exploitdb', action='store_true', help='Exploit-DB database')
+    parser.add_argument('--inthewild', action='store_true', help='InTheWild.io exploited vulns')
+    parser.add_argument('--rustsec', action='store_true', help='RustSec Advisory Database')
+    parser.add_argument('--pypa', action='store_true', help='Python Package Advisory Database')
+    parser.add_argument('--rubygems', action='store_true', help='RubyGems Advisory Database')
+    
+    # Special options
+    parser.add_argument('--all', action='store_true', help='Download all available databases')
+    parser.add_argument('--output-dir', default='./vuln_data', help='Output directory')
+    
+    args = parser.parse_args()
+    
+    if not any(vars(args).values()):
+        parser.print_help()
+        return
+    
+    downloader = VulnDownloader(args.output_dir)
+    
+    print("Vulnerability Database Downloader")
+    print(f"Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("="*60)
+    
+    # OSV downloads
+    if args.osv_ecosystem or args.all:
+        ecosystems = args.osv_ecosystem or ['npm', 'PyPI', 'Go', 'Maven', 'NuGet', 'crates.io']
+        for eco in ecosystems:
+            downloader.download_osv_ecosystem(eco)
+    
+    if args.osv_global or args.all:
+        downloader.download_osv_global()
+    
+    if args.osv_modified or args.all:
+        downloader.download_osv_modified()
+    
+    # NVD downloads
+    if args.nvd_recent or args.all:
+        downloader.download_nvd_recent()
+    
+    if args.nvd_modified or args.all:
+        downloader.download_nvd_modified()
+    
+    if args.nvd_year:
+        downloader.download_nvd_year(args.nvd_year)
+    
+    if args.nvd_all_years:
+        for year in range(2002, 2025):
+            downloader.download_nvd_year(year)
+            time.sleep(1)  # Be nice to the server
+    
+    # Other databases
+    if args.cisa_kev or args.all:
+        downloader.download_cisa_kev()
+    
+    if args.github_advisories or args.all:
+        downloader.download_github_advisories()
+    
+    if args.exploitdb or args.all:
+        downloader.download_exploitdb()
+        downloader.download_exploitdb_csv()
+    
+    if args.inthewild or args.all:
+        downloader.download_inthewild()
+    
+    if args.rustsec or args.all:
+        downloader.download_rustsec()
+    
+    if args.pypa or args.all:
+        downloader.download_pypa_advisories()
+    
+    if args.rubygems or args.all:
+        downloader.download_rubygems_advisories()
+    
+    downloader.print_summary()
+    
+    if downloader.success_count < downloader.total_count:
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
