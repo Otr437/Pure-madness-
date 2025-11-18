@@ -1,0 +1,1549 @@
+// Zcash Dynamic Fee Mechanism with Bitcoin Confirmation Time Optimization
+// Integrating Cramér-Lundberg model from "Optimal Confirmation Times in Bitcoin"
+
+use std::cmp::{min, max};
+use std::collections::{HashMap, BTreeMap, VecDeque, BinaryHeap, HashSet};
+use std::time::{SystemTime, UNIX_EPOCH};
+use std::hash::{Hash, Hasher};
+use std::collections::hash_map::DefaultHasher;
+use std::sync::{Arc, RwLock, Mutex, atomic::{AtomicU64, AtomicUsize, Ordering}};
+use std::thread;
+
+/// Represents the number of logical actions in a transaction
+type LogicalActions = u64;
+
+/// Fee amounts in zatoshis (1 ZEC = 100,000,000 zatoshis)
+type Zatoshis = u64;
+
+/// Block height type
+type BlockHeight = u64;
+
+/// Timestamp in seconds since UNIX epoch
+type Timestamp = u64;
+
+// ========== CRAMÉR-LUNDBERG MODEL (From Paper Section 3) ==========
+
+/// Cramér-Lundberg model parameters for confirmation time prediction
+/// Based on the stochastic process: X(t) = ct - Σ_{i=1}^{N(t)} B_i
+/// where c is arrival rate, N(t) is Poisson process for block mining, B_i is block size
+#[derive(Debug, Clone)]
+pub struct CramerLundbergParams {
+    /// Transaction arrival rate (actions per second)
+    pub c: f64,
+    /// Block mining rate λ (blocks per second)
+    pub lambda: f64,
+    /// Block capacity B (in logical actions)
+    pub block_size: u64,
+    /// Current mempool weight y (in logical actions)
+    pub y: u64,
+}
+
+impl CramerLundbergParams {
+    /// Calculate load factor ρ = c/(λB)
+    /// System is stable if ρ < 1
+    pub fn rho(&self) -> f64 {
+        self.c / (self.lambda * self.block_size as f64)
+    }
+    
+    /// Check if system is stable (ρ < 1)
+    pub fn is_stable(&self) -> bool {
+        self.rho() < 1.0
+    }
+    
+    /// Calculate mean confirmation time using Equation (3.13) from paper:
+    /// E[τ(y)] ≈ a·y + b·c
+    /// where a = 1/(λB(1-ρ)) and b = B/(2λ(1-ρ)²)
+    pub fn mean_confirmation_time_seconds(&self) -> f64 {
+        if !self.is_stable() {
+            return f64::INFINITY;
+        }
+        
+        let rho = self.rho();
+        let one_minus_rho = 1.0 - rho;
+        let lambda_b = self.lambda * self.block_size as f64;
+        
+        // a = 1/(λB(1-ρ))
+        let a = 1.0 / (lambda_b * one_minus_rho);
+        
+        // b = B/(2λ(1-ρ)²)
+        let b = self.block_size as f64 / (2.0 * self.lambda * one_minus_rho.powi(2));
+        
+        // E[τ(y)] = a·y + b·c
+        a * self.y as f64 + b * self.c
+    }
+    
+    /// Mean confirmation time in blocks
+    pub fn mean_confirmation_blocks(&self) -> f64 {
+        self.mean_confirmation_time_seconds() * self.lambda
+    }
+    
+    /// Probability of confirmation within n blocks (exponential approximation)
+    pub fn prob_confirmation_n_blocks(&self, n: u64) -> f64 {
+        if !self.is_stable() {
+            return 0.0;
+        }
+        
+        let mean_blocks = self.mean_confirmation_blocks();
+        if mean_blocks <= 0.0 {
+            return 1.0;
+        }
+        
+        // P(τ ≤ n) ≈ 1 - e^(-n/E[τ])
+        1.0 - (-n as f64 / mean_blocks).exp()
+    }
+    
+    /// Calculate optimal fee for target confirmation time (blocks)
+    /// This implements the model-based approach from Section 5 of the paper
+    pub fn optimal_fee_for_target(&self, target_blocks: u64, current_base_fee: u64) -> u64 {
+        if target_blocks == 0 || !self.is_stable() {
+            return u64::MAX;
+        }
+        
+        // Calculate required mempool position to achieve target
+        let capacity_available = target_blocks as f64 * self.block_size as f64;
+        let current_mempool = self.y as f64;
+        
+        if capacity_available >= current_mempool {
+            // Can confirm with minimum fee
+            return current_base_fee;
+        }
+        
+        // Need to be in top capacity_available actions
+        let required_percentile = 1.0 - (capacity_available / current_mempool.max(1.0));
+        
+        // Exponential fee curve based on position needed
+        let fee_multiplier = if required_percentile > 0.9 {
+            // Top 10% - very high priority
+            1.0 + (required_percentile - 0.9) * 100.0
+        } else if required_percentile > 0.75 {
+            // Top 25% - high priority
+            1.0 + (required_percentile - 0.75) * 20.0
+        } else if required_percentile > 0.5 {
+            // Top 50% - medium priority
+            1.0 + (required_percentile - 0.5) * 5.0
+        } else {
+            1.0
+        };
+        
+        (current_base_fee as f64 * fee_multiplier).min(u64::MAX as f64) as u64
+    }
+}
+
+// ========== BATCH SERVICE QUEUE MODEL (From Paper Section 4) ==========
+
+/// Batch Service Queue parameters (BSQ model from paper)
+/// Can be converted to Cramér-Lundberg via fluid limit
+#[derive(Debug, Clone)]
+pub struct BatchServiceQueueParams {
+    /// Mean service time (seconds per block)
+    pub mean_service_time: f64,
+    /// Batch size (transactions per block)
+    pub batch_size: u64,
+    /// Arrival rate (transactions per second)
+    pub arrival_rate: f64,
+}
+
+impl BatchServiceQueueParams {
+    /// Convert to Cramér-Lundberg via fluid limit (Section 4.1 of paper)
+    pub fn to_cramer_lundberg(&self, current_mempool: u64) -> CramerLundbergParams {
+        CramerLundbergParams {
+            c: self.arrival_rate,
+            lambda: 1.0 / self.mean_service_time,
+            block_size: self.batch_size,
+            y: current_mempool,
+        }
+    }
+    
+    /// Validate scaling assumptions (batch size should be large for fluid approximation)
+    pub fn validate_scaling(&self) -> bool {
+        self.batch_size >= 10 && self.arrival_rate > 0.0 && self.mean_service_time > 0.0
+    }
+}
+
+// ========== PERFORMANCE METRICS (Table 3 from Paper) ==========
+
+/// Optimality metrics comparing model-based vs data-driven approaches
+/// From Table 3: Summary statistics on performance
+#[derive(Debug, Clone)]
+pub struct OptimalityMetrics {
+    /// % Optimal: Transactions confirmed at optimal time
+    /// Paper shows: Model-based=46%, Data-driven=11%
+    pub pct_optimal: f64,
+    
+    /// % Late: Transactions confirmed late
+    /// Paper shows: Model-based=21%, Data-driven=4%
+    pub pct_late: f64,
+    
+    /// Mean time late (blocks) when late
+    /// Paper shows: Model-based=9.0, Data-driven=90.1
+    pub mean_time_late: f64,
+    
+    /// % Overpay: Transactions that overpaid
+    /// Paper shows: Model-based=33%, Data-driven=84%
+    pub pct_overpay: f64,
+    
+    /// Mean overpayment amount when overpaid
+    /// Paper shows: Model-based=39.2, Data-driven=31.8
+    pub mean_overpay: f64,
+    
+    /// Total transactions analyzed
+    pub total_transactions: u64,
+}
+
+impl OptimalityMetrics {
+    pub fn new() -> Self {
+        Self {
+            pct_optimal: 0.0,
+            pct_late: 0.0,
+            mean_time_late: 0.0,
+            pct_overpay: 0.0,
+            mean_overpay: 0.0,
+            total_transactions: 0,
+        }
+    }
+}
+
+// ========== ARRIVAL RATE ESTIMATION ==========
+
+/// Estimates arrival rate using sliding window
+struct ArrivalRateEstimator {
+    window_seconds: u64,
+    action_history: VecDeque<(Timestamp, u64)>,
+}
+
+impl ArrivalRateEstimator {
+    fn new(window_seconds: u64) -> Self {
+        Self {
+            window_seconds,
+            action_history: VecDeque::new(),
+        }
+    }
+    
+    fn record(&mut self, timestamp: Timestamp, actions: u64) {
+        self.action_history.push_back((timestamp, actions));
+        self.cleanup(timestamp);
+    }
+    
+    fn cleanup(&mut self, current_time: Timestamp) {
+        let cutoff = current_time.saturating_sub(self.window_seconds);
+        while let Some(&(ts, _)) = self.action_history.front() {
+            if ts < cutoff {
+                self.action_history.pop_front();
+            } else {
+                break;
+            }
+        }
+    }
+    
+    fn get_rate(&self) -> f64 {
+        if self.action_history.is_empty() || self.window_seconds == 0 {
+            return 0.0;
+        }
+        
+        let total_actions: u64 = self.action_history.iter().map(|(_, a)| a).sum();
+        total_actions as f64 / self.window_seconds as f64
+    }
+}
+
+// ========== CONFIRMATION TIME ESTIMATE ==========
+
+/// Enhanced fee estimate with confirmation time predictions
+#[derive(Debug, Clone)]
+pub struct ConfirmationTimeEstimate {
+    /// Expected confirmation time in seconds
+    pub mean_time_seconds: f64,
+    /// Expected confirmation time in blocks
+    pub mean_time_blocks: f64,
+    /// Probability of confirmation within 1 block
+    pub prob_1_block: f64,
+    /// Probability of confirmation within 3 blocks
+    pub prob_3_blocks: f64,
+    /// Probability of confirmation within 6 blocks
+    pub prob_6_blocks: f64,
+    /// Recommended base fee per action
+    pub recommended_base_fee: u64,
+    /// Recommended priority fee per action
+    pub recommended_priority_fee: u64,
+    /// Model confidence (0.0-1.0)
+    pub confidence: f64,
+}
+
+// ========== ORIGINAL CODE STRUCTURES ==========
+
+/// Configuration for fast-response dynamic fee market
+#[derive(Debug, Clone)]
+pub struct FeeConfig {
+    /// Target number of logical actions per block
+    pub target_actions_per_block: LogicalActions,
+    
+    /// Maximum number of logical actions per block
+    pub max_actions_per_block: LogicalActions,
+    
+    /// Initial base fee in zatoshis per logical action
+    pub initial_base_fee: Zatoshis,
+    
+    /// Minimum base fee (1 zatoshi - practically free when not congested)
+    pub min_base_fee: Zatoshis,
+    
+    /// Maximum base fee cap to prevent runaway fees
+    pub max_base_fee: Zatoshis,
+    
+    /// Base fee growth rate numerator (e.g., 11 for 10% growth)
+    pub base_fee_growth_numerator: u64,
+    
+    /// Base fee growth rate denominator (e.g., 10 for 10% growth)
+    pub base_fee_growth_denominator: u64,
+    
+    /// Base fee decay rate numerator (e.g., 9 for 10% decay)  
+    pub base_fee_decay_numerator: u64,
+    
+    /// Base fee decay rate denominator (e.g., 10 for 10% decay)
+    pub base_fee_decay_denominator: u64,
+    
+    /// Block time target in seconds
+    pub block_time_seconds: u64,
+    
+    /// Maximum transaction age in blocks (25 minutes = ~20 blocks)
+    pub max_transaction_age_blocks: BlockHeight,
+    
+    /// Maximum age for transactions in mempool (in seconds)
+    pub mempool_max_age_seconds: u64,
+    
+    // ========== SCALABILITY FEATURES ==========
+    /// Maximum mempool size (transaction count)
+    pub max_mempool_size: usize,
+    
+    /// Maximum mempool size in bytes
+    pub max_mempool_bytes: usize,
+    
+    /// Enable sharding for large mempools
+    pub enable_mempool_sharding: bool,
+    
+    /// Number of shards for mempool
+    pub mempool_shard_count: usize,
+    
+    /// Enable parallel transaction validation
+    pub enable_parallel_validation: bool,
+    
+    /// Number of worker threads
+    pub worker_thread_count: usize,
+    
+    /// Cache size for fee estimations
+    pub fee_cache_size: usize,
+    
+    /// Enable bloom filter
+    pub enable_bloom_filter: bool,
+    
+    /// Block history limit
+    pub block_history_limit: usize,
+    
+    /// Batch size for processing
+    pub transaction_batch_size: usize,
+    
+    // ========== CONFIRMATION TIME MODEL (New from Paper) ==========
+    /// Enable Cramér-Lundberg confirmation time model
+    pub enable_confirmation_model: bool,
+    
+    /// Target confirmation time in blocks for fee estimation
+    pub target_confirmation_blocks: u64,
+    
+    /// Track optimality metrics (Table 3 from paper)
+    pub track_optimality_metrics: bool,
+    
+    /// Arrival rate estimation window (seconds)
+    pub arrival_rate_window_seconds: u64,
+}
+
+impl Default for FeeConfig {
+    fn default() -> Self {
+        let cpu_count = thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4);
+        
+        Self {
+            target_actions_per_block: 50,
+            max_actions_per_block: 100,
+            initial_base_fee: 1000,
+            min_base_fee: 1,
+            max_base_fee: 1_000_000,
+            base_fee_growth_numerator: 11,
+            base_fee_growth_denominator: 10,
+            base_fee_decay_numerator: 9,
+            base_fee_decay_denominator: 10,
+            block_time_seconds: 75,
+            max_transaction_age_blocks: 20,
+            mempool_max_age_seconds: 14400,
+            max_mempool_size: 50_000,
+            max_mempool_bytes: 100_000_000,
+            enable_mempool_sharding: true,
+            mempool_shard_count: 16,
+            enable_parallel_validation: true,
+            worker_thread_count: cpu_count,
+            fee_cache_size: 1000,
+            enable_bloom_filter: true,
+            block_history_limit: 1000,
+            transaction_batch_size: 100,
+            // CONFIRMATION MODEL DEFAULTS
+            enable_confirmation_model: true,
+            target_confirmation_blocks: 3,
+            track_optimality_metrics: true,
+            arrival_rate_window_seconds: 300, // 5 minutes
+        }
+    }
+}
+
+impl FeeConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.target_actions_per_block == 0 {
+            return Err("Target actions must be greater than 0".to_string());
+        }
+        if self.max_actions_per_block <= self.target_actions_per_block {
+            return Err("Max actions must be greater than target actions".to_string());
+        }
+        if self.min_base_fee == 0 {
+            return Err("Min base fee must be greater than 0".to_string());
+        }
+        if self.max_base_fee <= self.min_base_fee {
+            return Err("Max base fee must be greater than min base fee".to_string());
+        }
+        if self.initial_base_fee < self.min_base_fee || self.initial_base_fee > self.max_base_fee {
+            return Err("Initial base fee must be between min and max".to_string());
+        }
+        if self.base_fee_growth_numerator <= self.base_fee_growth_denominator {
+            return Err("Growth rate must be greater than 1".to_string());
+        }
+        if self.base_fee_decay_numerator >= self.base_fee_decay_denominator {
+            return Err("Decay rate must be less than 1".to_string());
+        }
+        if self.max_transaction_age_blocks == 0 {
+            return Err("Max transaction age must be greater than 0".to_string());
+        }
+        if self.enable_mempool_sharding && (self.mempool_shard_count == 0 || 
+            (self.mempool_shard_count & (self.mempool_shard_count - 1)) != 0) {
+            return Err("Mempool shard count must be power of 2".to_string());
+        }
+        if self.worker_thread_count == 0 {
+            return Err("Worker thread count must be greater than 0".to_string());
+        }
+        if self.target_confirmation_blocks == 0 {
+            return Err("Target confirmation blocks must be greater than 0".to_string());
+        }
+        Ok(())
+    }
+}
+
+/// Transaction component types for counting actions
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TransactionComponents {
+    pub transparent_inputs: usize,
+    pub transparent_outputs: usize,
+    pub sapling_spends: usize,
+    pub sapling_outputs: usize,
+    pub orchard_actions: usize,
+    pub joinsplit_descriptions: usize,
+}
+
+impl TransactionComponents {
+    pub fn new() -> Self {
+        Self {
+            transparent_inputs: 0,
+            transparent_outputs: 0,
+            sapling_spends: 0,
+            sapling_outputs: 0,
+            orchard_actions: 0,
+            joinsplit_descriptions: 0,
+        }
+    }
+    
+    pub fn count_logical_actions(&self) -> LogicalActions {
+        let mut actions = 0u64;
+        
+        actions += self.transparent_inputs as u64;
+        actions += self.transparent_outputs as u64;
+        actions += self.sapling_spends as u64;
+        actions += self.sapling_outputs as u64;
+        actions += self.orchard_actions as u64;
+        actions += (self.joinsplit_descriptions * 2) as u64;
+        
+        max(actions, 1)
+    }
+}
+
+/// Transaction type classification
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TransactionType {
+    Transparent,
+    Shielded,
+    Mixed,
+    Legacy,
+}
+
+impl TransactionType {
+    pub fn from_components(components: &TransactionComponents) -> Self {
+        let has_transparent = components.transparent_inputs > 0 || components.transparent_outputs > 0;
+        let has_sapling = components.sapling_spends > 0 || components.sapling_outputs > 0;
+        let has_orchard = components.orchard_actions > 0;
+        let has_joinsplit = components.joinsplit_descriptions > 0;
+        
+        if has_joinsplit {
+            return TransactionType::Legacy;
+        }
+        
+        let has_shielded = has_sapling || has_orchard;
+        
+        if has_transparent && has_shielded {
+            TransactionType::Mixed
+        } else if has_shielded {
+            TransactionType::Shielded
+        } else {
+            TransactionType::Transparent
+        }
+    }
+}
+
+/// Transaction with confirmation time tracking
+#[derive(Debug, Clone)]
+pub struct Transaction {
+    pub txid: [u8; 32],
+    pub components: TransactionComponents,
+    pub logical_actions: LogicalActions,
+    pub max_fee_per_action: Zatoshis,
+    pub max_priority_fee_per_action: Zatoshis,
+    pub tx_type: TransactionType,
+    pub created_at_block: BlockHeight,
+    pub expiry_height: BlockHeight,
+    pub size_bytes: usize,
+    pub version: u32,
+    pub created_at: Timestamp,
+    
+    // Confirmation time tracking (for optimality metrics)
+    pub target_confirmation_blocks: Option<u64>,
+    pub actual_confirmation_block: Option<BlockHeight>,
+}
+
+impl Transaction {
+    pub fn new(
+        txid: [u8; 32],
+        components: TransactionComponents,
+        max_fee_per_action: Zatoshis,
+        max_priority_fee_per_action: Zatoshis,
+        created_at_block: BlockHeight,
+        max_age_blocks: BlockHeight,
+        size_bytes: usize,
+        version: u32,
+    ) -> Self {
+        let logical_actions = components.count_logical_actions();
+        let expiry_height = created_at_block + max_age_blocks;
+        let tx_type = TransactionType::from_components(&components);
+        let created_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        
+        Self {
+            txid,
+            components,
+            logical_actions,
+            max_fee_per_action,
+            max_priority_fee_per_action,
+            tx_type,
+            created_at_block,
+            expiry_height,
+            size_bytes,
+            version,
+            created_at,
+            target_confirmation_blocks: None,
+            actual_confirmation_block: None,
+        }
+    }
+    
+    pub fn can_afford_base_fee(&self, base_fee: Zatoshis) -> bool {
+        self.max_fee_per_action >= base_fee
+    }
+    
+    pub fn is_expired(&self, current_height: BlockHeight) -> bool {
+        current_height >= self.expiry_height
+    }
+    
+    pub fn is_stale(&self, current_time: Timestamp, max_age: u64) -> bool {
+        current_time.saturating_sub(self.created_at) > max_age
+    }
+    
+    pub fn blocks_until_expiry(&self, current_height: BlockHeight) -> BlockHeight {
+        if current_height >= self.expiry_height {
+            0
+        } else {
+            self.expiry_height - current_height
+        }
+    }
+    
+    pub fn effective_priority_fee(&self, base_fee: Zatoshis) -> Zatoshis {
+        if base_fee >= self.max_fee_per_action {
+            0
+        } else {
+            min(self.max_fee_per_action - base_fee, self.max_priority_fee_per_action)
+        }
+    }
+    
+    pub fn calculate_total_fee(&self, base_fee: Zatoshis) -> (Zatoshis, Zatoshis) {
+        let base_fee_total = base_fee.saturating_mul(self.logical_actions);
+        let priority_fee = self.effective_priority_fee(base_fee);
+        let priority_fee_total = priority_fee.saturating_mul(self.logical_actions);
+        
+        (base_fee_total, priority_fee_total)
+    }
+    
+    pub fn priority_score(&self, base_fee: Zatoshis, current_height: BlockHeight) -> f64 {
+        let priority_fee = self.effective_priority_fee(base_fee);
+        let blocks_until_expiry = self.blocks_until_expiry(current_height);
+        
+        let expiry_boost = if blocks_until_expiry <= 5 {
+            2.0
+        } else if blocks_until_expiry <= 10 {
+            1.5
+        } else {
+            1.0
+        };
+        
+        (priority_fee as f64 * expiry_boost) / self.logical_actions as f64
+    }
+    
+    pub fn validate(&self, current_height: BlockHeight) -> Result<(), String> {
+        if self.logical_actions == 0 {
+            return Err("Transaction must have at least 1 logical action".to_string());
+        }
+        if self.max_fee_per_action == 0 {
+            return Err("Transaction must specify non-zero max fee".to_string());
+        }
+        if self.max_priority_fee_per_action > self.max_fee_per_action {
+            return Err("Priority fee cannot exceed max fee".to_string());
+        }
+        if self.is_expired(current_height) {
+            return Err("Transaction created already expired".to_string());
+        }
+        if self.size_bytes == 0 || self.size_bytes > 2_000_000 {
+            return Err("Invalid transaction size".to_string());
+        }
+        Ok(())
+    }
+}
+
+impl PartialEq for Transaction {
+    fn eq(&self, other: &Self) -> bool {
+        self.txid == other.txid
+    }
+}
+
+impl Eq for Transaction {}
+
+impl Hash for Transaction {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.txid.hash(state);
+    }
+}
+
+/// Block structure
+#[derive(Debug, Clone)]
+pub struct Block {
+    pub height: BlockHeight,
+    pub hash: [u8; 32],
+    pub prev_hash: [u8; 32],
+    pub timestamp: Timestamp,
+    pub transactions: Vec<Transaction>,
+    pub base_fee_per_action: Zatoshis,
+    pub miner_address: Vec<u8>,
+    pub total_base_fee_burned: Zatoshis,
+    pub total_priority_fee_collected: Zatoshis,
+    pub block_reward: Zatoshis,
+    pub nonce: u64,
+    pub difficulty: u64,
+}
+
+impl Block {
+    pub fn new(
+        height: BlockHeight,
+        prev_hash: [u8; 32],
+        base_fee_per_action: Zatoshis,
+        miner_address: Vec<u8>,
+        block_reward: Zatoshis,
+    ) -> Self {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        
+        Self {
+            height,
+            hash: [0u8; 32],
+            prev_hash,
+            timestamp,
+            transactions: Vec::new(),
+            base_fee_per_action,
+            miner_address,
+            total_base_fee_burned: 0,
+            total_priority_fee_collected: 0,
+            block_reward,
+            nonce: 0,
+            difficulty: 1,
+        }
+    }
+    
+    pub fn add_transaction(&mut self, tx: Transaction, config: &FeeConfig) -> Result<(), String> {
+        if tx.is_expired(self.height) {
+            return Err("Transaction expired".to_string());
+        }
+        
+        if !tx.can_afford_base_fee(self.base_fee_per_action) {
+            return Err("Cannot afford base fee".to_string());
+        }
+        
+        let current_actions = self.total_actions();
+        if current_actions + tx.logical_actions > config.max_actions_per_block {
+            return Err("Block action limit exceeded".to_string());
+        }
+        
+        let (base_fee, priority_fee) = tx.calculate_total_fee(self.base_fee_per_action);
+        self.total_base_fee_burned = self.total_base_fee_burned.saturating_add(base_fee);
+        self.total_priority_fee_collected = self.total_priority_fee_collected.saturating_add(priority_fee);
+        
+        self.transactions.push(tx);
+        Ok(())
+    }
+    
+    pub fn total_actions(&self) -> LogicalActions {
+        self.transactions.iter().map(|tx| tx.logical_actions).sum()
+    }
+    
+    pub fn calculate_next_base_fee_fast(&self, config: &FeeConfig) -> Zatoshis {
+        let actions_used = self.total_actions();
+        let target = config.target_actions_per_block;
+        let current_fee = self.base_fee_per_action;
+        
+        if actions_used > target {
+            let new_fee = current_fee
+                .saturating_mul(config.base_fee_growth_numerator)
+                .saturating_div(config.base_fee_growth_denominator);
+            min(max(new_fee, config.min_base_fee), config.max_base_fee)
+        } else if actions_used < target {
+            let new_fee = current_fee
+                .saturating_mul(config.base_fee_decay_numerator)
+                .saturating_div(config.base_fee_decay_denominator);
+            max(new_fee, config.min_base_fee)
+        } else {
+            current_fee
+        }
+    }
+    
+    pub fn calculate_hash(&mut self) {
+        let mut hasher = DefaultHasher::new();
+        self.height.hash(&mut hasher);
+        self.prev_hash.hash(&mut hasher);
+        self.timestamp.hash(&mut hasher);
+        self.base_fee_per_action.hash(&mut hasher);
+        self.nonce.hash(&mut hasher);
+        
+        for tx in &self.transactions {
+            tx.txid.hash(&mut hasher);
+        }
+        
+        let hash_value = hasher.finish();
+        self.hash[..8].copy_from_slice(&hash_value.to_le_bytes());
+        
+        for i in 1..4 {
+            let extended = hash_value.wrapping_mul(i as u64 + 1);
+            let start = i * 8;
+            let end = start + 8;
+            if end <= 32 {
+                self.hash[start..end].copy_from_slice(&extended.to_le_bytes());
+            }
+        }
+    }
+    
+    pub fn validate(&self, config: &FeeConfig) -> Result<(), String> {
+        let total_actions = self.total_actions();
+        if total_actions > config.max_actions_per_block {
+            return Err("Block exceeds max actions".to_string());
+        }
+        
+        for tx in &self.transactions {
+            if tx.is_expired(self.height) {
+                return Err("Block contains expired transaction".to_string());
+            }
+            if !tx.can_afford_base_fee(self.base_fee_per_action) {
+                return Err("Block contains transaction that cannot afford base fee".to_string());
+            }
+        }
+        
+        let mut calculated_base_fee = 0u64;
+        let mut calculated_priority_fee = 0u64;
+        
+        for tx in &self.transactions {
+            let (base, priority) = tx.calculate_total_fee(self.base_fee_per_action);
+            calculated_base_fee = calculated_base_fee.saturating_add(base);
+            calculated_priority_fee = calculated_priority_fee.saturating_add(priority);
+        }
+        
+        if calculated_base_fee != self.total_base_fee_burned {
+            return Err("Base fee calculation mismatch".to_string());
+        }
+        
+        if calculated_priority_fee != self.total_priority_fee_collected {
+            return Err("Priority fee calculation mismatch".to_string());
+        }
+        
+        Ok(())
+    }
+}
+
+// ========== MEMPOOL STRUCTURES ==========
+
+struct MempoolShard {
+    transactions: RwLock<HashMap<[u8; 32], MempoolEntry>>,
+    total_bytes: AtomicUsize,
+    total_actions: AtomicU64,
+}
+
+impl MempoolShard {
+    fn new() -> Self {
+        Self {
+            transactions: RwLock::new(HashMap::new()),
+            total_bytes: AtomicUsize::new(0),
+            total_actions: AtomicU64::new(0),
+        }
+    }
+    
+    fn insert(&self, txid: [u8; 32], entry: MempoolEntry) -> Result<(), String> {
+        let mut txs = self.transactions.write().unwrap();
+        if txs.contains_key(&txid) {
+            return Err("Duplicate".to_string());
+        }
+        let bytes = entry.transaction.size_bytes;
+        let actions = entry.transaction.logical_actions;
+        txs.insert(txid, entry);
+        self.total_bytes.fetch_add(bytes, Ordering::Relaxed);
+        self.total_actions.fetch_add(actions, Ordering::Relaxed);
+        Ok(())
+    }
+    
+    fn remove(&self, txid: &[u8; 32]) -> Option<MempoolEntry> {
+        let mut txs = self.transactions.write().unwrap();
+        if let Some(entry) = txs.remove(txid) {
+            self.total_bytes.fetch_sub(entry.transaction.size_bytes, Ordering::Relaxed);
+            self.total_actions.fetch_sub(entry.transaction.logical_actions, Ordering::Relaxed);
+            Some(entry)
+        } else {
+            None
+        }
+    }
+    
+    fn get(&self, txid: &[u8; 32]) -> Option<MempoolEntry> {
+        self.transactions.read().unwrap().get(txid).cloned()
+    }
+    
+    fn snapshot(&self) -> Vec<([u8; 32], MempoolEntry)> {
+        self.transactions.read().unwrap().iter()
+            .map(|(k, v)| (*k, v.clone()))
+            .collect()
+    }
+    
+    fn len(&self) -> usize {
+        self.transactions.read().unwrap().len()
+    }
+}
+
+enum MempoolStorage {
+    Single(HashMap<[u8; 32], MempoolEntry>),
+    Sharded(Vec<Arc<MempoolShard>>),
+}
+
+impl MempoolStorage {
+    fn new_single() -> Self {
+        MempoolStorage::Single(HashMap::new())
+    }
+    
+    fn new_sharded(shard_count: usize) -> Self {
+        let mut shards = Vec::with_capacity(shard_count);
+        for _ in 0..shard_count {
+            shards.push(Arc::new(MempoolShard::new()));
+        }
+        MempoolStorage::Sharded(shards)
+    }
+    
+    fn get_shard_id(&self, txid: &[u8; 32]) -> usize {
+        if let MempoolStorage::Sharded(shards) = self {
+            let mut hasher = DefaultHasher::new();
+            txid.hash(&mut hasher);
+            (hasher.finish() as usize) % shards.len()
+        } else {
+            0
+        }
+    }
+    
+    fn insert(&mut self, txid: [u8; 32], entry: MempoolEntry) -> Result<(), String> {
+        match self {
+            MempoolStorage::Single(map) => {
+                if map.contains_key(&txid) {
+                    return Err("Duplicate".to_string());
+                }
+                map.insert(txid, entry);
+                Ok(())
+            }
+            MempoolStorage::Sharded(shards) => {
+                let shard_id = self.get_shard_id(&txid);
+                shards[shard_id].insert(txid, entry)
+            }
+        }
+    }
+    
+    fn remove(&mut self, txid: &[u8; 32]) -> Option<MempoolEntry> {
+        match self {
+            MempoolStorage::Single(map) => map.remove(txid),
+            MempoolStorage::Sharded(shards) => {
+                let shard_id = self.get_shard_id(txid);
+                shards[shard_id].remove(txid)
+            }
+        }
+    }
+    
+    fn get(&self, txid: &[u8; 32]) -> Option<MempoolEntry> {
+        match self {
+            MempoolStorage::Single(map) => map.get(txid).cloned(),
+            MempoolStorage::Sharded(shards) => {
+                let shard_id = self.get_shard_id(txid);
+                shards[shard_id].get(txid)
+            }
+        }
+    }
+    
+    fn contains(&self, txid: &[u8; 32]) -> bool {
+        self.get(txid).is_some()
+    }
+    
+    fn iter_all(&self) -> Vec<([u8; 32], MempoolEntry)> {
+        match self {
+            MempoolStorage::Single(map) => {
+                map.iter().map(|(k, v)| (*k, v.clone())).collect()
+            }
+            MempoolStorage::Sharded(shards) => {
+                let mut all = Vec::new();
+                for shard in shards {
+                    all.extend(shard.snapshot());
+                }
+                all
+            }
+        }
+    }
+    
+    fn len(&self) -> usize {
+        match self {
+            MempoolStorage::Single(map) => map.len(),
+            MempoolStorage::Sharded(shards) => {
+                shards.iter().map(|s| s.len()).sum()
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct MempoolEntry {
+    transaction: Transaction,
+    priority_score: f64,
+    added_at: Timestamp,
+}
+
+#[derive(Debug, Clone)]
+struct PriorityQueueEntry {
+    txid: [u8; 32],
+    priority_score: f64,
+}
+
+impl PartialEq for PriorityQueueEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.txid == other.txid
+    }
+}
+
+impl Eq for PriorityQueueEntry {}
+
+impl PartialOrd for PriorityQueueEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.priority_score.partial_cmp(&other.priority_score)
+    }
+}
+
+impl Ord for PriorityQueueEntry {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.priority_score.partial_cmp(&other.priority_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FeePriority {
+    Low,
+    Medium,
+    High,
+    Urgent,
+}
+
+// ========== TRANSACTION TRACKING FOR OPTIMALITY ==========
+
+#[derive(Debug, Clone)]
+struct TransactionTracking {
+    submitted_at_block: BlockHeight,
+    target_blocks: u64,
+    fee_paid: u64,
+    min_fee_at_submission: u64,
+}
+
+// ========== MARKET STATISTICS ==========
+
+#[derive(Debug, Clone)]
+struct MarketStatistics {
+    total_transactions_processed: u64,
+    total_transactions_expired: u64,
+    total_transactions_rejected: u64,
+    total_base_fee_burned: Zatoshis,
+    total_priority_fee_collected: Zatoshis,
+    max_base_fee_observed: Zatoshis,
+    min_base_fee_observed: Zatoshis,
+    mempool_high_water_mark: usize,
+    
+    // Optimality tracking (Table 3 metrics)
+    optimal_confirmations: u64,
+    late_confirmations: u64,
+    late_time_sum: u64,
+    overpayment_count: u64,
+    overpayment_sum: u64,
+}
+
+impl MarketStatistics {
+    fn new() -> Self {
+        Self {
+            total_transactions_processed: 0,
+            total_transactions_expired: 0,
+            total_transactions_rejected: 0,
+            total_base_fee_burned: 0,
+            total_priority_fee_collected: 0,
+            max_base_fee_observed: 0,
+            min_base_fee_observed: u64::MAX,
+            mempool_high_water_mark: 0,
+            optimal_confirmations: 0,
+            late_confirmations: 0,
+            late_time_sum: 0,
+            overpayment_count: 0,
+            overpayment_sum: 0,
+        }
+    }
+    
+    fn update_fee_observations(&mut self, base_fee: Zatoshis) {
+        self.max_base_fee_observed = self.max_base_fee_observed.max(base_fee);
+        self.min_base_fee_observed = self.min_base_fee_observed.min(base_fee);
+    }
+    
+    fn get_optimality_metrics(&self) -> OptimalityMetrics {
+        let total = self.total_transactions_processed;
+        
+        if total == 0 {
+            return OptimalityMetrics::new();
+        }
+        
+        let pct_optimal = (self.optimal_confirmations as f64 / total as f64) * 100.0;
+        let pct_late = (self.late_confirmations as f64 / total as f64) * 100.0;
+        let mean_time_late = if self.late_confirmations > 0 {
+            self.late_time_sum as f64 / self.late_confirmations as f64
+        } else {
+            0.0
+        };
+        
+        let pct_overpay = (self.overpayment_count as f64 / total as f64) * 100.0;
+        let mean_overpay = if self.overpayment_count > 0 {
+            self.overpayment_sum as f64 / self.overpayment_count as f64
+        } else {
+            0.0
+        };
+        
+        OptimalityMetrics {
+            pct_optimal,
+            pct_late,
+            mean_time_late,
+            pct_overpay,
+            mean_overpay,
+            total_transactions: total,
+        }
+    }
+}
+
+// ========== MAIN FEE MARKET ==========
+
+pub struct FeeMarket {
+    config: FeeConfig,
+    current_base_fee: Zatoshis,
+    mempool: MempoolStorage,
+    priority_queue: BinaryHeap<PriorityQueueEntry>,
+    blockchain: Vec<Block>,
+    fee_history: BTreeMap<BlockHeight, Zatoshis>,
+    statistics: MarketStatistics,
+    
+    // Cramér-Lundberg model state
+    arrival_rate_estimator: ArrivalRateEstimator,
+    mempool_weight_history: VecDeque<(Timestamp, u64)>,
+    
+    // Transaction tracking for optimality metrics
+    pending_transactions: HashMap<[u8; 32], TransactionTracking>,
+}
+
+impl FeeMarket {
+    pub fn new(config: FeeConfig) -> Result<Self, String> {
+        config.validate()?;
+        
+        let current_base_fee = config.initial_base_fee;
+        let mut fee_history = BTreeMap::new();
+        fee_history.insert(0, current_base_fee);
+        
+        let mempool = if config.enable_mempool_sharding {
+            MempoolStorage::new_sharded(config.mempool_shard_count)
+        } else {
+            MempoolStorage::new_single()
+        };
+        
+        let mut statistics = MarketStatistics::new();
+        statistics.update_fee_observations(current_base_fee);
+        
+        Ok(Self {
+            config,
+            current_base_fee,
+            mempool,
+            priority_queue: BinaryHeap::new(),
+            blockchain: Vec::new(),
+            fee_history,
+            statistics,
+            arrival_rate_estimator: ArrivalRateEstimator::new(300),
+            mempool_weight_history: VecDeque::new(),
+            pending_transactions: HashMap::new(),
+        })
+    }
+    
+    pub fn add_to_mempool(&mut self, tx: Transaction) -> Result<(), String> {
+        let current_height = self.current_height();
+        
+        tx.validate(current_height)?;
+        
+        if self.mempool.len() >= self.config.max_mempool_size {
+            return Err("Mempool full".to_string());
+        }
+        
+        if self.mempool.contains(&tx.txid) {
+            return Err("Duplicate transaction".to_string());
+        }
+        
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        
+        self.arrival_rate_estimator.record(now, tx.logical_actions);
+        
+        // Track for optimality analysis
+        if self.config.track_optimality_metrics {
+            if let Some(target_blocks) = tx.target_confirmation_blocks {
+                let (base_fee, priority_fee) = tx.calculate_total_fee(self.current_base_fee);
+                let total_fee = base_fee + priority_fee;
+                
+                self.pending_transactions.insert(tx.txid, TransactionTracking {
+                    submitted_at_block: current_height,
+                    target_blocks,
+                    fee_paid: total_fee,
+                    min_fee_at_submission: base_fee,
+                });
+            }
+        }
+        
+        let priority_score = tx.priority_score(self.current_base_fee, current_height);
+        
+        let entry = MempoolEntry {
+            transaction: tx.clone(),
+            priority_score,
+            added_at: now,
+        };
+        
+        self.mempool.insert(tx.txid, entry.clone())?;
+        
+        self.priority_queue.push(PriorityQueueEntry {
+            txid: tx.txid,
+            priority_score,
+        });
+        
+        let mempool_size = self.mempool.len();
+        if mempool_size > self.statistics.mempool_high_water_mark {
+            self.statistics.mempool_high_water_mark = mempool_size;
+        }
+        
+        let total_weight = self.get_total_mempool_weight();
+        self.mempool_weight_history.push_back((now, total_weight));
+        while self.mempool_weight_history.len() > 100 {
+            self.mempool_weight_history.pop_front();
+        }
+        
+        Ok(())
+    }
+    
+    pub fn cleanup_expired_transactions(&mut self) -> usize {
+        let current_height = self.current_height();
+        let current_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        
+        let mut expired = Vec::new();
+        
+        for (txid, entry) in self.mempool.iter_all() {
+            if entry.transaction.is_expired(current_height) || 
+               entry.transaction.is_stale(current_time, self.config.mempool_max_age_seconds) {
+                expired.push(txid);
+            }
+        }
+        
+        let count = expired.len();
+        for txid in expired {
+            self.remove_from_mempool(&txid);
+            self.statistics.total_transactions_expired += 1;
+        }
+        
+        count
+    }
+    
+    fn remove_from_mempool(&mut self, txid: &[u8; 32]) -> Option<Transaction> {
+        if let Some(entry) = self.mempool.remove(txid) {
+            Some(entry.transaction)
+        } else {
+            None
+        }
+    }
+    
+    pub fn current_height(&self) -> BlockHeight {
+        self.blockchain.len() as BlockHeight
+    }
+    
+    fn get_total_mempool_weight(&self) -> u64 {
+        self.mempool.iter_all()
+            .iter()
+            .map(|(_, entry)| entry.transaction.logical_actions)
+            .sum()
+    }
+    
+    fn calculate_cramer_lundberg_params(&self) -> CramerLundbergParams {
+        let c = self.arrival_rate_estimator.get_rate();
+        let lambda = 1.0 / self.config.block_time_seconds as f64;
+        let y = self.get_total_mempool_weight();
+        
+        CramerLundbergParams {
+            c,
+            lambda,
+            block_size: self.config.target_actions_per_block,
+            y,
+        }
+    }
+    
+    pub fn estimate_confirmation_time(&self, actions: LogicalActions) -> ConfirmationTimeEstimate {
+        if !self.config.enable_confirmation_model {
+            return self.simple_confirmation_estimate(actions);
+        }
+        
+        let cl_params = self.calculate_cramer_lundberg_params();
+        
+        if !cl_params.is_stable() {
+            return ConfirmationTimeEstimate {
+                mean_time_seconds: f64::INFINITY,
+                mean_time_blocks: f64::INFINITY,
+                prob_1_block: 0.0,
+                prob_3_blocks: 0.1,
+                prob_6_blocks: 0.3,
+                recommended_base_fee: self.current_base_fee * 2,
+                recommended_priority_fee: self.current_base_fee,
+                confidence: 0.3,
+            };
+        }
+        
+        let mean_time_seconds = cl_params.mean_confirmation_time_seconds();
+        let mean_time_blocks = cl_params.mean_confirmation_blocks();
+        
+        let prob_1_block = cl_params.prob_confirmation_n_blocks(1);
+        let prob_3_blocks = cl_params.prob_confirmation_n_blocks(3);
+        let prob_6_blocks = cl_params.prob_confirmation_n_blocks(6);
+        
+        let target_blocks = self.config.target_confirmation_blocks;
+        let optimal_fee = cl_params.optimal_fee_for_target(target_blocks, self.current_base_fee);
+        
+        let congestion_factor = cl_params.rho();
+        let priority_multiplier = if congestion_factor > 0.9 {
+            2.0
+        } else if congestion_factor > 0.7 {
+            1.5
+        } else if congestion_factor > 0.5 {
+            1.0
+        } else {
+            0.5
+        };
+        
+        let recommended_priority = (self.current_base_fee as f64 * priority_multiplier) as u64;
+        
+        let confidence = self.calculate_model_confidence(&cl_params);
+        
+        ConfirmationTimeEstimate {
+            mean_time_seconds,
+            mean_time_blocks,
+            prob_1_block,
+            prob_3_blocks,
+            prob_6_blocks,
+            recommended_base_fee: optimal_fee,
+            recommended_priority_fee: recommended_priority,
+            confidence,
+        }
+    }
+    
+    fn calculate_model_confidence(&self, cl_params: &CramerLundbergParams) -> f64 {
+        let mut confidence = 1.0;
+        
+        if cl_params.c < 0.01 {
+            confidence *= 0.5;
+        }
+        
+        let rho = cl_params.rho();
+        if rho > 0.95 {
+            confidence *= 0.7;
+        }
+        
+        if self.mempool_weight_history.len() < 10 {
+            confidence *= 0.8;
+        }
+        
+        let tx_count = self.arrival_rate_estimator.action_history.len();
+        let data_bonus = (tx_count as f64 / 100.0).min(0.2);
+        confidence = (confidence + data_bonus).min(1.0);
+        
+        confidence.max(0.4)
+    }
+    
+    fn simple_confirmation_estimate(&self, _actions: LogicalActions) -> ConfirmationTimeEstimate {
+        let mempool_stats = self.mempool_stats();
+        let blocks_to_clear = if self.config.target_actions_per_block > 0 {
+            ((mempool_stats.total_actions + self.config.target_actions_per_block - 1) 
+             / self.config.target_actions_per_block).max(1)
+        } else {
+            1
+        };
+        
+        let mean_blocks = blocks_to_clear as f64;
+        let mean_seconds = mean_blocks * self.config.block_time_seconds as f64;
+        
+        ConfirmationTimeEstimate {
+            mean_time_seconds: mean_seconds,
+            mean_time_blocks: mean_blocks,
+            prob_1_block: if blocks_to_clear == 1 { 0.8 } else { 0.2 },
+            prob_3_blocks: if blocks_to_clear <= 3 { 0.9 } else { 0.4 },
+            prob_6_blocks: if blocks_to_clear <= 6 { 0.95 } else { 0.7 },
+            recommended_base_fee: self.current_base_fee,
+            recommended_priority_fee: mempool_stats.priority_fee_p50,
+            confidence: 0.6,
+        }
+    }
+    
+    pub fn select_transactions_for_block(&self, miner_address: Vec<u8>) -> Block {
+        let prev_hash = self.blockchain.last()
+            .map(|b| b.hash)
+            .unwrap_or([0u8; 32]);
+        
+        let height = self.current_height();
+        let block_reward = calculate_block_reward(height);
+        
+        let mut block = Block::new(
+            height,
+            prev_hash,
+            self.current_base_fee,
+            miner_address,
+            block_reward,
+        );
+        
+        let mut actions_used = 0u64;
+        let current_height = self.current_height();
+        
+        let mut valid_entries: Vec<_> = self.priority_queue.iter()
+            .filter_map(|entry| {
+                self.mempool.get(&entry.txid).and_then(|mempool_entry| {
+                    let tx = &mempool_entry.transaction;
+                    if !tx.is_expired(current_height) && tx.can_afford_base_fee(self.current_base_fee) {
+                        Some((entry.txid, mempool_entry.priority_score))
+                    } else {
+                        None
+                    }
+                })
+            })
+            .collect();
+        
+        valid_entries.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        
+        for (txid, _) in valid_entries {
+            if let Some(entry) = self.mempool.get(&txid) {
+                let tx = &entry.transaction;
+                
+                if actions_used + tx.logical_actions <= self.config.max_actions_per_block {
+                    if block.add_transaction(tx.clone(), &self.config).is_ok() {
+                        actions_used += tx.logical_actions;
+                    }
+                }
+                
+                if actions_used >= self.config.max_actions_per_block * 95 / 100 {
+                    break;
+                }
+            }
+        }
+        
+        block.calculate_hash();
+        block
+    }
+    
+    pub fn process_block(&mut self, mut block: Block) -> Result<(), String> {
+        let current_height = self.current_height();
+        
+        if block.height != current_height {
+            return Err("Block height mismatch".to_string());
+        }
+        
+        block.validate(&self.config)?;
+        
+        // Track optimality metrics
+        if self.config.track_optimality_metrics {
+            for tx in &block.transactions {
+                if let Some(tracking) = self.pending_transactions.remove(&tx.txid) {
+                    let blocks_to_confirm = block.height - tracking.submitted_at_block;
+                    
+                    if blocks_to_confirm <= tracking.target_blocks {
+                        self.statistics.optimal_confirmations += 1;
+                    } else {
+                        self.statistics.late_confirmations += 1;
+                        let blocks_late = blocks_to_confirm - tracking.target_blocks;
+                        self.statistics.late_time_sum += blocks_late;
+                    }
+                    
+                    let (min_base, _) = tx.calculate_total_fee(block.base_fee_per_action);
+                    if tracking.fee_paid > min_base {
+                        self.statistics.overpayment_count += 1;
+                        let overpay = tracking.fee_paid - min_base;
+                        self.statistics.overpayment_sum += overpay;
+                    }
+                }
+            }
+        }
+        
+        for tx in &block.transactions {
+            self.remove_from_mempool(&tx.txid);
+        }
+        
+        self.statistics.total_transactions_processed += block.transactions.len() as u64;
+        self.statistics.total_base_fee_burned = self.statistics.total_base_fee_burned
+            .saturating_add(block.total_base_fee_burned);
+        self.statistics.total_priority_fee_collected = self.statistics.total_priority_fee_collected
+            .saturating_add(block.total_priority_fee_collected);
+        
+        let next_fee = block.calculate_next_base_fee_fast(&self.config);
+        
+        self.current_base_fee = next_fee;
+        self.statistics.update_fee_observations(self.current_base_fee);
+        
+        self.fee_history.insert(block.height + 1, self.current_base_fee);
+        
+        if self.fee_history.len() > self.config.block_history_limit {
+            let oldest_key = *self.fee_history.keys().next().unwrap();
+            self.fee_history.remove(&oldest_key);
+        }
+        
+        self.blockchain.push(block);
+        
+        if self.blockchain.len() > self.config.block_history_limit {
+            self.blockchain.remove(0);
+        }
+        
+        self.cleanup_expired_transactions();
+        self.rebuild_priority_queue();
+        
+        Ok(())
+    }
+    
+    fn rebuild_priority_queue(&mut self) {
+        let current_height = self.current_height();
+        self.priority_queue.clear();
+        
+        for (txid, entry) in self.mempool.iter_all() {
+            let priority_score = entry.transaction.priority_score(self.current_base_fee, current_height);
+            self.priority_queue.push(PriorityQueueEntry {
+                txid,
+                priority_score,
+            });
+        }
+    }
+    
+    pub fn estimate_fee(&self, actions: LogicalActions, priority: FeePriority) -> FeeEstimate {
+        if self.config.enable_confirmation_model {
+            return self.estimate_fee_with_model(actions, priority);
+        }
+        
+        self.estimate_fee_original(actions, priority)
+    }
+    
+    fn estimate_fee_with_model(&self, actions: LogicalActions, priority: FeePriority) -> FeeEstimate {
+        let confirmation_estimate = self.estimate_confirmation_time(actions);
+        
+        let base_fee = confirmation_estimate.recommended_base_fee;
+        
+        let priority_multiplier = match priority {
+            FeePriority::Low => 0.5,
+            FeePriority::Medium => 1.0,
+            FeePriority::High => 2.0,
+            FeePriority::Urgent => 4.0,
+        };
+        
+        let priority_fee = (confirmation_estimate.recommended_priority_fee as f64 * priority_multiplier) as u64;
+        
+        let total_per_action = base_fee.saturating_add(priority_fee);
+        let total_fee = total_per_action.saturating_mul(actions);
+        let base_fee_total = base_fee.saturating_mul(actions);
+        let priority_fee_total = priority_fee.saturating_mul(actions);
+        
+        FeeEstimate {
+            base_fee_per_action: base_fee,
+            priority_fee_per_action: priority_fee,
+            total_per_action,
+            base_fee_total,
+            priority_fee_total,
+            total_fee,
+            confidence: confirmation_estimate.confidence,
+            suggested_max_fee_per_action: total_per_action.saturating_mul(120) / 100,
+        }
+    }
+    
+    fn estimate_fee_original(&self, actions: LogicalActions, priority: FeePriority) -> FeeEstimate {
+        let mempool_stats = self.mempool_stats();
+        let predicted_base_fee = self.predict_base_fee(3);
+        
+        let competitive_priority = match priority {
+            FeePriority::Low => mempool_stats.priority_fee_p25,
+            FeePriority::Medium => mempool_stats.priority_fee_p50,
+            FeePriority::High => mempool_stats.priority_fee_p75,
+            FeePriority::Urgent => mempool_stats.priority_fee_p90,
+        };
+        
+        let priority_fee = if mempool_stats.transaction_count == 0 {
+            match priority {
+                FeePriority::Low => predicted_base_fee / 10,
+                FeePriority::Medium => predicted_base_fee / 5,
+                FeePriority::High => predicted_base_fee / 2,
+                FeePriority::Urgent => predicted_base_fee,
+            }
+        } else {
+            competitive_priority
+        };
+        
+        let total_per_action = predicted_base_fee.saturating_add(priority_fee);
+        let total_fee = total_per_action.saturating_mul(actions);
+        let base_fee_total = predicted_base_fee.saturating_mul(
