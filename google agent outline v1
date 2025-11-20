@@ -1,0 +1,620 @@
+import { google, createGoogleGenerativeAI } from '@ai-sdk/google';
+import { generateText, streamText, generateObject, streamObject, embed, embedMany } from 'ai';
+import { experimental_generateImage as generateImage } from 'ai';
+import { GoogleAICacheManager } from '@google/generative-ai/server';
+import { z } from 'zod';
+import * as fs from 'fs';
+
+// Initialize Google Provider
+const googleProvider = createGoogleGenerativeAI({
+  apiKey: process.env.GOOGLE_GENERATIVE_AI_API_KEY,
+  baseURL: 'https://generativelanguage.googleapis.com/v1beta',
+});
+
+// ============================================================
+// 1. BASIC TEXT GENERATION
+// ============================================================
+async function basicTextGeneration() {
+  const { text } = await generateText({
+    model: google('gemini-2.5-flash'),
+    prompt: 'Write a vegetarian lasagna recipe for 4 people.',
+  });
+  return text;
+}
+
+// ============================================================
+// 2. STREAMING TEXT
+// ============================================================
+async function streamingText() {
+  const result = await streamText({
+    model: google('gemini-2.5-flash'),
+    prompt: 'Explain quantum computing in simple terms.',
+  });
+
+  for await (const chunk of result.textStream) {
+    process.stdout.write(chunk);
+  }
+}
+
+// ============================================================
+// 3. THINKING MODE (Gemini 2.5)
+// ============================================================
+async function thinkingMode() {
+  const { text, reasoning } = await generateText({
+    model: google('gemini-2.5-flash'),
+    prompt: 'What is the sum of the first 10 prime numbers?',
+    providerOptions: {
+      google: {
+        thinkingConfig: {
+          thinkingBudget: 8192,
+          includeThoughts: true,
+        },
+      },
+    },
+  });
+  
+  return { text, reasoning };
+}
+
+// ============================================================
+// 4. SAFETY SETTINGS
+// ============================================================
+async function withSafetySettings() {
+  const { text } = await generateText({
+    model: google('gemini-2.5-flash'),
+    prompt: 'Write a thriller story opening.',
+    providerOptions: {
+      google: {
+        safetySettings: [
+          {
+            category: 'HARM_CATEGORY_DANGEROUS_CONTENT',
+            threshold: 'BLOCK_MEDIUM_AND_ABOVE',
+          },
+          {
+            category: 'HARM_CATEGORY_HARASSMENT',
+            threshold: 'BLOCK_MEDIUM_AND_ABOVE',
+          },
+        ],
+      },
+    },
+  });
+  return text;
+}
+
+// ============================================================
+// 5. IMAGE INPUT (MULTIMODAL)
+// ============================================================
+async function imageInput(imagePath: string) {
+  const imageData = fs.readFileSync(imagePath);
+  
+  const { text } = await generateText({
+    model: google('gemini-2.5-flash'),
+    messages: [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'What do you see in this image?' },
+          {
+            type: 'image',
+            image: imageData,
+          },
+        ],
+      },
+    ],
+  });
+  
+  return text;
+}
+
+// ============================================================
+// 6. PDF FILE INPUT
+// ============================================================
+async function pdfInput(pdfPath: string) {
+  const pdfData = fs.readFileSync(pdfPath);
+  
+  const { text } = await generateText({
+    model: google('gemini-2.5-flash'),
+    messages: [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'text',
+            text: 'Summarize this document and extract key points.',
+          },
+          {
+            type: 'file',
+            data: pdfData,
+            mediaType: 'application/pdf',
+          },
+        ],
+      },
+    ],
+  });
+  
+  return text;
+}
+
+// ============================================================
+// 7. YOUTUBE URL INPUT
+// ============================================================
+async function youtubeInput(videoUrl: string) {
+  const { text } = await generateText({
+    model: google('gemini-2.5-flash'),
+    messages: [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'Summarize this video' },
+          {
+            type: 'file',
+            data: videoUrl,
+            mediaType: 'video/mp4',
+          },
+        ],
+      },
+    ],
+  });
+  
+  return text;
+}
+
+// ============================================================
+// 8. STRUCTURED OUTPUT (OBJECT GENERATION)
+// ============================================================
+async function structuredOutput() {
+  const { object } = await generateObject({
+    model: google('gemini-2.5-flash'),
+    schema: z.object({
+      recipe: z.object({
+        name: z.string(),
+        ingredients: z.array(z.string()),
+        instructions: z.array(z.string()),
+        prepTime: z.number(),
+        servings: z.number(),
+      }),
+    }),
+    prompt: 'Generate a chocolate cake recipe',
+  });
+  
+  return object;
+}
+
+// ============================================================
+// 9. TOOL CALLING (CODE EXECUTION)
+// ============================================================
+async function codeExecution() {
+  const { text, toolCalls, toolResults } = await generateText({
+    model: google('gemini-2.5-pro'),
+    tools: {
+      code_execution: google.tools.codeExecution({}),
+    },
+    prompt: 'Use python to calculate the 20th fibonacci number.',
+  });
+  
+  return { text, toolCalls, toolResults };
+}
+
+// ============================================================
+// 10. GOOGLE SEARCH GROUNDING
+// ============================================================
+async function googleSearchGrounding() {
+  const { text, sources, providerMetadata } = await generateText({
+    model: google('gemini-2.5-flash'),
+    tools: {
+      google_search: google.tools.googleSearch({}),
+    },
+    prompt: 'List the top 5 San Francisco news from the past week. You must include the date of each article.',
+  });
+  
+  const metadata = providerMetadata?.google;
+  const groundingMetadata = metadata?.groundingMetadata;
+  const safetyRatings = metadata?.safetyRatings;
+  
+  return { text, sources, groundingMetadata, safetyRatings };
+}
+
+// ============================================================
+// 11. URL CONTEXT TOOL
+// ============================================================
+async function urlContext() {
+  const { text, sources, providerMetadata } = await generateText({
+    model: google('gemini-2.5-flash'),
+    prompt: 'Based on the document: https://ai.google.dev/gemini-api/docs/url-context. Answer this question: How many links we can consume in one request?',
+    tools: {
+      url_context: google.tools.urlContext({}),
+    },
+  });
+  
+  const metadata = providerMetadata?.google;
+  const groundingMetadata = metadata?.groundingMetadata;
+  const urlContextMetadata = metadata?.urlContextMetadata;
+  
+  return { text, sources, groundingMetadata, urlContextMetadata };
+}
+
+// ============================================================
+// 12. COMBINED URL CONTEXT + GOOGLE SEARCH
+// ============================================================
+async function combinedUrlAndSearch() {
+  const { text, sources, providerMetadata } = await generateText({
+    model: google('gemini-2.5-flash'),
+    prompt: 'Based on this context: https://ai-sdk.dev/providers/ai-sdk-providers/google-generative-ai, tell me how to use Gemini with AI SDK. Also, provide the latest news about AI SDK V5.',
+    tools: {
+      google_search: google.tools.googleSearch({}),
+      url_context: google.tools.urlContext({}),
+    },
+  });
+  
+  return { text, sources, metadata: providerMetadata?.google };
+}
+
+// ============================================================
+// 13. FILE SEARCH (Gemini 2.5)
+// ============================================================
+async function fileSearch() {
+  const { text, sources } = await generateText({
+    model: google('gemini-2.5-pro'),
+    tools: {
+      file_search: google.tools.fileSearch({
+        fileSearchStoreNames: [
+          'projects/my-project/locations/us/fileSearchStores/my-store',
+        ],
+        metadataFilter: 'author = "Robert Graves"',
+        topK: 8,
+      }),
+    },
+    prompt: "Summarise the key themes of 'I, Claudius'.",
+  });
+  
+  return { text, sources };
+}
+
+// ============================================================
+// 14. IMPLICIT CACHING (Automatic)
+// ============================================================
+async function implicitCaching() {
+  const baseContext = 'You are a cooking assistant with expertise in Italian cuisine. Here are 1000 lasagna recipes for reference: ' + 'Recipe 1: ...'.repeat(100);
+  
+  const { text: veggieLasagna } = await generateText({
+    model: google('gemini-2.5-pro'),
+    prompt: `${baseContext}\n\nWrite a vegetarian lasagna recipe for 4 people.`,
+  });
+  
+  const { text: meatLasagna, providerMetadata } = await generateText({
+    model: google('gemini-2.5-pro'),
+    prompt: `${baseContext}\n\nWrite a meat lasagna recipe for 12 people.`,
+  });
+  
+  const usageMetadata = providerMetadata?.google?.usageMetadata;
+  
+  return { veggieLasagna, meatLasagna, cachedTokens: usageMetadata?.cachedContentTokenCount };
+}
+
+// ============================================================
+// 15. EXPLICIT CACHING
+// ============================================================
+async function explicitCaching() {
+  const cacheManager = new GoogleAICacheManager(process.env.GOOGLE_GENERATIVE_AI_API_KEY);
+  const modelName = 'gemini-2.5-pro';
+  
+  const { name: cachedContent } = await cacheManager.create({
+    model: modelName,
+    contents: [
+      {
+        role: 'user',
+        parts: [{ text: '1000 Lasagna Recipes: Recipe 1... Recipe 2...' }],
+      },
+    ],
+    ttlSeconds: 60 * 5,
+  });
+  
+  const { text: veggieLasagna } = await generateText({
+    model: google(modelName),
+    prompt: 'Write a vegetarian lasagna recipe for 4 people.',
+    providerOptions: {
+      google: {
+        cachedContent,
+      },
+    },
+  });
+  
+  const { text: meatLasagna } = await generateText({
+    model: google(modelName),
+    prompt: 'Write a meat lasagna recipe for 12 people.',
+    providerOptions: {
+      google: {
+        cachedContent,
+      },
+    },
+  });
+  
+  return { veggieLasagna, meatLasagna };
+}
+
+// ============================================================
+// 16. TEXT EMBEDDINGS
+// ============================================================
+async function textEmbeddings() {
+  const model = google.textEmbedding('text-embedding-004');
+  
+  const { embedding } = await embed({
+    model,
+    value: 'sunny day at the beach',
+    providerOptions: {
+      google: {
+        outputDimensionality: 512,
+        taskType: 'SEMANTIC_SIMILARITY',
+      },
+    },
+  });
+  
+  return embedding;
+}
+
+// ============================================================
+// 17. BATCH EMBEDDINGS
+// ============================================================
+async function batchEmbeddings() {
+  const model = google.textEmbedding('text-embedding-004');
+  
+  const { embeddings } = await embedMany({
+    model,
+    values: [
+      'sunny day at the beach',
+      'rainy evening in the city',
+      'snowy morning in the mountains',
+    ],
+    providerOptions: {
+      google: {
+        taskType: 'CLUSTERING',
+      },
+    },
+  });
+  
+  return embeddings;
+}
+
+// ============================================================
+// 18. IMAGE GENERATION (Imagen)
+// ============================================================
+async function imageGeneration() {
+  const { image } = await generateImage({
+    model: google.image('imagen-3.0-generate-002'),
+    prompt: 'A futuristic cityscape at sunset',
+    aspectRatio: '16:9',
+    providerOptions: {
+      google: {
+        personGeneration: 'dont_allow',
+      },
+    },
+  });
+  
+  return image;
+}
+
+// ============================================================
+// 19. GEMINI IMAGE OUTPUT (2.5 Flash Image Preview)
+// ============================================================
+async function geminiImageOutput() {
+  const result = await generateText({
+    model: google('gemini-2.5-flash-image-preview'),
+    prompt: 'Create a picture of a nano banana dish in a fancy restaurant with a Gemini theme',
+    providerOptions: {
+      google: {
+        responseModalities: ['TEXT', 'IMAGE'],
+        imageConfig: {
+          aspectRatio: '16:9',
+        },
+      },
+    },
+  });
+  
+  const images = result.files?.filter(f => f.mediaType.startsWith('image/'));
+  
+  return { text: result.text, images };
+}
+
+// ============================================================
+// 20. CUSTOM TOOLS
+// ============================================================
+async function customTools() {
+  const { text, toolCalls } = await generateText({
+    model: google('gemini-2.5-flash'),
+    tools: {
+      weather: {
+        description: 'Get the weather in a location',
+        parameters: z.object({
+          location: z.string().describe('The location to get the weather for'),
+        }),
+        execute: async ({ location }) => ({
+          location,
+          temperature: 72 + Math.floor(Math.random() * 21) - 10,
+        }),
+      },
+      calculator: {
+        description: 'Calculate a mathematical expression',
+        parameters: z.object({
+          expression: z.string().describe('The mathematical expression to evaluate'),
+        }),
+        execute: async ({ expression }) => {
+          return { result: eval(expression) };
+        },
+      },
+    },
+    prompt: 'What is the weather in San Francisco and what is 15 * 23?',
+  });
+  
+  return { text, toolCalls };
+}
+
+// ============================================================
+// 21. MULTI-TURN CONVERSATION
+// ============================================================
+async function multiTurnConversation() {
+  const conversation = [
+    {
+      role: 'user' as const,
+      content: 'Hello! Can you help me plan a trip?',
+    },
+  ];
+  
+  const response1 = await generateText({
+    model: google('gemini-2.5-flash'),
+    messages: conversation,
+  });
+  
+  conversation.push({
+    role: 'assistant' as const,
+    content: response1.text,
+  });
+  
+  conversation.push({
+    role: 'user' as const,
+    content: 'I want to go to Japan for 2 weeks. What should I see?',
+  });
+  
+  const response2 = await generateText({
+    model: google('gemini-2.5-flash'),
+    messages: conversation,
+  });
+  
+  return { conversation, finalResponse: response2.text };
+}
+
+// ============================================================
+// 22. STRUCTURED OUTPUT WITHOUT SCHEMA VALIDATION (for unions)
+// ============================================================
+async function structuredOutputNoValidation() {
+  const { object } = await generateObject({
+    model: google('gemini-2.5-flash'),
+    providerOptions: {
+      google: {
+        structuredOutputs: false,
+      },
+    },
+    schema: z.object({
+      name: z.string(),
+      age: z.number(),
+      contact: z.union([
+        z.object({
+          type: z.literal('email'),
+          value: z.string(),
+        }),
+        z.object({
+          type: z.literal('phone'),
+          value: z.string(),
+        }),
+      ]),
+    }),
+    prompt: 'Generate an example person for testing.',
+  });
+  
+  return object;
+}
+
+// ============================================================
+// 23. GEMMA MODEL WITH SYSTEM INSTRUCTION
+// ============================================================
+async function gemmaWithSystem() {
+  const { text } = await generateText({
+    model: google('gemma-3-27b-it'),
+    system: 'You are a helpful assistant that responds concisely.',
+    prompt: 'What is machine learning?',
+  });
+  
+  return text;
+}
+
+// ============================================================
+// MAIN AGENT CLASS
+// ============================================================
+class GoogleAIAgent {
+  private provider: ReturnType<typeof createGoogleGenerativeAI>;
+  
+  constructor(apiKey: string, config?: any) {
+    this.provider = createGoogleGenerativeAI({
+      apiKey,
+      ...config,
+    });
+  }
+  
+  async generateText(prompt: string, options?: any) {
+    return await generateText({
+      model: google(options?.model || 'gemini-2.5-flash'),
+      prompt,
+      ...options,
+    });
+  }
+  
+  async streamText(prompt: string, options?: any) {
+    return await streamText({
+      model: google(options?.model || 'gemini-2.5-flash'),
+      prompt,
+      ...options,
+    });
+  }
+  
+  async generateObject(prompt: string, schema: any, options?: any) {
+    return await generateObject({
+      model: google(options?.model || 'gemini-2.5-flash'),
+      schema,
+      prompt,
+      ...options,
+    });
+  }
+  
+  async generateImage(prompt: string, options?: any) {
+    return await generateImage({
+      model: google.image('imagen-3.0-generate-002'),
+      prompt,
+      ...options,
+    });
+  }
+  
+  async embed(text: string, options?: any) {
+    return await embed({
+      model: google.textEmbedding('text-embedding-004'),
+      value: text,
+      ...options,
+    });
+  }
+  
+  async embedMany(texts: string[], options?: any) {
+    return await embedMany({
+      model: google.textEmbedding('text-embedding-004'),
+      values: texts,
+      ...options,
+    });
+  }
+}
+
+// ============================================================
+// EXPORT ALL FUNCTIONS
+// ============================================================
+export {
+  GoogleAIAgent,
+  basicTextGeneration,
+  streamingText,
+  thinkingMode,
+  withSafetySettings,
+  imageInput,
+  pdfInput,
+  youtubeInput,
+  structuredOutput,
+  codeExecution,
+  googleSearchGrounding,
+  urlContext,
+  combinedUrlAndSearch,
+  fileSearch,
+  implicitCaching,
+  explicitCaching,
+  textEmbeddings,
+  batchEmbeddings,
+  imageGeneration,
+  geminiImageOutput,
+  customTools,
+  multiTurnConversation,
+  structuredOutputNoValidation,
+  gemmaWithSystem,
+};
