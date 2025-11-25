@@ -3,7 +3,7 @@
 Ultimate Crypto Super Bot - Unified Multi-Cryptocurrency Management System
 Combines Zcash Super Bot with Multi-Crypto CLI Agent
 Supports: Zcash, Monero, Ethereum with full RPC, CLI, and node management
-Author: Autonomous Agent System
+Author: SAGEDEV1307
 """
 
 import os
