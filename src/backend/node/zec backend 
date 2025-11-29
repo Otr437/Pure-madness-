@@ -1,7 +1,3 @@
-// ==================== ZEC ARENA COMPLETE PRODUCTION BACKEND ====================
-//  EVERY SINGLE FEATURE INCLUDED
-// Version: 7.0.0-ULTIMATE | November  2025
-// 
 
 require('dotenv').config();
 const express = require('express');
