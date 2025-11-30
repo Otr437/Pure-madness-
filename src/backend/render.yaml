@@ -1,0 +1,95 @@
+root: .
+
+services:
+  - type: web
+    name: zec-arena-backend
+    env: node
+    region: oregon
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3001
+      - key: HOST
+        value: 0.0.0.0
+      - key: FRONTEND_URL
+        value: "*"
+      - key: DB_HOST
+        fromDatabase:
+          name: zec-arena-db
+          property: host
+      - key: DB_PORT
+        fromDatabase:
+          name: zec-arena-db
+          property: port
+      - key: DB_NAME
+        fromDatabase:
+          name: zec-arena-db
+          property: database
+      - key: DB_USER
+        fromDatabase:
+          name: zec-arena-db
+          property: user
+      - key: DB_PASSWORD
+        fromDatabase:
+          name: zec-arena-db
+          property: password
+      - key: DB_SSL
+        value: true
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: zec-arena-redis
+          property: connectionString
+      - key: ZCASH_RPC_URL
+        sync: false
+      - key: ZCASH_RPC_USER
+        sync: false
+      - key: ZCASH_RPC_PASSWORD
+        sync: false
+      - key: PLATFORM_DEPOSIT_ADDRESS
+        sync: false
+      - key: PLATFORM_WITHDRAWAL_ADDRESS
+        sync: false
+      - key: PLATFORM_HOT_WALLET
+        sync: false
+      - key: PLATFORM_COLD_WALLET
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: MASTER_KEY
+        generateValue: true
+      - key: ADMIN_API_KEY
+        generateValue: true
+      - key: MIN_DEPOSIT
+        value: 0.001
+      - key: MAX_DEPOSIT
+        value: 1000
+      - key: MIN_WITHDRAWAL
+        value: 0.001
+      - key: MAX_WITHDRAWAL
+        value: 100
+      - key: WITHDRAWAL_FEE
+        value: 0.0001
+      - key: VERIFICATION_FEE
+        value: 0.2
+      - key: MIN_CONFIRMATIONS
+        value: 6
+      - key: HOUSE_EDGE
+        value: 0.10
+      - key: LOG_LEVEL
+        value: info
+
+databases:
+  - name: zec-arena-db
+    databaseName: zec_arena
+    user: zec_arena_user
+    plan: free
+
+  - name: zec-arena-redis
+    plan: free
+    maxmemoryPolicy: noeviction
