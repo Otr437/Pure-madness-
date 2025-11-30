@@ -12,7 +12,7 @@ use anyhow::{Result, anyhow};
 use thiserror::Error;
 use serde::{Serialize, Deserialize};
 
-// Real cryptographic libraries - NO FAKES
+// Real cryptographic libraries -
 use bip39::{Mnemonic, Language};
 use bip32::{XPrv, DerivationPath};
 use k256::ecdsa::SigningKey;
