@@ -1,5 +1,9 @@
 // ============================================================================
-// NULLIFIER SYSTEM - FULL IMPLEMENTATION
+// X402 NULLIFIER SYSTEM - COMPLETE PRODUCTION IMPLEMENTATION
+// ============================================================================
+// Component 5 of 8
+// Full nullifier creation, verification, double-spend prevention
+// Storage, validation, caching, and pruning
 // ============================================================================
 
 import {
@@ -25,12 +29,7 @@ export class TransferNullifier extends Struct({
     timestamp: UInt64
   ): TransferNullifier {
     const hash = Poseidon.hash([secret, commitmentHash, timestamp.value]);
-
-    return new TransferNullifier({
-      hash,
-      commitmentHash,
-      timestamp,
-    });
+    return new TransferNullifier({ hash, commitmentHash, timestamp });
   }
 
   verify(secret: Field): Bool {
@@ -39,7 +38,6 @@ export class TransferNullifier extends Struct({
       this.commitmentHash,
       this.timestamp.value,
     ]);
-
     return this.hash.equals(recomputedHash);
   }
 
@@ -66,6 +64,14 @@ export class TransferNullifier extends Struct({
       timestamp: UInt64.from(json.timestamp),
     });
   }
+
+  equals(other: TransferNullifier): boolean {
+    return this.hash.equals(other.hash).toBoolean();
+  }
+
+  toString(): string {
+    return JSON.stringify(this.toJSON(), null, 2);
+  }
 }
 
 // ============================================================================
@@ -81,7 +87,8 @@ export class NullifierBuilder {
     if (secret instanceof Field) {
       this.secret = secret;
     } else if (typeof secret === 'string') {
-      this.secret = Field.from(BigInt(secret));
+      const clean = secret.startsWith('0x') ? secret.slice(2) : secret;
+      this.secret = Field.from(BigInt('0x' + clean));
     } else {
       this.secret = Field.from(secret);
     }
@@ -92,28 +99,48 @@ export class NullifierBuilder {
     if (hash instanceof Field) {
       this.commitmentHash = hash;
     } else if (typeof hash === 'string') {
-      this.commitmentHash = Field.from(BigInt(hash));
+      const clean = hash.startsWith('0x') ? hash.slice(2) : hash;
+      this.commitmentHash = Field.from(BigInt('0x' + clean));
     } else {
       this.commitmentHash = Field.from(hash);
     }
     return this;
   }
 
-  setTimestamp(timestamp: bigint | UInt64): NullifierBuilder {
-    this.timestamp = timestamp instanceof UInt64 ? timestamp : UInt64.from(timestamp);
+  setTimestamp(timestamp: bigint | UInt64 | number): NullifierBuilder {
+    if (timestamp instanceof UInt64) {
+      this.timestamp = timestamp;
+    } else if (typeof timestamp === 'number') {
+      this.timestamp = UInt64.from(BigInt(timestamp));
+    } else {
+      this.timestamp = UInt64.from(timestamp);
+    }
+    return this;
+  }
+
+  useCurrentTimestamp(): NullifierBuilder {
+    this.timestamp = UInt64.from(BigInt(Math.floor(Date.now() / 1000)));
     return this;
   }
 
   build(): TransferNullifier {
-    if (!this.secret || !this.commitmentHash || !this.timestamp) {
-      throw new Error('All nullifier fields must be set before building');
-    }
+    if (!this.secret) throw new Error('Secret not set');
+    if (!this.commitmentHash) throw new Error('Commitment hash not set');
+    if (!this.timestamp) throw new Error('Timestamp not set');
 
-    return TransferNullifier.create(
-      this.secret,
-      this.commitmentHash,
-      this.timestamp
-    );
+    return TransferNullifier.create(this.secret, this.commitmentHash, this.timestamp);
+  }
+
+  buildWithCurrentTime(): TransferNullifier {
+    if (!this.timestamp) this.useCurrentTimestamp();
+    return this.build();
+  }
+
+  reset(): NullifierBuilder {
+    this.secret = undefined;
+    this.commitmentHash = undefined;
+    this.timestamp = undefined;
+    return this;
   }
 }
 
@@ -125,33 +152,42 @@ export class NullifierStore {
   private nullifiers: Map<string, TransferNullifier>;
   private nullifiersByCommitment: Map<string, string>;
   private nullifiersByTimestamp: Map<number, Set<string>>;
+  private nullifiersByHour: Map<number, Set<string>>;
 
   constructor() {
     this.nullifiers = new Map();
     this.nullifiersByCommitment = new Map();
     this.nullifiersByTimestamp = new Map();
+    this.nullifiersByHour = new Map();
   }
 
   add(nullifier: TransferNullifier): void {
     const hashStr = nullifier.hash.toString();
     
     if (this.nullifiers.has(hashStr)) {
-      throw new Error('Nullifier already exists (double-spend attempt)');
+      throw new Error('Nullifier already exists - DOUBLE SPEND DETECTED');
     }
-    
-    this.nullifiers.set(hashStr, nullifier);
     
     const commitmentHashStr = nullifier.commitmentHash.toString();
     if (this.nullifiersByCommitment.has(commitmentHashStr)) {
-      throw new Error('Commitment already spent');
+      throw new Error('Commitment already spent - DOUBLE SPEND DETECTED');
     }
+
+    this.nullifiers.set(hashStr, nullifier);
     this.nullifiersByCommitment.set(commitmentHashStr, hashStr);
     
-    const timestampBucket = Math.floor(Number(nullifier.timestamp.value.toString()) / 3600);
+    const timestampValue = Number(nullifier.timestamp.value.toString());
+    const timestampBucket = Math.floor(timestampValue / 3600);
     if (!this.nullifiersByTimestamp.has(timestampBucket)) {
       this.nullifiersByTimestamp.set(timestampBucket, new Set());
     }
     this.nullifiersByTimestamp.get(timestampBucket)!.add(hashStr);
+
+    const hourBucket = Math.floor(timestampValue / 3600);
+    if (!this.nullifiersByHour.has(hourBucket)) {
+      this.nullifiersByHour.set(hourBucket, new Set());
+    }
+    this.nullifiersByHour.get(hourBucket)!.add(hashStr);
   }
 
   has(hash: Field): boolean {
@@ -196,6 +232,15 @@ export class NullifierStore {
     return results;
   }
 
+  getByHour(hourBucket: number): TransferNullifier[] {
+    const hashes = this.nullifiersByHour.get(hourBucket);
+    if (!hashes) return [];
+
+    return Array.from(hashes)
+      .map(hash => this.nullifiers.get(hash))
+      .filter((n): n is TransferNullifier => n !== undefined);
+  }
+
   getAll(): TransferNullifier[] {
     return Array.from(this.nullifiers.values());
   }
@@ -208,6 +253,7 @@ export class NullifierStore {
     this.nullifiers.clear();
     this.nullifiersByCommitment.clear();
     this.nullifiersByTimestamp.clear();
+    this.nullifiersByHour.clear();
   }
 
   remove(hash: Field): boolean {
@@ -223,6 +269,9 @@ export class NullifierStore {
     
     const timestampBucket = Math.floor(Number(nullifier.timestamp.value.toString()) / 3600);
     this.nullifiersByTimestamp.get(timestampBucket)?.delete(hashStr);
+
+    const hourBucket = Math.floor(Number(nullifier.timestamp.value.toString()) / 3600);
+    this.nullifiersByHour.get(hourBucket)?.delete(hashStr);
     
     return true;
   }
@@ -238,8 +287,24 @@ export class NullifierStore {
     
     data.forEach((item: any) => {
       const nullifier = TransferNullifier.fromJSON(item);
-      this.add(nullifier);
+      try {
+        this.add(nullifier);
+      } catch (error) {
+        console.warn(`Skipping duplicate nullifier: ${error}`);
+      }
     });
+  }
+
+  async saveToFile(filepath: string): Promise<void> {
+    const fs = require('fs').promises;
+    const json = this.exportToJSON();
+    await fs.writeFile(filepath, json, 'utf8');
+  }
+
+  async loadFromFile(filepath: string): Promise<void> {
+    const fs = require('fs').promises;
+    const json = await fs.readFile(filepath, 'utf8');
+    this.importFromJSON(json);
   }
 
   pruneOldNullifiers(cutoffTime: bigint): number {
@@ -247,6 +312,7 @@ export class NullifierStore {
     let pruned = 0;
     
     const bucketsToDelete: number[] = [];
+    
     this.nullifiersByTimestamp.forEach((hashes, bucket) => {
       if (bucket < cutoffBucket) {
         hashes.forEach(hash => {
@@ -261,9 +327,83 @@ export class NullifierStore {
       }
     });
     
-    bucketsToDelete.forEach(bucket => this.nullifiersByTimestamp.delete(bucket));
+    bucketsToDelete.forEach(bucket => {
+      this.nullifiersByTimestamp.delete(bucket);
+      this.nullifiersByHour.delete(bucket);
+    });
     
     return pruned;
+  }
+
+  getStatistics(): {
+    total: number;
+    oldestTimestamp: bigint;
+    newestTimestamp: bigint;
+    uniqueCommitments: number;
+    averagePerHour: number;
+  } {
+    const stats = {
+      total: this.nullifiers.size,
+      oldestTimestamp: 0n,
+      newestTimestamp: 0n,
+      uniqueCommitments: this.nullifiersByCommitment.size,
+      averagePerHour: 0,
+    };
+
+    if (this.nullifiers.size === 0) return stats;
+
+    let oldest = BigInt(Number.MAX_SAFE_INTEGER);
+    let newest = 0n;
+
+    this.nullifiers.forEach((nullifier) => {
+      const timestamp = nullifier.timestamp.value.toBigInt();
+      if (timestamp < oldest) oldest = timestamp;
+      if (timestamp > newest) newest = timestamp;
+    });
+
+    stats.oldestTimestamp = oldest;
+    stats.newestTimestamp = newest;
+
+    const timeRangeHours = Number(newest - oldest) / 3600;
+    if (timeRangeHours > 0) {
+      stats.averagePerHour = this.nullifiers.size / timeRangeHours;
+    }
+
+    return stats;
+  }
+
+  detectDoubleSpends(): Array<{
+    commitmentHash: string;
+    nullifiers: TransferNullifier[];
+    count: number;
+  }> {
+    const byCommitment = new Map<string, TransferNullifier[]>();
+    
+    this.nullifiers.forEach((nullifier) => {
+      const key = nullifier.commitmentHash.toString();
+      if (!byCommitment.has(key)) {
+        byCommitment.set(key, []);
+      }
+      byCommitment.get(key)!.push(nullifier);
+    });
+    
+    const doubleSpends: Array<{
+      commitmentHash: string;
+      nullifiers: TransferNullifier[];
+      count: number;
+    }> = [];
+    
+    byCommitment.forEach((nullifiers, commitmentHash) => {
+      if (nullifiers.length > 1) {
+        doubleSpends.push({
+          commitmentHash,
+          nullifiers,
+          count: nullifiers.length,
+        });
+      }
+    });
+    
+    return doubleSpends;
   }
 }
 
@@ -272,6 +412,8 @@ export class NullifierStore {
 // ============================================================================
 
 export class NullifierValidator {
+  static MAX_AGE_SECONDS = 86400n;
+
   static validateNullifier(
     nullifier: TransferNullifier,
     secret: Field
@@ -279,7 +421,7 @@ export class NullifierValidator {
     const isValid = nullifier.verify(secret).toBoolean();
     
     if (!isValid) {
-      return { valid: false, error: 'Nullifier verification failed' };
+      return { valid: false, error: 'Nullifier verification failed - secret mismatch' };
     }
     
     return { valid: true };
@@ -290,11 +432,11 @@ export class NullifierValidator {
     store: NullifierStore
   ): { valid: boolean; error?: string } {
     if (store.has(nullifier.hash)) {
-      return { valid: false, error: 'Nullifier already spent' };
+      return { valid: false, error: 'Nullifier already spent - DOUBLE SPEND ATTEMPT' };
     }
     
     if (store.hasCommitment(nullifier.commitmentHash)) {
-      return { valid: false, error: 'Commitment already spent' };
+      return { valid: false, error: 'Commitment already spent - DOUBLE SPEND ATTEMPT' };
     }
     
     return { valid: true };
@@ -310,10 +452,29 @@ export class NullifierValidator {
       return { valid: false, error: 'Nullifier timestamp in future' };
     }
     
-    const MAX_AGE_SECONDS = 86400n; // 24 hours
     const age = currentTime - timestampValue;
-    if (age > MAX_AGE_SECONDS) {
-      return { valid: false, error: 'Nullifier too old' };
+    if (age > this.MAX_AGE_SECONDS) {
+      return { valid: false, error: `Nullifier too old (age: ${age}s, max: ${this.MAX_AGE_SECONDS}s)` };
+    }
+    
+    return { valid: true };
+  }
+
+  static validateCommitmentHash(commitmentHash: Field): { valid: boolean; error?: string } {
+    const value = commitmentHash.toBigInt();
+    
+    if (value === 0n) {
+      return { valid: false, error: 'Commitment hash cannot be zero' };
+    }
+    
+    return { valid: true };
+  }
+
+  static validateSecret(secret: Field): { valid: boolean; error?: string } {
+    const value = secret.toBigInt();
+    
+    if (value === 0n) {
+      return { valid: false, error: 'Secret cannot be zero' };
     }
     
     return { valid: true };
@@ -327,6 +488,16 @@ export class NullifierValidator {
   ): { valid: boolean; errors: string[] } {
     const errors: string[] = [];
     
+    const secretValidation = this.validateSecret(secret);
+    if (!secretValidation.valid && secretValidation.error) {
+      errors.push(secretValidation.error);
+    }
+
+    const commitmentValidation = this.validateCommitmentHash(nullifier.commitmentHash);
+    if (!commitmentValidation.valid && commitmentValidation.error) {
+      errors.push(commitmentValidation.error);
+    }
+
     const nullifierValidation = this.validateNullifier(nullifier, secret);
     if (!nullifierValidation.valid && nullifierValidation.error) {
       errors.push(nullifierValidation.error);
@@ -370,14 +541,10 @@ export class NullifierUtils {
     return nullifier.verify(secret).toBoolean();
   }
 
-  static compareNullifiers(a: TransferNullifier, b: TransferNullifier): number {
-    return Number(a.timestamp.value.sub(b.timestamp.value).toString());
-  }
-
-  static sortNullifiersByTimestamp(
-    nullifiers: TransferNullifier[]
-  ): TransferNullifier[] {
-    return nullifiers.sort(this.compareNullifiers);
+  static sortByTimestamp(nullifiers: TransferNullifier[]): TransferNullifier[] {
+    return nullifiers.sort((a, b) => 
+      Number(a.timestamp.value.sub(b.timestamp.value).toString())
+    );
   }
 
   static filterByTimeRange(
@@ -432,6 +599,22 @@ export class NullifierUtils {
     return groups;
   }
 
+  static groupByCommitment(
+    nullifiers: TransferNullifier[]
+  ): Map<string, TransferNullifier[]> {
+    const groups = new Map<string, TransferNullifier[]>();
+    
+    nullifiers.forEach(n => {
+      const key = n.commitmentHash.toString();
+      if (!groups.has(key)) {
+        groups.set(key, []);
+      }
+      groups.get(key)!.push(n);
+    });
+    
+    return groups;
+  }
+
   static detectDoubleSpendAttempts(
     nullifiers: TransferNullifier[]
   ): Array<{ commitmentHash: string; nullifiers: TransferNullifier[] }> {
@@ -462,6 +645,7 @@ export class NullifierUtils {
     newestTimestamp: bigint;
     uniqueCommitments: number;
     nullifiersPerHour: number;
+    doubleSpendAttempts: number;
   } {
     if (nullifiers.length === 0) {
       return {
@@ -470,10 +654,11 @@ export class NullifierUtils {
         newestTimestamp: 0n,
         uniqueCommitments: 0,
         nullifiersPerHour: 0,
+        doubleSpendAttempts: 0,
       };
     }
     
-    const sorted = this.sortNullifiersByTimestamp(nullifiers);
+    const sorted = this.sortByTimestamp(nullifiers);
     const oldest = sorted[0].timestamp.value.toBigInt();
     const newest = sorted[sorted.length - 1].timestamp.value.toBigInt();
     
@@ -483,6 +668,8 @@ export class NullifierUtils {
     
     const timeRange = Number(newest - oldest) / 3600;
     const nullifiersPerHour = timeRange > 0 ? nullifiers.length / timeRange : 0;
+
+    const doubleSpends = this.detectDoubleSpendAttempts(nullifiers);
     
     return {
       total: nullifiers.length,
@@ -490,33 +677,40 @@ export class NullifierUtils {
       newestTimestamp: newest,
       uniqueCommitments,
       nullifiersPerHour,
+      doubleSpendAttempts: doubleSpends.length,
     };
   }
 }
 
 // ============================================================================
-// NULLIFIER CACHE (FOR PERFORMANCE)
+// NULLIFIER CACHE
 // ============================================================================
 
 export class NullifierCache {
   private cache: Map<string, boolean>;
   private maxSize: number;
   private accessOrder: string[];
+  private hits: number;
+  private misses: number;
 
   constructor(maxSize: number = 10000) {
     this.cache = new Map();
     this.maxSize = maxSize;
     this.accessOrder = [];
+    this.hits = 0;
+    this.misses = 0;
   }
 
   has(nullifierHash: Field): boolean | null {
     const key = nullifierHash.toString();
     
     if (!this.cache.has(key)) {
-      return null; // Cache miss
+      this.misses++;
+      return null;
     }
     
-    // Move to end (most recently used)
+    this.hits++;
+    
     const index = this.accessOrder.indexOf(key);
     if (index > -1) {
       this.accessOrder.splice(index, 1);
@@ -530,7 +724,6 @@ export class NullifierCache {
     const key = nullifierHash.toString();
     
     if (this.cache.size >= this.maxSize && !this.cache.has(key)) {
-      // Evict least recently used
       const lru = this.accessOrder.shift();
       if (lru) {
         this.cache.delete(lru);
@@ -546,9 +739,22 @@ export class NullifierCache {
     this.accessOrder.push(key);
   }
 
+  delete(nullifierHash: Field): boolean {
+    const key = nullifierHash.toString();
+    
+    const index = this.accessOrder.indexOf(key);
+    if (index > -1) {
+      this.accessOrder.splice(index, 1);
+    }
+    
+    return this.cache.delete(key);
+  }
+
   clear(): void {
     this.cache.clear();
     this.accessOrder = [];
+    this.hits = 0;
+    this.misses = 0;
   }
 
   size(): number {
@@ -556,7 +762,30 @@ export class NullifierCache {
   }
 
   getHitRate(): number {
-    // Would track hits/misses in production
-    return 0;
+    const total = this.hits + this.misses;
+    return total === 0 ? 0 : this.hits / total;
+  }
+
+  getStatistics(): {
+    size: number;
+    maxSize: number;
+    hits: number;
+    misses: number;
+    hitRate: number;
+    utilization: number;
+  } {
+    return {
+      size: this.cache.size,
+      maxSize: this.maxSize,
+      hits: this.hits,
+      misses: this.misses,
+      hitRate: this.getHitRate(),
+      utilization: (this.cache.size / this.maxSize) * 100,
+    };
+  }
+
+  resetStatistics(): void {
+    this.hits = 0;
+    this.misses = 0;
   }
 }
