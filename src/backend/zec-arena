@@ -1,0 +1,99 @@
+# ZEC Arena Backend - Render Deployment Guide
+
+Complete production-ready backend for ZEC Arena multiplayer gaming platform with Zcash integration.
+
+## Quick Deploy to Render
+
+### Prerequisites
+
+You will need a GitHub account and the following external services configured before deployment. A Zcash full node with RPC enabled is required for blockchain transactions. At least one shielded z-address is needed as your platform deposit address.
+
+### Step 1: Prepare Your Repository
+
+Create a new GitHub repository and push your code. Your repository should contain the backend.js file, package.json file, render.yaml configuration, Dockerfile for containerization, and the .env.example template for reference.
+
+### Step 2: Deploy on Render
+
+Navigate to the Render dashboard and create a new Web Service. Connect your GitHub repository and select the branch you want to deploy. Render will automatically detect your render.yaml configuration file and set up the required services.
+
+The deployment will create three services automatically. The main web service runs your Node.js backend application. A PostgreSQL database provides persistent storage for user accounts, transactions, game history, and security events. A Redis instance handles session management, caching, and real-time game state.
+
+### Step 3: Configure Environment Variables
+
+After the services are created, you need to configure the critical environment variables that were not auto-populated. Navigate to your web service settings and add the following required variables.
+
+For Zcash node connectivity, set ZCASH_RPC_URL to your node address, ZCASH_RPC_USER to your RPC username, and ZCASH_RPC_PASSWORD to your RPC password. Configure your platform wallet addresses by setting PLATFORM_DEPOSIT_ADDRESS to your main deposit z-address, PLATFORM_HOT_WALLET for automated withdrawals, and PLATFORM_COLD_WALLET for secure storage.
+
+Security secrets should be generated using cryptographically secure methods. Generate a master encryption key with the command openssl rand -hex 32, create a JWT secret for authentication tokens, and set a strong admin API key for administrative operations.
+
+You can optionally adjust game configuration parameters such as HOUSE_EDGE for the platform commission, MIN_DEPOSIT and MAX_DEPOSIT for deposit limits, MIN_WITHDRAWAL and MAX_WITHDRAWAL for withdrawal limits, and VERIFICATION_FEE for the account verification cost.
+
+### Step 4: Database Initialization
+
+The application will automatically create the required database schema on first startup. The schema includes tables for users with authentication and balance tracking, transactions for all financial operations, rooms for game lobbies and match history, and security_events for audit logging.
+
+You can verify the database was initialized correctly by checking the logs for the message "Database schema initialized" and ensuring all four tables were created successfully.
+
+### Step 5: Verify Deployment
+
+Once deployment completes, test your endpoints to ensure everything is working. Check the health endpoint at https://your-app.onrender.com/health which should return status healthy with database, Redis, and blockchain connectivity information.
+
+Test the API health endpoint at https://your-app.onrender.com/api/health for API-specific health checks. You can also test user registration by posting to the signup endpoint with a password and optional email.
+
+### Step 6: Monitor Your Service
+
+Render provides comprehensive monitoring tools in the dashboard. Review the logs for startup messages, error tracking, and transaction processing. Monitor metrics including response times, memory usage, and CPU utilization. The events tab shows deployment history and service restarts.
+
+## Environment Variables Reference
+
+### Required Variables
+
+The NODE_ENV should be set to production for live deployment. The PORT is automatically assigned by Render and defaults to 3001. Database credentials including DB_HOST, DB_PORT, DB_NAME, DB_USER, and DB_PASSWORD are auto-populated from the PostgreSQL service. The REDIS_URL is automatically configured from the Redis service.
+
+Zcash configuration requires ZCASH_RPC_URL pointing to your node, ZCASH_RPC_USER and ZCASH_RPC_PASSWORD for authentication. Platform addresses must be configured including PLATFORM_DEPOSIT_ADDRESS for deposits and PLATFORM_HOT_WALLET for withdrawals.
+
+Security secrets are critical and include MASTER_KEY for encryption, JWT_SECRET for authentication tokens, and ADMIN_API_KEY for admin operations.
+
+### Optional Variables
+
+Game mechanics can be customized through HOUSE_EDGE for platform commission percentage, MAX_GAME_STAKE and MIN_GAME_STAKE for betting limits, and various picture rush and picture match game settings.
+
+HSM integration is available through HSM_ENABLED, HSM_TYPE, and related configuration for hardware security modules. Cloud key management can be configured through AWS KMS or Azure Key Vault settings. Logging can be enhanced with LOG_LEVEL and optional SENTRY_DSN for error tracking.
+
+## Security Best Practices
+
+Never commit sensitive credentials to your repository. Use environment variables for all secrets and rotate them regularly. Always use encrypted secrets for production by running the encrypt command with your sensitive values.
+
+Enable SSL for database connections by setting DB_SSL to true in production. Implement rate limiting which is enabled by default to prevent abuse. Use shielded z-addresses exclusively for all Zcash transactions to maintain privacy.
+
+Keep your Zcash node secure with firewall rules, authentication, and regular updates. Enable HSM if handling large transaction volumes for enhanced security. Implement comprehensive monitoring through regular log reviews and health check automation.
+
+## Troubleshooting
+
+### Build Failures
+
+If the build fails with dependency errors, verify your package.json is valid JSON and all dependencies are available on npm. Check that the Node version in package.json matches what Render supports.
+
+For database connection errors during startup, confirm PostgreSQL service is running and credentials are correct. Verify the DB_SSL setting matches your database configuration and check network connectivity between services.
+
+### Runtime Issues
+
+If the application starts but crashes immediately, review the full logs for specific error messages. Verify all required environment variables are set correctly and check that the Zcash RPC endpoint is accessible from your Render service.
+
+For WebSocket connection problems, confirm your FRONTEND_URL allows the origin and verify that Render has WebSocket support enabled. Check firewall rules if using external services.
+
+For Redis connection failures, verify the Redis service is running and healthy. Check that REDIS_URL format is correct and confirm network connectivity between services.
+
+## Support and Documentation
+
+The complete API documentation is available in the backend code comments. Environment variables are fully documented in the .env.example file. Game mechanics and rules are defined in the configuration constants.
+
+For security best practices, review the encryption and authentication implementation. HSM integration documentation is available for hardware security module setup. The blockchain integration guide covers Zcash RPC usage and transaction monitoring.
+
+## License
+
+This project is licensed under the MIT License. See the LICENSE file for details.
+
+## Version
+
+Current version is 7.0.0 featuring complete authentication system, Zcash integration, Picture Rush and Picture Match games, real-time multiplayer with WebSocket support, automated transaction monitoring, and comprehensive security with encryption and rate limiting.
