@@ -1,5 +1,9 @@
 // ============================================================================
-// MERKLE TREE MANAGER - FULL IMPLEMENTATION
+// X402 MERKLE TREE MANAGER - COMPLETE PRODUCTION IMPLEMENTATION
+// ============================================================================
+// Component 3 of 8
+// Full merkle tree implementation for commitments and nullifiers
+// Witness generation, proof verification, persistence
 // ============================================================================
 
 import {
@@ -29,8 +33,10 @@ export class MerkleTreeManager {
   private nullifierLeaves: Map<string, number>;
   private nextCommitmentIndex: number;
   private nextNullifierIndex: number;
+  private treeHeight: number;
 
   constructor(height: number = 32) {
+    this.treeHeight = height;
     this.commitmentTree = new MerkleTree(height);
     this.nullifierTree = new MerkleTree(height);
     this.commitmentLeaves = new Map();
@@ -38,8 +44,6 @@ export class MerkleTreeManager {
     this.nextCommitmentIndex = 0;
     this.nextNullifierIndex = 0;
   }
-
-  // COMMITMENT TREE OPERATIONS
 
   addCommitment(commitmentHash: Field): {
     index: number;
@@ -75,6 +79,12 @@ export class MerkleTreeManager {
     );
   }
 
+  getCommitmentWitnessByIndex(index: number): CommitmentMerkleWitness {
+    return new CommitmentMerkleWitness(
+      this.commitmentTree.getWitness(BigInt(index))
+    );
+  }
+
   getCommitmentRoot(): Field {
     return this.commitmentTree.getRoot();
   }
@@ -86,6 +96,10 @@ export class MerkleTreeManager {
   getCommitmentIndex(commitmentHash: Field): number | null {
     const index = this.commitmentLeaves.get(commitmentHash.toString());
     return index !== undefined ? index : null;
+  }
+
+  getCommitmentAtIndex(index: number): Field {
+    return this.commitmentTree.getNode(0, BigInt(index));
   }
 
   getAllCommitments(): Array<{ hash: Field; index: number }> {
@@ -100,8 +114,6 @@ export class MerkleTreeManager {
     
     return commitments.sort((a, b) => a.index - b.index);
   }
-
-  // NULLIFIER TREE OPERATIONS
 
   addNullifier(nullifierHash: Field): {
     index: number;
@@ -137,6 +149,12 @@ export class MerkleTreeManager {
     );
   }
 
+  getNullifierWitnessByIndex(index: number): NullifierMerkleWitness {
+    return new NullifierMerkleWitness(
+      this.nullifierTree.getWitness(BigInt(index))
+    );
+  }
+
   getEmptyNullifierWitness(): NullifierMerkleWitness {
     return new NullifierMerkleWitness(
       this.nullifierTree.getWitness(BigInt(this.nextNullifierIndex))
@@ -156,6 +174,10 @@ export class MerkleTreeManager {
     return index !== undefined ? index : null;
   }
 
+  getNullifierAtIndex(index: number): Field {
+    return this.nullifierTree.getNode(0, BigInt(index));
+  }
+
   getAllNullifiers(): Array<{ hash: Field; index: number }> {
     const nullifiers: Array<{ hash: Field; index: number }> = [];
     
@@ -168,8 +190,6 @@ export class MerkleTreeManager {
     
     return nullifiers.sort((a, b) => a.index - b.index);
   }
-
-  // UTILITY METHODS
 
   verifyCommitmentMembership(
     commitmentHash: Field,
@@ -197,8 +217,6 @@ export class MerkleTreeManager {
     return calculatedRoot.equals(root).toBoolean();
   }
 
-  // STATISTICS
-
   getStatistics(): {
     commitmentCount: number;
     nullifierCount: number;
@@ -206,20 +224,22 @@ export class MerkleTreeManager {
     nullifierRoot: string;
     treeHeight: number;
     maxCapacity: number;
+    commitmentUtilization: number;
+    nullifierUtilization: number;
   } {
-    const maxCapacity = Math.pow(2, 32);
+    const maxCapacity = Math.pow(2, this.treeHeight);
     
     return {
       commitmentCount: this.nextCommitmentIndex,
       nullifierCount: this.nextNullifierIndex,
       commitmentRoot: this.commitmentTree.getRoot().toString(),
       nullifierRoot: this.nullifierTree.getRoot().toString(),
-      treeHeight: 32,
+      treeHeight: this.treeHeight,
       maxCapacity,
+      commitmentUtilization: (this.nextCommitmentIndex / maxCapacity) * 100,
+      nullifierUtilization: (this.nextNullifierIndex / maxCapacity) * 100,
     };
   }
-
-  // SERIALIZATION
 
   exportState(): {
     commitments: Array<{ hash: string; index: number }>;
@@ -228,6 +248,7 @@ export class MerkleTreeManager {
     nullifierRoot: string;
     nextCommitmentIndex: number;
     nextNullifierIndex: number;
+    treeHeight: number;
   } {
     const commitments = Array.from(this.commitmentLeaves.entries()).map(([hash, index]) => ({
       hash,
@@ -246,6 +267,7 @@ export class MerkleTreeManager {
       nullifierRoot: this.nullifierTree.getRoot().toString(),
       nextCommitmentIndex: this.nextCommitmentIndex,
       nextNullifierIndex: this.nextNullifierIndex,
+      treeHeight: this.treeHeight,
     };
   }
 
@@ -254,7 +276,12 @@ export class MerkleTreeManager {
     nullifiers: Array<{ hash: string; index: number }>;
     nextCommitmentIndex: number;
     nextNullifierIndex: number;
+    treeHeight: number;
   }): void {
+    if (state.treeHeight !== this.treeHeight) {
+      throw new Error(`Tree height mismatch: expected ${this.treeHeight}, got ${state.treeHeight}`);
+    }
+
     this.commitmentLeaves.clear();
     this.nullifierLeaves.clear();
     
@@ -274,12 +301,10 @@ export class MerkleTreeManager {
     this.nextNullifierIndex = state.nextNullifierIndex;
   }
 
-  // PERSISTENCE
-
   async saveToFile(filepath: string): Promise<void> {
     const fs = require('fs').promises;
     const state = this.exportState();
-    await fs.writeFile(filepath, JSON.stringify(state, null, 2));
+    await fs.writeFile(filepath, JSON.stringify(state, null, 2), 'utf8');
   }
 
   async loadFromFile(filepath: string): Promise<void> {
@@ -288,8 +313,6 @@ export class MerkleTreeManager {
     const state = JSON.parse(data);
     this.importState(state);
   }
-
-  // BATCH OPERATIONS
 
   addCommitmentBatch(commitmentHashes: Field[]): {
     indices: number[];
@@ -333,15 +356,12 @@ export class MerkleTreeManager {
     return { indices, witnesses, oldRoot, newRoot };
   }
 
-  // VALIDATION
-
   validateIntegrity(): {
     valid: boolean;
     errors: string[];
   } {
     const errors: string[] = [];
     
-    // Check commitment indices are sequential
     const commitmentIndices = Array.from(this.commitmentLeaves.values()).sort((a, b) => a - b);
     for (let i = 0; i < commitmentIndices.length; i++) {
       if (commitmentIndices[i] !== i) {
@@ -349,7 +369,6 @@ export class MerkleTreeManager {
       }
     }
     
-    // Check nullifier indices are sequential
     const nullifierIndices = Array.from(this.nullifierLeaves.values()).sort((a, b) => a - b);
     for (let i = 0; i < nullifierIndices.length; i++) {
       if (nullifierIndices[i] !== i) {
@@ -357,7 +376,6 @@ export class MerkleTreeManager {
       }
     }
     
-    // Check next indices match
     if (this.nextCommitmentIndex !== this.commitmentLeaves.size) {
       errors.push(`Commitment count mismatch: ${this.nextCommitmentIndex} vs ${this.commitmentLeaves.size}`);
     }
@@ -365,14 +383,26 @@ export class MerkleTreeManager {
     if (this.nextNullifierIndex !== this.nullifierLeaves.size) {
       errors.push(`Nullifier count mismatch: ${this.nextNullifierIndex} vs ${this.nullifierLeaves.size}`);
     }
+
+    this.commitmentLeaves.forEach((index, hashStr) => {
+      const leaf = this.commitmentTree.getNode(0, BigInt(index));
+      if (leaf.toString() !== hashStr) {
+        errors.push(`Commitment tree mismatch at index ${index}`);
+      }
+    });
+
+    this.nullifierLeaves.forEach((index, hashStr) => {
+      const leaf = this.nullifierTree.getNode(0, BigInt(index));
+      if (leaf.toString() !== hashStr) {
+        errors.push(`Nullifier tree mismatch at index ${index}`);
+      }
+    });
     
     return {
       valid: errors.length === 0,
       errors,
     };
   }
-
-  // SEARCH
 
   findCommitmentsByRange(startIndex: number, endIndex: number): Array<{ hash: Field; index: number }> {
     const commitments: Array<{ hash: Field; index: number }> = [];
@@ -404,20 +434,45 @@ export class MerkleTreeManager {
     return nullifiers.sort((a, b) => a.index - b.index);
   }
 
-  // RESET
-
   reset(): void {
-    this.commitmentTree = new MerkleTree(32);
-    this.nullifierTree = new MerkleTree(32);
+    this.commitmentTree = new MerkleTree(this.treeHeight);
+    this.nullifierTree = new MerkleTree(this.treeHeight);
     this.commitmentLeaves.clear();
     this.nullifierLeaves.clear();
     this.nextCommitmentIndex = 0;
     this.nextNullifierIndex = 0;
   }
+
+  clone(): MerkleTreeManager {
+    const cloned = new MerkleTreeManager(this.treeHeight);
+    const state = this.exportState();
+    cloned.importState(state);
+    return cloned;
+  }
+
+  getCommitmentPath(index: number): Field[] {
+    const path: Field[] = [];
+    for (let level = 0; level < this.treeHeight; level++) {
+      const siblingIndex = BigInt(index) ^ 1n;
+      path.push(this.commitmentTree.getNode(level, siblingIndex));
+      index = Math.floor(index / 2);
+    }
+    return path;
+  }
+
+  getNullifierPath(index: number): Field[] {
+    const path: Field[] = [];
+    for (let level = 0; level < this.treeHeight; level++) {
+      const siblingIndex = BigInt(index) ^ 1n;
+      path.push(this.nullifierTree.getNode(level, siblingIndex));
+      index = Math.floor(index / 2);
+    }
+    return path;
+  }
 }
 
 // ============================================================================
-// MERKLE PROOF VERIFICATION UTILITIES
+// MERKLE PROOF VERIFIER
 // ============================================================================
 
 export class MerkleProofVerifier {
@@ -448,6 +503,10 @@ export class MerkleProofVerifier {
   }
 
   static computeRoot(leaf: Field, path: Field[], indices: boolean[]): Field {
+    if (path.length !== indices.length) {
+      throw new Error('Path and indices length mismatch');
+    }
+
     let current = leaf;
     
     for (let i = 0; i < path.length; i++) {
@@ -462,6 +521,69 @@ export class MerkleProofVerifier {
     }
     
     return current;
+  }
+
+  static verifyPath(
+    leaf: Field,
+    path: Field[],
+    indices: boolean[],
+    expectedRoot: Field
+  ): boolean {
+    const computedRoot = this.computeRoot(leaf, path, indices);
+    return computedRoot.equals(expectedRoot).toBoolean();
+  }
+}
+
+// ============================================================================
+// MERKLE TREE UTILITIES
+// ============================================================================
+
+export class MerkleTreeUtils {
+  static createEmptyTree(height: number): MerkleTree {
+    return new MerkleTree(height);
+  }
+
+  static getMaxCapacity(height: number): number {
+    return Math.pow(2, height);
+  }
+
+  static calculateTreeHeight(maxLeaves: number): number {
+    return Math.ceil(Math.log2(maxLeaves));
+  }
+
+  static isValidIndex(index: number, height: number): boolean {
+    const maxIndex = Math.pow(2, height) - 1;
+    return index >= 0 && index <= maxIndex;
+  }
+
+  static computeSiblingIndex(index: number): number {
+    return index ^ 1;
+  }
+
+  static computeParentIndex(index: number): number {
+    return Math.floor(index / 2);
+  }
+
+  static getIndexPath(leafIndex: number, height: number): boolean[] {
+    const path: boolean[] = [];
+    let index = leafIndex;
+    
+    for (let i = 0; i < height; i++) {
+      path.push((index & 1) === 0);
+      index = Math.floor(index / 2);
+    }
+    
+    return path;
+  }
+
+  static reconstructTree(leaves: Field[], height: number): MerkleTree {
+    const tree = new MerkleTree(height);
+    
+    leaves.forEach((leaf, index) => {
+      tree.setLeaf(BigInt(index), leaf);
+    });
+    
+    return tree;
   }
 }
 
