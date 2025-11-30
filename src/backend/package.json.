@@ -4,13 +4,15 @@
   "description": "ZEC Arena - Complete multiplayer gaming platform with Zcash integration",
   "main": "backend.js",
   "engines": {
-    "node": "18.x"
+    "node": "18.x",
+    "npm": ">=9"
   },
   "scripts": {
     "start": "node backend.js",
     "dev": "nodemon backend.js",
     "encrypt": "node backend.js encrypt",
-    "postinstall": "echo 'Dependencies installed successfully'"
+    "postinstall": "echo 'Dependencies installed successfully'",
+    "build": "echo 'No build step required'"
   },
   "keywords": [
     "zcash",
@@ -21,8 +23,16 @@
     "crypto",
     "zec"
   ],
-  "author": "ZEC Arena Team",
+  "author": "Otr437",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Otr437/Pure-madness-.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Otr437/Pure-madness-/issues"
+  },
+  "homepage": "https://github.com/Otr437/Pure-madness-#readme",
   "dependencies": {
     "express": "^4.18.2",
     "cors": "^2.8.5",
