@@ -1,0 +1,84 @@
+version: '3.9'
+
+services:
+  zec-arena:
+    build: .
+    container_name: zec-arena-backend
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    environment:
+      # === Core ===
+      - NODE_ENV=production
+      - PORT=3001
+      
+      # === Database ===
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=zec_arena
+      - DB_USER=postgres
+      - DB_PASSWORD=${DB_PASSWORD}          # put in .env
+      
+      # === Redis ===
+      - REDIS_URL=redis://redis:6379
+      
+      # === Zcash Node ===
+      - ZCASH_RPC_URL=http://zcashd:8232
+      - ZCASH_RPC_USER=zcashrpc
+      - ZCASH_RPC_PASSWORD=${ZCASH_RPC_PASSWORD}
+      
+      # === Platform Wallets (never commit real ones) ===
+      - PLATFORM_DEPOSIT_ADDRESS=${PLATFORM_DEPOSIT_ADDRESS}
+      - PLATFORM_HOT_WALLET=${PLATFORM_HOT_WALLET}
+      - PLATFORM_COLD_WALLET=${PLATFORM_COLD_WALLET}
+      
+      # === Security (encrypted in .env using your encrypt tool) ===
+      - MASTER_KEY=${MASTER_KEY}                          # 64 hex chars
+      - JWT_SECRET=ENC:...                                # encrypted
+      - ADMIN_API_KEY=ENC:...                             # encrypted
+      - DB_PASSWORD=ENC:...                               # encrypted
+      - ZCASH_RPC_PASSWORD=ENC:...                        # encrypted
+      
+      # === Game & Limits ===
+      - HOUSE_EDGE=0.10
+      - MIN_DEPOSIT=0.001
+      - MAX_WITHDRAWAL=100
+      
+    depends_on:
+      - postgres
+      - redis
+      # - zcashd   # uncomment if you run zcashd in docker too
+
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: zec-arena-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: zec_arena
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7-alpine
+    container_name: zec-arena-redis
+    restart: unless-stopped
+    command: redis-server --save 60 1 --loglevel warning
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+
+volumes:
+  postgres_data:
+  redis_data:
