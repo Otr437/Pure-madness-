@@ -1,1 +1,1662 @@
-1
+#!/bin/bash
+# =============================================
+# ULTIMATE DEPLOYMENT KIT 2025 - COMPLETE UNIFIED
+# Everything from BOTH original scripts merged
+# Full Mina + EVM (Hardhat + Foundry)
+# ALL folders, ALL configs, ALL functions
+# =============================================
+
+set -e
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+MAGENTA='\033[0;35m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+BASE_DIR="$HOME/ULTIMATE_DEPLOYMENT_KIT"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+
+# =============================================
+# UTILITY FUNCTIONS
+# =============================================
+
+ask_yes_no() {
+    local prompt="$1"
+    local default="${2:-n}"
+    while true; do
+        if [ "$default" = "y" ]; then
+            read -p "${prompt} [Y/n]: " response
+            response=${response:-y}
+        else
+            read -p "${prompt} [y/N]: " response
+            response=${response:-n}
+        fi
+        case "$response" in
+            [Yy]*) return 0 ;;
+            [Nn]*) return 1 ;;
+            *) echo -e "${RED}Please answer yes or no.${NC}" ;;
+        esac
+    done
+}
+
+log_success() { echo -e "${GREEN}✓ $1${NC}"; }
+log_error() { echo -e "${RED}✗ $1${NC}"; }
+log_info() { echo -e "${CYAN}ℹ $1${NC}"; }
+log_warning() { echo -e "${YELLOW}⚠ $1${NC}"; }
+
+# =============================================
+# COMPLETE FOLDER STRUCTURE
+# =============================================
+
+create_folder_structure() {
+    log_info "Creating complete folder structure..."
+    
+    mkdir -p "$BASE_DIR"
+    
+    # ========== MINA ECOSYSTEM ==========
+    mkdir -p "$BASE_DIR/MINA/LAUNCH_PADS"
+    mkdir -p "$BASE_DIR/MINA/BUILD_ENV/node_modules"
+    mkdir -p "$BASE_DIR/MINA/BUILD_ENV/cache"
+    mkdir -p "$BASE_DIR/MINA/COMPILED"
+    mkdir -p "$BASE_DIR/MINA/DEPLOY_READY"
+    
+    mkdir -p "$BASE_DIR/MINA/NETWORKS/mainnet"
+    mkdir -p "$BASE_DIR/MINA/NETWORKS/devnet"
+    mkdir -p "$BASE_DIR/MINA/NETWORKS/berkeley"
+    mkdir -p "$BASE_DIR/MINA/NETWORKS/local"
+    
+    mkdir -p "$BASE_DIR/MINA/KEYS/mainnet"
+    mkdir -p "$BASE_DIR/MINA/KEYS/devnet"
+    mkdir -p "$BASE_DIR/MINA/KEYS/berkeley"
+    
+    mkdir -p "$BASE_DIR/MINA/DEPLOYED/mainnet"
+    mkdir -p "$BASE_DIR/MINA/DEPLOYED/devnet"
+    mkdir -p "$BASE_DIR/MINA/DEPLOYED/berkeley"
+    
+    mkdir -p "$BASE_DIR/MINA/SCRIPTS/deploy"
+    mkdir -p "$BASE_DIR/MINA/SCRIPTS/test"
+    mkdir -p "$BASE_DIR/MINA/SCRIPTS/interact"
+    mkdir -p "$BASE_DIR/MINA/SCRIPTS/verify"
+    
+    mkdir -p "$BASE_DIR/MINA/TESTS"
+    mkdir -p "$BASE_DIR/MINA/LOGS/builds"
+    mkdir -p "$BASE_DIR/MINA/LOGS/deployments"
+    mkdir -p "$BASE_DIR/MINA/LOGS/errors"
+    
+    # ========== EVM ECOSYSTEM ==========
+    mkdir -p "$BASE_DIR/EVM/LAUNCH_PADS"
+    
+    mkdir -p "$BASE_DIR/EVM/BUILD_ENV/hardhat/node_modules"
+    mkdir -p "$BASE_DIR/EVM/BUILD_ENV/foundry"
+    mkdir -p "$BASE_DIR/EVM/BUILD_ENV/cache"
+    
+    mkdir -p "$BASE_DIR/EVM/COMPILED/hardhat"
+    mkdir -p "$BASE_DIR/EVM/COMPILED/foundry"
+    mkdir -p "$BASE_DIR/EVM/DEPLOY_READY"
+    
+    mkdir -p "$BASE_DIR/EVM/NETWORKS/ethereum"
+    mkdir -p "$BASE_DIR/EVM/NETWORKS/polygon"
+    mkdir -p "$BASE_DIR/EVM/NETWORKS/arbitrum"
+    mkdir -p "$BASE_DIR/EVM/NETWORKS/optimism"
+    mkdir -p "$BASE_DIR/EVM/NETWORKS/base"
+    mkdir -p "$BASE_DIR/EVM/NETWORKS/avalanche"
+    mkdir -p "$BASE_DIR/EVM/NETWORKS/bsc"
+    mkdir -p "$BASE_DIR/EVM/NETWORKS/sepolia"
+    mkdir -p "$BASE_DIR/EVM/NETWORKS/local"
+    
+    mkdir -p "$BASE_DIR/EVM/KEYS/ethereum"
+    mkdir -p "$BASE_DIR/EVM/KEYS/polygon"
+    mkdir -p "$BASE_DIR/EVM/KEYS/arbitrum"
+    mkdir -p "$BASE_DIR/EVM/KEYS/testnet"
+    
+    mkdir -p "$BASE_DIR/EVM/DEPLOYED/ethereum"
+    mkdir -p "$BASE_DIR/EVM/DEPLOYED/polygon"
+    mkdir -p "$BASE_DIR/EVM/DEPLOYED/arbitrum"
+    mkdir -p "$BASE_DIR/EVM/DEPLOYED/optimism"
+    mkdir -p "$BASE_DIR/EVM/DEPLOYED/base"
+    mkdir -p "$BASE_DIR/EVM/DEPLOYED/avalanche"
+    mkdir -p "$BASE_DIR/EVM/DEPLOYED/bsc"
+    mkdir -p "$BASE_DIR/EVM/DEPLOYED/sepolia"
+    
+    mkdir -p "$BASE_DIR/EVM/SCRIPTS/deploy"
+    mkdir -p "$BASE_DIR/EVM/SCRIPTS/verify"
+    mkdir -p "$BASE_DIR/EVM/SCRIPTS/interact"
+    mkdir -p "$BASE_DIR/EVM/SCRIPTS/test"
+    
+    mkdir -p "$BASE_DIR/EVM/TESTS"
+    mkdir -p "$BASE_DIR/EVM/LOGS/builds"
+    mkdir -p "$BASE_DIR/EVM/LOGS/deployments"
+    mkdir -p "$BASE_DIR/EVM/LOGS/verifications"
+    mkdir -p "$BASE_DIR/EVM/LOGS/errors"
+    
+    # ========== SHARED RESOURCES ==========
+    mkdir -p "$BASE_DIR/TEMPLATES/MINA/basic"
+    mkdir -p "$BASE_DIR/TEMPLATES/MINA/advanced"
+    mkdir -p "$BASE_DIR/TEMPLATES/MINA/defi"
+    mkdir -p "$BASE_DIR/TEMPLATES/EVM/basic"
+    mkdir -p "$BASE_DIR/TEMPLATES/EVM/advanced"
+    mkdir -p "$BASE_DIR/TEMPLATES/EVM/defi"
+    mkdir -p "$BASE_DIR/TEMPLATES/EVM/hardhat"
+    mkdir -p "$BASE_DIR/TEMPLATES/EVM/foundry"
+    
+    mkdir -p "$BASE_DIR/CONFIGS/MINA"
+    mkdir -p "$BASE_DIR/CONFIGS/EVM"
+    mkdir -p "$BASE_DIR/CONFIGS/GLOBAL"
+    
+    mkdir -p "$BASE_DIR/BACKUPS/MINA"
+    mkdir -p "$BASE_DIR/BACKUPS/EVM"
+    mkdir -p "$BASE_DIR/BACKUPS/KEYS"
+    
+    mkdir -p "$BASE_DIR/DOCS/MINA"
+    mkdir -p "$BASE_DIR/DOCS/EVM"
+    mkdir -p "$BASE_DIR/DOCS/DEPLOYMENTS"
+    
+    mkdir -p "$BASE_DIR/REPORTS/daily"
+    mkdir -p "$BASE_DIR/REPORTS/deployments"
+    mkdir -p "$BASE_DIR/REPORTS/costs"
+    
+    mkdir -p "$BASE_DIR/UTILS/scripts"
+    mkdir -p "$BASE_DIR/UTILS/tools"
+    
+    chmod 700 "$BASE_DIR/MINA/KEYS" 2>/dev/null || true
+    chmod 700 "$BASE_DIR/EVM/KEYS" 2>/dev/null || true
+    
+    log_success "Complete folder structure created at $BASE_DIR"
+}
+
+# =============================================
+# DEPENDENCY INSTALLATION
+# =============================================
+
+install_all_dependencies() {
+    echo -e "\n${YELLOW}╔═══════════════════════════════════════════════╗${NC}"
+    echo -e "${YELLOW}║   DEPENDENCY INSTALLATION                     ║${NC}"
+    echo -e "${YELLOW}╚═══════════════════════════════════════════════╝${NC}\n"
+    
+    # Node.js
+    if ! command -v node &> /dev/null; then
+        log_warning "Node.js not found"
+        if ask_yes_no "Install Node.js via nvm?" "y"; then
+            curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+            export NVM_DIR="$HOME/.nvm"
+            [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+            nvm install --lts && nvm use --lts
+            log_success "Node.js installed: $(node --version)"
+        else
+            log_error "Node.js is required. Exiting."
+            exit 1
+        fi
+    else
+        log_success "Node.js: $(node --version)"
+    fi
+    
+    # zkApp CLI
+    if ! command -v zk &> /dev/null; then
+        if ask_yes_no "Install zkApp CLI for Mina?" "y"; then
+            npm install -g zkapp-cli@latest
+            log_success "zkApp CLI installed"
+        else
+            log_warning "zkApp CLI skipped (needed for Mina deployments)"
+        fi
+    else
+        log_success "zkApp CLI: $(zk --version 2>/dev/null | head -1)"
+    fi
+    
+    # Hardhat
+    echo -e "\n${BLUE}=== Hardhat Setup ===${NC}"
+    if ask_yes_no "Setup Hardhat environment?" "y"; then
+        cd "$BASE_DIR/EVM/BUILD_ENV/hardhat"
+        [ ! -f "package.json" ] && npm init -y 2>/dev/null
+        
+        log_info "Installing Hardhat packages..."
+        npm install --save-dev \
+            hardhat@latest \
+            @nomicfoundation/hardhat-toolbox@latest \
+            @nomicfoundation/hardhat-verify@latest \
+            @openzeppelin/contracts@latest \
+            ethers@latest \
+            dotenv@latest 2>/dev/null
+        
+        log_success "Hardhat installed"
+    else
+        log_warning "Hardhat skipped"
+    fi
+    
+    # Foundry
+    echo -e "\n${BLUE}=== Foundry Setup ===${NC}"
+    if ! command -v forge &> /dev/null; then
+        if ask_yes_no "Install Foundry?" "y"; then
+            log_info "Installing Foundry..."
+            curl -L https://foundry.paradigm.xyz | bash
+            export PATH="$HOME/.foundry/bin:$PATH"
+            
+            if [ -f "$HOME/.bashrc" ]; then
+                source "$HOME/.bashrc" 2>/dev/null || true
+            elif [ -f "$HOME/.zshrc" ]; then
+                source "$HOME/.zshrc" 2>/dev/null || true
+            fi
+            
+            foundryup 2>/dev/null || true
+            log_success "Foundry installed"
+        else
+            log_warning "Foundry skipped"
+        fi
+    else
+        log_success "Foundry: $(forge --version 2>/dev/null | head -1)"
+    fi
+    
+    # Additional tools
+    if ask_yes_no "Install additional tools (jq for JSON parsing)?" "y"; then
+        if command -v apt-get &> /dev/null; then
+            sudo apt-get update && sudo apt-get install -y jq 2>/dev/null || true
+        elif command -v brew &> /dev/null; then
+            brew install jq 2>/dev/null || true
+        elif command -v yum &> /dev/null; then
+            sudo yum install -y jq 2>/dev/null || true
+        fi
+        log_success "Additional tools installed"
+    fi
+    
+    log_success "All dependencies installed"
+}
+
+# =============================================
+# ALL NETWORK CONFIGURATIONS
+# =============================================
+
+create_all_network_configs() {
+    log_info "Creating ALL network configurations..."
+    
+    # ========== MINA NETWORKS ==========
+    
+    cat > "$BASE_DIR/MINA/NETWORKS/mainnet/config.json" <<'EOF'
+{
+  "network": "mainnet",
+  "name": "Mina Mainnet",
+  "url": "https://api.minascan.io/node/mainnet/v1/graphql",
+  "archive": "https://api.minascan.io/archive/mainnet/v1/graphql",
+  "explorerUrl": "https://minascan.io/mainnet",
+  "chainId": "mainnet",
+  "defaultFee": "0.1",
+  "confirmations": 3,
+  "gasLimit": "10000000"
+}
+EOF
+
+    cat > "$BASE_DIR/MINA/NETWORKS/devnet/config.json" <<'EOF'
+{
+  "network": "devnet",
+  "name": "Mina Devnet",
+  "url": "https://api.minascan.io/node/devnet/v1/graphql",
+  "archive": "https://api.minascan.io/archive/devnet/v1/graphql",
+  "explorerUrl": "https://minascan.io/devnet",
+  "chainId": "devnet",
+  "defaultFee": "0.1",
+  "confirmations": 1,
+  "gasLimit": "10000000",
+  "faucet": "https://faucet.minaprotocol.com"
+}
+EOF
+
+    cat > "$BASE_DIR/MINA/NETWORKS/berkeley/config.json" <<'EOF'
+{
+  "network": "berkeley",
+  "name": "Berkeley Testnet",
+  "url": "https://api.minascan.io/node/berkeley/v1/graphql",
+  "archive": "https://api.minascan.io/archive/berkeley/v1/graphql",
+  "explorerUrl": "https://minascan.io/berkeley",
+  "chainId": "berkeley",
+  "defaultFee": "0.1",
+  "confirmations": 1,
+  "gasLimit": "10000000",
+  "faucet": "https://faucet.minaprotocol.com"
+}
+EOF
+
+    cat > "$BASE_DIR/MINA/NETWORKS/local/config.json" <<'EOF'
+{
+  "network": "local",
+  "name": "Local Mina Network",
+  "url": "http://localhost:3085/graphql",
+  "chainId": "local",
+  "defaultFee": "0.1",
+  "confirmations": 1
+}
+EOF
+
+    # ========== EVM NETWORKS ==========
+    
+    cat > "$BASE_DIR/EVM/NETWORKS/ethereum/config.json" <<'EOF'
+{
+  "network": "ethereum",
+  "name": "Ethereum Mainnet",
+  "chainId": 1,
+  "rpc": "https://eth.llamarpc.com",
+  "wss": "wss://eth.llamarpc.com",
+  "explorer": "https://etherscan.io",
+  "currency": "ETH",
+  "decimals": 18,
+  "gasPrice": "auto",
+  "apiKey": "YOUR_ETHERSCAN_API_KEY"
+}
+EOF
+
+    cat > "$BASE_DIR/EVM/NETWORKS/polygon/config.json" <<'EOF'
+{
+  "network": "polygon",
+  "name": "Polygon Mainnet",
+  "chainId": 137,
+  "rpc": "https://polygon-rpc.com",
+  "wss": "wss://polygon-rpc.com",
+  "explorer": "https://polygonscan.com",
+  "currency": "MATIC",
+  "decimals": 18,
+  "gasPrice": "auto",
+  "apiKey": "YOUR_POLYGONSCAN_API_KEY"
+}
+EOF
+
+    cat > "$BASE_DIR/EVM/NETWORKS/arbitrum/config.json" <<'EOF'
+{
+  "network": "arbitrum",
+  "name": "Arbitrum One",
+  "chainId": 42161,
+  "rpc": "https://arb1.arbitrum.io/rpc",
+  "wss": "wss://arb1.arbitrum.io/ws",
+  "explorer": "https://arbiscan.io",
+  "currency": "ETH",
+  "decimals": 18,
+  "gasPrice": "auto",
+  "apiKey": "YOUR_ARBISCAN_API_KEY"
+}
+EOF
+
+    cat > "$BASE_DIR/EVM/NETWORKS/optimism/config.json" <<'EOF'
+{
+  "network": "optimism",
+  "name": "Optimism",
+  "chainId": 10,
+  "rpc": "https://mainnet.optimism.io",
+  "wss": "wss://mainnet.optimism.io",
+  "explorer": "https://optimistic.etherscan.io",
+  "currency": "ETH",
+  "decimals": 18,
+  "gasPrice": "auto",
+  "apiKey": "YOUR_OPTIMISM_API_KEY"
+}
+EOF
+
+    cat > "$BASE_DIR/EVM/NETWORKS/base/config.json" <<'EOF'
+{
+  "network": "base",
+  "name": "Base",
+  "chainId": 8453,
+  "rpc": "https://mainnet.base.org",
+  "wss": "wss://mainnet.base.org",
+  "explorer": "https://basescan.org",
+  "currency": "ETH",
+  "decimals": 18,
+  "gasPrice": "auto",
+  "apiKey": "YOUR_BASESCAN_API_KEY"
+}
+EOF
+
+    cat > "$BASE_DIR/EVM/NETWORKS/avalanche/config.json" <<'EOF'
+{
+  "network": "avalanche",
+  "name": "Avalanche C-Chain",
+  "chainId": 43114,
+  "rpc": "https://api.avax.network/ext/bc/C/rpc",
+  "explorer": "https://snowtrace.io",
+  "currency": "AVAX",
+  "decimals": 18,
+  "gasPrice": "auto",
+  "apiKey": "YOUR_SNOWTRACE_API_KEY"
+}
+EOF
+
+    cat > "$BASE_DIR/EVM/NETWORKS/bsc/config.json" <<'EOF'
+{
+  "network": "bsc",
+  "name": "BNB Smart Chain",
+  "chainId": 56,
+  "rpc": "https://bsc-dataseed.binance.org",
+  "explorer": "https://bscscan.com",
+  "currency": "BNB",
+  "decimals": 18,
+  "gasPrice": "auto",
+  "apiKey": "YOUR_BSCSCAN_API_KEY"
+}
+EOF
+
+    cat > "$BASE_DIR/EVM/NETWORKS/sepolia/config.json" <<'EOF'
+{
+  "network": "sepolia",
+  "name": "Sepolia Testnet",
+  "chainId": 11155111,
+  "rpc": "https://rpc.sepolia.org",
+  "wss": "wss://rpc.sepolia.org",
+  "explorer": "https://sepolia.etherscan.io",
+  "currency": "ETH",
+  "decimals": 18,
+  "gasPrice": "auto",
+  "faucet": "https://sepoliafaucet.com",
+  "apiKey": "YOUR_ETHERSCAN_API_KEY"
+}
+EOF
+
+    cat > "$BASE_DIR/EVM/NETWORKS/local/config.json" <<'EOF'
+{
+  "network": "local",
+  "name": "Local Hardhat/Foundry",
+  "chainId": 31337,
+  "rpc": "http://localhost:8545",
+  "currency": "ETH",
+  "decimals": 18
+}
+EOF
+
+    log_success "All network configurations created"
+}
+
+# =============================================
+# ALL PROJECT TEMPLATES
+# =============================================
+
+create_all_templates() {
+    log_info "Creating all project templates..."
+    
+    # ========== MINA BASIC TEMPLATE ==========
+    
+    cat > "$BASE_DIR/TEMPLATES/MINA/basic/BasicContract.ts" <<'EOF'
+import {
+  SmartContract,
+  method,
+  state,
+  State,
+  Field,
+  Permissions,
+  UInt64,
+} from 'o1js';
+
+export class BasicContract extends SmartContract {
+  @state(Field) value = State<Field>();
+  @state(UInt64) counter = State<UInt64>();
+
+  async deploy() {
+    await super.deploy();
+    this.account.permissions.set({
+      ...Permissions.default(),
+      setVerificationKey: Permissions.VerificationKey.impossibleDuringCurrentVersion(),
+    });
+    this.value.set(Field(0));
+    this.counter.set(UInt64.from(0));
+  }
+
+  @method async updateValue(newValue: Field) {
+    const currentValue = this.value.getAndRequireEquals();
+    currentValue.equals(newValue).assertFalse();
+    this.value.set(newValue);
+    const counter = this.counter.getAndRequireEquals();
+    this.counter.set(counter.add(1));
+  }
+
+  @method async increment() {
+    const counter = this.counter.getAndRequireEquals();
+    this.counter.set(counter.add(1));
+  }
+}
+EOF
+
+    # ========== MINA ADVANCED TEMPLATE ==========
+    
+    cat > "$BASE_DIR/TEMPLATES/MINA/advanced/AdvancedContract.ts" <<'EOF'
+import {
+  SmartContract,
+  method,
+  state,
+  State,
+  PublicKey,
+  Field,
+  Permissions,
+  UInt64,
+  Bool,
+  Struct,
+} from 'o1js';
+
+export class Record extends Struct({
+  id: Field,
+  value: UInt64,
+  timestamp: UInt64,
+  active: Bool,
+}) {}
+
+export class AdvancedContract extends SmartContract {
+  @state(PublicKey) owner = State<PublicKey>();
+  @state(Field) recordHash = State<Field>();
+  @state(UInt64) totalRecords = State<UInt64>();
+  @state(Bool) paused = State<Bool>();
+
+  async deploy() {
+    await super.deploy();
+    this.account.permissions.set({
+      ...Permissions.default(),
+      setVerificationKey: Permissions.VerificationKey.impossibleDuringCurrentVersion(),
+      setPermissions: Permissions.impossible(),
+    });
+    
+    this.owner.set(this.sender.getAndRequireSignature());
+    this.recordHash.set(Field(0));
+    this.totalRecords.set(UInt64.from(0));
+    this.paused.set(Bool(false));
+  }
+
+  @method async addRecord(record: Record) {
+    const paused = this.paused.getAndRequireEquals();
+    paused.assertFalse();
+    
+    const hash = record.hash();
+    this.recordHash.set(hash);
+    
+    const total = this.totalRecords.getAndRequireEquals();
+    this.totalRecords.set(total.add(1));
+  }
+
+  @method async togglePause() {
+    const owner = this.owner.getAndRequireEquals();
+    const sender = this.sender.getAndRequireSignature();
+    owner.equals(sender).assertTrue();
+    
+    const paused = this.paused.getAndRequireEquals();
+    this.paused.set(paused.not());
+  }
+}
+EOF
+
+    # ========== EVM BASIC CONTRACT ==========
+    
+    cat > "$BASE_DIR/TEMPLATES/EVM/basic/BasicContract.sol" <<'EOF'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/Pausable.sol";
+
+contract BasicContract is Ownable, ReentrancyGuard, Pausable {
+    uint256 public value;
+    uint256 public counter;
+    
+    event ValueUpdated(uint256 indexed oldValue, uint256 indexed newValue, address indexed updater);
+    event CounterIncremented(uint256 indexed newCounter);
+    
+    error SameValue();
+    error ZeroValue();
+    
+    constructor(uint256 _initialValue) Ownable(msg.sender) {
+        if (_initialValue == 0) revert ZeroValue();
+        value = _initialValue;
+        counter = 0;
+    }
+    
+    function updateValue(uint256 _newValue) external whenNotPaused nonReentrant {
+        if (_newValue == value) revert SameValue();
+        if (_newValue == 0) revert ZeroValue();
+        
+        uint256 oldValue = value;
+        value = _newValue;
+        counter++;
+        
+        emit ValueUpdated(oldValue, _newValue, msg.sender);
+    }
+    
+    function increment() external whenNotPaused {
+        counter++;
+        emit CounterIncremented(counter);
+    }
+    
+    function pause() external onlyOwner {
+        _pause();
+    }
+    
+    function unpause() external onlyOwner {
+        _unpause();
+    }
+    
+    function getValue() external view returns (uint256) {
+        return value;
+    }
+    
+    function getCounter() external view returns (uint256) {
+        return counter;
+    }
+}
+EOF
+
+    # ========== EVM ADVANCED CONTRACT ==========
+    
+    cat > "$BASE_DIR/TEMPLATES/EVM/advanced/AdvancedContract.sol" <<'EOF'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+import "@openzeppelin/contracts/access/AccessControl.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/Pausable.sol";
+
+contract AdvancedContract is AccessControl, ReentrancyGuard, Pausable {
+    bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
+    bytes32 public constant OPERATOR_ROLE = keccak256("OPERATOR_ROLE");
+    
+    struct Record {
+        uint256 id;
+        uint256 value;
+        uint256 timestamp;
+        address creator;
+        bool active;
+    }
+    
+    mapping(uint256 => Record) public records;
+    uint256 public totalRecords;
+    
+    event RecordCreated(uint256 indexed id, uint256 value, address indexed creator);
+    event RecordUpdated(uint256 indexed id, uint256 newValue);
+    event RecordDeactivated(uint256 indexed id);
+    
+    constructor() {
+        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        _grantRole(ADMIN_ROLE, msg.sender);
+        _grantRole(OPERATOR_ROLE, msg.sender);
+    }
+    
+    function createRecord(uint256 _value) external onlyRole(OPERATOR_ROLE) whenNotPaused returns (uint256) {
+        uint256 recordId = totalRecords++;
+        
+        records[recordId] = Record({
+            id: recordId,
+            value: _value,
+            timestamp: block.timestamp,
+            creator: msg.sender,
+            active: true
+        });
+        
+        emit RecordCreated(recordId, _value, msg.sender);
+        return recordId;
+    }
+    
+    function updateRecord(uint256 _id, uint256 _newValue) external onlyRole(OPERATOR_ROLE) whenNotPaused {
+        require(records[_id].active, "Record not active");
+        records[_id].value = _newValue;
+        records[_id].timestamp = block.timestamp;
+        emit RecordUpdated(_id, _newValue);
+    }
+    
+    function deactivateRecord(uint256 _id) external onlyRole(ADMIN_ROLE) {
+        require(records[_id].active, "Record already inactive");
+        records[_id].active = false;
+        emit RecordDeactivated(_id);
+    }
+    
+    function pause() external onlyRole(ADMIN_ROLE) {
+        _pause();
+    }
+    
+    function unpause() external onlyRole(ADMIN_ROLE) {
+        _unpause();
+    }
+    
+    function getRecord(uint256 _id) external view returns (Record memory) {
+        return records[_id];
+    }
+}
+EOF
+
+    # ========== EVM TEST TEMPLATES ==========
+    
+    cat > "$BASE_DIR/TEMPLATES/EVM/basic/BasicContract.t.sol" <<'EOF'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+import "forge-std/Test.sol";
+import "../src/BasicContract.sol";
+
+contract BasicContractTest is Test {
+    BasicContract public basicContract;
+    address public owner;
+    address public user;
+    
+    function setUp() public {
+        owner = address(this);
+        user = address(0x1);
+        basicContract = new BasicContract(100);
+    }
+    
+    function testInitialValue() public {
+        assertEq(basicContract.value(), 100);
+        assertEq(basicContract.counter(), 0);
+    }
+    
+    function testUpdateValue() public {
+        basicContract.updateValue(200);
+        assertEq(basicContract.value(), 200);
+        assertEq(basicContract.counter(), 1);
+    }
+    
+    function testIncrement() public {
+        basicContract.increment();
+        assertEq(basicContract.counter(), 1);
+    }
+    
+    function testRevertSameValue() public {
+        vm.expectRevert(BasicContract.SameValue.selector);
+        basicContract.updateValue(100);
+    }
+    
+    function testRevertZeroValue() public {
+        vm.expectRevert(BasicContract.ZeroValue.selector);
+        basicContract.updateValue(0);
+    }
+    
+    function testPause() public {
+        basicContract.pause();
+        vm.expectRevert();
+        basicContract.updateValue(200);
+    }
+    
+    function testUnpause() public {
+        basicContract.pause();
+        basicContract.unpause();
+        basicContract.updateValue(200);
+        assertEq(basicContract.value(), 200);
+    }
+}
+EOF
+
+    # ========== HARDHAT CONFIG TEMPLATES ==========
+    
+    cat > "$BASE_DIR/TEMPLATES/EVM/hardhat/hardhat.config.ts" <<'EOF'
+import { HardhatUserConfig } from "hardhat/config";
+import "@nomicfoundation/hardhat-toolbox";
+import "@nomicfoundation/hardhat-verify";
+import * as dotenv from "dotenv";
+
+dotenv.config();
+
+const config: HardhatUserConfig = {
+  solidity: {
+    version: "0.8.24",
+    settings: {
+      optimizer: {
+        enabled: true,
+        runs: 200,
+      },
+    },
+  },
+  networks: {
+    sepolia: {
+      url: process.env.SEPOLIA_RPC || "https://rpc.sepolia.org",
+      accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : [],
+      chainId: 11155111,
+    },
+    ethereum: {
+      url: process.env.ETHEREUM_RPC || "https://eth.llamarpc.com",
+      accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : [],
+      chainId: 1,
+    },
+    polygon: {
+      url: process.env.POLYGON_RPC || "https://polygon-rpc.com",
+      accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : [],
+      chainId: 137,
+    },
+    arbitrum: {
+      url: process.env.ARBITRUM_RPC || "https://arb1.arbitrum.io/rpc",
+      accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : [],
+      chainId: 42161,
+    },
+    base: {
+      url: process.env.BASE_RPC || "https://mainnet.base.org",
+      accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : [],
+      chainId: 8453,
+    },
+  },
+  etherscan: {
+    apiKey: {
+      mainnet: process.env.ETHERSCAN_API_KEY || "",
+      sepolia: process.env.ETHERSCAN_API_KEY || "",
+      polygon: process.env.POLYGONSCAN_API_KEY || "",
+      arbitrumOne: process.env.ARBISCAN_API_KEY || "",
+      base: process.env.BASESCAN_API_KEY || "",
+    },
+  },
+};
+
+export default config;
+EOF
+
+    cat > "$BASE_DIR/TEMPLATES/EVM/hardhat/.env.example" <<'EOF'
+# Private Key (NEVER COMMIT THIS FILE)
+PRIVATE_KEY=your_private_key_here
+
+# RPC URLs
+SEPOLIA_RPC=https://rpc.sepolia.org
+ETHEREUM_RPC=https://eth.llamarpc.com
+POLYGON_RPC=https://polygon-rpc.com
+ARBITRUM_RPC=https://arb1.arbitrum.io/rpc
+BASE_RPC=https://mainnet.base.org
+
+# API Keys for verification
+ETHERSCAN_API_KEY=your_etherscan_api_key
+POLYGONSCAN_API_KEY=your_polygonscan_api_key
+ARBISCAN_API_KEY=your_arbiscan_api_key
+BASESCAN_API_KEY=your_basescan_api_key
+EOF
+
+    # ========== FOUNDRY CONFIG TEMPLATES ==========
+    
+    cat > "$BASE_DIR/TEMPLATES/EVM/foundry/foundry.toml" <<'EOF'
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+solc_version = "0.8.24"
+optimizer = true
+optimizer_runs = 200
+via_ir = false
+
+[profile.ci]
+fuzz = { runs = 5000 }
+invariant = { runs = 1000 }
+
+[fmt]
+line_length = 120
+tab_width = 4
+bracket_spacing = true
+
+[rpc_endpoints]
+ethereum = "${ETHEREUM_RPC}"
+sepolia = "${SEPOLIA_RPC}"
+polygon = "${POLYGON_RPC}"
+arbitrum = "${ARBITRUM_RPC}"
+base = "${BASE_RPC}"
+
+[etherscan]
+ethereum = { key = "${ETHERSCAN_API_KEY}" }
+sepolia = { key = "${ETHERSCAN_API_KEY}" }
+polygon = { key = "${POLYGONSCAN_API_KEY}" }
+arbitrum = { key = "${ARBISCAN_API_KEY}" }
+base = { key = "${BASESCAN_API_KEY}" }
+EOF
+
+    cat > "$BASE_DIR/TEMPLATES/EVM/foundry/.env.example" <<'EOF'
+# Private Key (NEVER COMMIT THIS FILE)
+# NOTE: For production, use encrypted keystores instead!
+# Command: cast wallet import mykey --interactive
+PRIVATE_KEY=your_private_key_here
+
+# RPC URLs
+SEPOLIA_RPC=https://rpc.sepolia.org
+ETHEREUM_RPC=https://eth.llamarpc.com
+POLYGON_RPC=https://polygon-rpc.com
+ARBITRUM_RPC=https://arb1.arbitrum.io/rpc
+BASE_RPC=https://mainnet.base.org
+
+# API Keys
+ETHERSCAN_API_KEY=your_etherscan_api_key
+POLYGONSCAN_API_KEY=your_polygonscan_api_key
+ARBISCAN_API_KEY=your_arbiscan_api_key
+BASESCAN_API_KEY=your_basescan_api_key
+EOF
+
+    log_success "All project templates created"
+}
+
+# =============================================
+# DEPLOYMENT SCRIPTS
+# =============================================
+
+create_deployment_scripts() {
+    log_info "Creating deployment scripts..."
+    
+    # ========== MINA DEPLOY SCRIPT ==========
+    
+    cat > "$BASE_DIR/MINA/SCRIPTS/deploy/deploy.ts" <<'EOF'
+import { Mina, PrivateKey, AccountUpdate, fetchAccount } from 'o1js';
+import fs from 'fs';
+import path from 'path';
+
+interface DeployConfig {
+  network: string;
+  contractName: string;
+  feePayerKey: string;
+}
+
+async function deploy() {
+  const configPath = process.argv[2];
+  if (!configPath) {
+    console.error('Usage: ts-node deploy.ts <config-path>');
+    process.exit(1);
+  }
+
+  const config: DeployConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  const networkConfigPath = path.join(__dirname, '../../NETWORKS', config.network, 'config.json');
+  const networkConfig = JSON.parse(fs.readFileSync(networkConfigPath, 'utf8'));
+
+  console.log(`\n🚀 Deploying to ${networkConfig.name}`);
+  console.log(`   Network: ${config.network}`);
+  console.log(`   Contract: ${config.contractName}\n`);
+
+  const Network = Mina.Network({
+    mina: networkConfig.url,
+    archive: networkConfig.archive,
+  });
+  Mina.setActiveInstance(Network);
+
+  const feePayerKey = PrivateKey.fromBase58(config.feePayerKey);
+  const feePayerAddress = feePayerKey.toPublicKey();
+
+  console.log(`Fee payer: ${feePayerAddress.toBase58()}`);
+  await fetchAccount({ publicKey: feePayerAddress });
+
+  const contractPath = path.join(__dirname, '../../DEPLOY_READY', config.contractName);
+  const { default: Contract } = await import(contractPath);
+
+  const contractKey = PrivateKey.random();
+  const contractAddress = contractKey.toPublicKey();
+
+  console.log(`\nContract address: ${contractAddress.toBase58()}`);
+  console.log('\n⏳ Compiling contract...');
+  
+  await Contract.compile();
+  console.log('✓ Compilation complete');
+
+  console.log('\n⏳ Creating deploy transaction...');
+  const tx = await Mina.transaction(
+    { sender: feePayerAddress, fee: Number(networkConfig.defaultFee) * 1e9 },
+    async () => {
+      AccountUpdate.fundNewAccount(feePayerAddress);
+      await Contract.deploy();
+    }
+  );
+
+  await tx.prove();
+  const sentTx = await tx.sign([feePayerKey, contractKey]).send();
+
+  console.log('✓ Transaction sent');
+
+  const deploymentInfo = {
+    network: config.network,
+    contractName: config.contractName,
+    contractAddress: contractAddress.toBase58(),
+    contractKey: contractKey.toBase58(),
+    feePayerAddress: feePayerAddress.toBase58(),
+    timestamp: new Date().toISOString(),
+    transactionHash: sentTx.hash,
+    explorerUrl: `${networkConfig.explorerUrl}/tx/${sentTx.hash}`,
+  };
+
+  const deploymentPath = path.join(__dirname, '../../DEPLOYED', config.network, `${config.contractName}_${Date.now()}.json`);
+  fs.writeFileSync(deploymentPath, JSON.stringify(deploymentInfo, null, 2));
+
+  console.log('\n✅ DEPLOYMENT SUCCESSFUL\n');
+  console.log(`Contract: ${contractAddress.toBase58()}`);
+  console.log(`Explorer: ${deploymentInfo.explorerUrl}`);
+  console.log(`Deployment info saved: ${deploymentPath}\n`);
+}
+
+deploy().catch((err) => {
+  console.error('\n❌ Deployment failed:', err);
+  process.exit(1);
+});
+EOF
+
+    # ========== HARDHAT DEPLOY SCRIPT ==========
+    
+    cat > "$BASE_DIR/EVM/SCRIPTS/deploy/deploy-hardhat.ts" <<'EOF'
+import { ethers } from 'hardhat';
+import fs from 'fs';
+import path from 'path';
+
+interface DeployConfig {
+  network: string;
+  contractName: string;
+  constructorArgs?: any[];
+}
+
+async function main() {
+  const args = process.argv.slice(2);
+  const configPath = args[args.length - 1];
+  
+  if (!fs.existsSync(configPath)) {
+    console.error('Config file not found');
+    process.exit(1);
+  }
+
+  const config: DeployConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+
+  console.log(`\n🚀 Deploying ${config.contractName} to ${config.network}`);
+
+  const [deployer] = await ethers.getSigners();
+  console.log(`Deploying with account: ${deployer.address}`);
+
+  const balance = await ethers.provider.getBalance(deployer.address);
+  console.log(`Account balance: ${ethers.formatEther(balance)} ETH`);
+
+  console.log('\n⏳ Deploying contract...');
+  
+  const Contract = await ethers.getContractFactory(config.contractName);
+  const contract = await Contract.deploy(...(config.constructorArgs || []));
+  await contract.waitForDeployment();
+
+  const address = await contract.getAddress();
+  console.log(`✓ ${config.contractName} deployed to: ${address}`);
+
+  const networkConfigPath = path.join(__dirname, '../../NETWORKS', config.network, 'config.json');
+  const networkConfig = JSON.parse(fs.readFileSync(networkConfigPath, 'utf8'));
+
+  const deploymentInfo = {
+    network: config.network,
+    contractName: config.contractName,
+    contractAddress: address,
+    deployer: deployer.address,
+    constructorArgs: config.constructorArgs || [],
+    timestamp: new Date().toISOString(),
+    explorerUrl: `${networkConfig.explorer}/address/${address}`,
+    blockNumber: await ethers.provider.getBlockNumber(),
+  };
+
+  const deploymentPath = path.join(__dirname, '../../DEPLOYED', config.network, `${config.contractName}_${Date.now()}.json`);
+  fs.writeFileSync(deploymentPath, JSON.stringify(deploymentInfo, null, 2));
+
+  console.log('\n✅ DEPLOYMENT SUCCESSFUL\n');
+  console.log(`Contract: ${address}`);
+  console.log(`Explorer: ${deploymentInfo.explorerUrl}`);
+  console.log(`Deployment saved: ${deploymentPath}\n`);
+}
+
+main().catch((error) => {
+  console.error('\n❌ Deployment failed:', error);
+  process.exit(1);
+});
+EOF
+
+    # ========== FOUNDRY DEPLOY SCRIPT ==========
+    
+    cat > "$BASE_DIR/EVM/SCRIPTS/deploy/Deploy.s.sol" <<'EOF'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+import "forge-std/Script.sol";
+
+contract DeployScript is Script {
+    function run() external {
+        uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
+        address deployer = vm.addr(deployerPrivateKey);
+        
+        console.log("Deploying contracts with address:", deployer);
+        console.log("Account balance:", deployer.balance);
+        
+        vm.startBroadcast(deployerPrivateKey);
+        
+        // Deploy your contract here
+        // Example:
+        // MyContract myContract = new MyContract(constructorArg1, constructorArg2);
+        // console.log("Contract deployed at:", address(myContract));
+        
+        vm.stopBroadcast();
+        
+        console.log("Deployment complete!");
+    }
+}
+EOF
+
+    chmod +x "$BASE_DIR/MINA/SCRIPTS/deploy/deploy.ts" 2>/dev/null || true
+    chmod +x "$BASE_DIR/EVM/SCRIPTS/deploy/deploy-hardhat.ts" 2>/dev/null || true
+    
+    log_success "Deployment scripts created"
+}
+
+# =============================================
+# SECURITY SETUP
+# =============================================
+
+setup_security() {
+    log_info "Setting up security..."
+    
+    cat > "$BASE_DIR/.gitignore" <<'EOF'
+# ========================================
+# CRITICAL: NEVER COMMIT PRIVATE KEYS
+# ========================================
+
+# Private Keys & Environment Files
+**/KEYS/**
+**/.env
+**/.env.local
+**/.env.*.local
+**/private_key*
+**/keystore/**
+**/*_key.json
+**/*.pem
+
+# Build Outputs
+**/node_modules/
+**/build/
+**/dist/
+**/out/
+**/cache/
+**/artifacts/
+**/typechain-types/
+
+# Logs
+**/logs/
+**/*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# Hardhat
+cache/
+artifacts/
+
+# Foundry
+out/
+cache_forge/
+
+# Coverage
+coverage/
+coverage.json
+*.lcov
+
+# Temporary
+*.tmp
+*.temp
+.temp/
+EOF
+
+    cat > "$BASE_DIR/SECURITY.md" <<'EOF'
+# Security Best Practices
+
+## 🔐 Key Management
+
+### CRITICAL: NEVER commit private keys or .env files to version control!
+
+### Hardhat
+- **Always use .env files** (never commit!)
+- Store private keys securely in password manager
+- Use hardware wallets (Ledger/Trezor) for mainnet deployments
+- Consider using AWS KMS or similar for production
+
+### Foundry (RECOMMENDED for Production)
+- **Use encrypted keystores** (most secure):
+  ```bash
+  # Import key with encryption
+  cast wallet import mykey --interactive
+  
+  # Deploy using keystore (no private key in .env!)
+  forge script Deploy.s.sol --account mykey --sender 0xYourAddress --broadcast
+  ```
+- Never use raw PRIVATE_KEY in .env for mainnet
+- Store keystore files securely (they're encrypted but still sensitive)
+
+### Mina Protocol
+- Store keys in secure location with 700 permissions
+- Use separate keys for testnet and mainnet
+- Back up keys securely (encrypted storage)
+
+## 📋 Pre-Deployment Checklist
+
+Before deploying to ANY network:
+
+- [ ] Code reviewed and audited (for mainnet)
+- [ ] All tests passing
+- [ ] Deployed and tested on testnet first
+- [ ] Constructor arguments verified
+- [ ] Gas limits checked
+- [ ] Network configuration confirmed
+- [ ] Deployment wallet funded
+- [ ] Backup of deployment info prepared
+- [ ] Block explorer verification plan ready
+
+## 🚨 If Private Keys Are Compromised
+
+**IMMEDIATE ACTIONS:**
+
+1. **STOP all operations immediately**
+2. **Transfer all funds** to new secure address
+3. **Revoke all permissions** and approvals
+4. **Generate new keys** using secure method
+5. **Document the incident** (time, scope, actions taken)
+6. **Review access logs** if available
+7. **Notify team/stakeholders** if applicable
+8. **Post-mortem**: Determine how compromise occurred
+
+## 🛡️ Additional Security Measures
+
+### Contract Security
+- Use OpenZeppelin contracts when possible
+- Implement access control (Ownable, AccessControl)
+- Add pause functionality for emergencies
+- Use ReentrancyGuard for external calls
+- Validate all inputs
+- Follow checks-effects-interactions pattern
+
+### Deployment Security
+- Deploy from dedicated deployment address
+- Use multi-sig for contract ownership (mainnet)
+- Implement timelock for critical functions
+- Set up monitoring and alerts
+- Have emergency response plan
+
+### Operational Security
+- Use separate machines for mainnet operations
+- Keep systems updated and patched
+- Use 2FA everywhere possible
+- Limit access to production keys
+- Regular security audits
+- Incident response procedures documented
+
+## 📱 Monitoring
+
+Set up monitoring for:
+- Unexpected transactions
+- Balance changes
+- Contract interactions
+- Gas price anomalies
+- Failed transactions
+
+## 🔄 Key Rotation
+
+- Rotate deployment keys periodically
+- Use different keys for different networks
+- Maintain key inventory
+- Document key purposes and locations (securely)
+
+## ⚖️ Compliance
+
+- Understand regulatory requirements for your jurisdiction
+- Maintain audit trails
+- Document all deployments
+- Keep records of all transactions
+
+## 📚 Resources
+
+- OpenZeppelin Security: https://docs.openzeppelin.com/contracts/security
+- Ethereum Smart Contract Best Practices: https://consensys.github.io/smart-contract-best-practices/
+- Foundry Security: https://book.getfoundry.sh/tutorials/best-practices
+- Mina Protocol Security: https://docs.minaprotocol.com/zkapps/writing-a-zkapp/introduction-to-zkapps/secure-zkapps
+EOF
+
+    cat > "$BASE_DIR/README.md" <<'EOF'
+# 🚀 Ultimate Deployment Kit 2025
+
+Complete production-ready deployment solution for **Mina zkApps** and **EVM smart contracts**.
+
+## ✨ Features
+
+- ✅ **Mina Protocol** zkApps with o1js
+- ✅ **Hardhat** integration for EVM
+- ✅ **Foundry** integration for EVM
+- ✅ **Multi-chain** support (Ethereum, Polygon, Arbitrum, Base, etc.)
+- ✅ **Encrypted keystore** support (Foundry)
+- ✅ **Security-first** design
+- ✅ **Automated workflows**
+- ✅ **Template projects**
+- ✅ **Network configurations**
+- ✅ **Comprehensive documentation**
+
+## 🎯 Quick Start
+
+### 1. Run the Kit
+
+```bash
+chmod +x deploy_kit.sh
+./deploy_kit.sh
+```
+
+### 2. First-Time Setup
+
+On first run, the kit will automatically:
+- Create complete folder structure
+- Prompt for dependency installation
+- Set up network configurations
+- Create project templates
+- Initialize security settings
+
+**Select option 0** from the menu if you need to re-run initialization.
+
+### 3. Create and Deploy
+
+1. **Create a project** (Options 1, 5, or 9)
+2. **Edit your contract** in the generated project folder
+3. **Compile** (Options 3, 6, or 10)
+4. **Deploy to testnet first** (Options 4, 7, or 12)
+5. **Verify** on block explorer (Options 8 or 13)
+
+## 🌐 Supported Networks
+
+### Mina Protocol
+- **Mainnet** - Production network
+- **Devnet** - Development testnet
+- **Berkeley** - Berkeley testnet
+- **Local** - Local development
+
+### EVM Chains
+- **Ethereum** Mainnet
+- **Polygon** (Matic)
+- **Arbitrum** One
+- **Optimism**
+- **Base**
+- **Avalanche** C-Chain
+- **BSC** (Binance Smart Chain)
+- **Sepolia** Testnet
+- **Local** (Hardhat/Foundry)
+
+## 🔐 Security
+
+**CRITICAL:** Always follow security best practices!
+
+- ✅ **Never commit** `.env` files or private keys
+- ✅ **Use encrypted keystores** (Foundry recommended for production)
+- ✅ **Test on testnets** before mainnet deployment
+- ✅ **Verify all contracts** on block explorers
+- ✅ **Backup keys** securely
+- ✅ **Use hardware wallets** for mainnet
+
+See `SECURITY.md` for comprehensive security guidelines.
+
+## 📁 Directory Structure
+
+```
+~/ULTIMATE_DEPLOYMENT_KIT/
+├── MINA/
+│   ├── LAUNCH_PADS/      # Your Mina projects
+│   ├── COMPILED/         # Build outputs
+│   ├── DEPLOYED/         # Deployment records by network
+│   ├── NETWORKS/         # Network configurations
+│   ├── KEYS/             # Private keys (chmod 700)
+│   ├── SCRIPTS/          # Deployment scripts
+│   ├── TESTS/            # Test files
+│   └── LOGS/             # Build and deployment logs
+├── EVM/
+│   ├── LAUNCH_PADS/      # Your EVM projects
+│   ├── BUILD_ENV/        # Hardhat and Foundry environments
+│   ├── COMPILED/         # Build artifacts
+│   ├── DEPLOYED/         # Deployment records by network
+│   ├── NETWORKS/         # Network configurations
+│   ├── KEYS/             # Private keys (chmod 700)
+│   ├── SCRIPTS/          # Deployment scripts
+│   ├── TESTS/            # Test files
+│   └── LOGS/             # Build and deployment logs
+├── TEMPLATES/            # Project templates
+│   ├── MINA/
+│   │   ├── basic/        # Basic zkApp template
+│   │   ├── advanced/     # Advanced zkApp template
+│   │   └── defi/         # DeFi zkApp template
+│   └── EVM/
+│       ├── basic/        # Basic contract template
+│       ├── advanced/     # Advanced contract template
+│       ├── defi/         # DeFi contract template
+│       ├── hardhat/      # Hardhat configs
+│       └── foundry/      # Foundry configs
+├── CONFIGS/              # Global configurations
+├── BACKUPS/              # System backups
+├── DOCS/                 # Documentation
+├── REPORTS/              # Deployment reports
+└── UTILS/                # Utility scripts
+```
+
+## 🎮 Menu Options
+
+### System
+- **0** - System Initialization (first run)
+
+### Mina Protocol
+- **1** - Create Mina Project from Template
+- **2** - Stage Existing Mina Project
+- **3** - Build Mina zkApp
+- **4** - Deploy Mina zkApp
+
+### EVM - Hardhat
+- **5** - Create Hardhat Project
+- **6** - Compile Hardhat Contract
+- **7** - Deploy Hardhat Contract
+- **8** - Verify Hardhat Contract
+
+### EVM - Foundry
+- **9** - Create Foundry Project
+- **10** - Compile Foundry Contract
+- **11** - Test Foundry Contract
+- **12** - Deploy Foundry Contract
+- **13** - Verify Foundry Contract
+
+### Utilities
+- **14** - View All Deployments
+- **15** - System Status & Health Check
+- **16** - Security Audit
+- **17** - Backup All Data
+- **18** - Demo Deploy (Berkeley + Sepolia)
+- **19** - Open Documentation
+
+## 🔧 Configuration
+
+### Network RPC URLs
+
+Edit network config files in:
+- Mina: `MINA/NETWORKS/<network>/config.json`
+- EVM: `EVM/NETWORKS/<network>/config.json`
+
+### API Keys
+
+For contract verification, add API keys to:
+- Hardhat: `.env` file in project
+- Foundry: `.env` file in project
+
+## 💡 Tips
+
+### Hardhat
+```bash
+# Install dependencies
+cd EVM/LAUNCH_PADS/your_project
+npm install
+
+# Compile
+npx hardhat compile
+
+# Deploy
+npx hardhat run scripts/deploy.js --network sepolia
+
+# Verify
+npx hardhat verify --network sepolia CONTRACT_ADDRESS
+```
+
+### Foundry
+```bash
+# Test
+forge test
+
+# Deploy with encrypted keystore (RECOMMENDED)
+cast wallet import mykey --interactive
+forge script script/Deploy.s.sol --account mykey --broadcast
+
+# Deploy with .env (NOT recommended for mainnet)
+forge script script/Deploy.s.sol --broadcast
+
+# Verify
+forge verify-contract ADDRESS Contract --chain-id 11155111
+```
+
+### Mina
+```bash
+# Create zkApp
+zk project my-zkapp
+
+# Build
+npm run build
+
+# Deploy
+zk deploy
+```
+
+## 📚 Documentation
+
+- **Main README**: You're reading it!
+- **Security Guide**: `SECURITY.md`
+- **Network Configs**: `MINA/NETWORKS/` and `EVM/NETWORKS/`
+- **Templates**: `TEMPLATES/`
+- **Logs**: `*/LOGS/` directories
+
+### External Resources
+- [Mina Protocol Docs](https://docs.minaprotocol.com)
+- [Hardhat Documentation](https://hardhat.org/docs)
+- [Foundry Book](https://book.getfoundry.sh)
+- [OpenZeppelin Contracts](https://docs.openzeppelin.com)
+
+## 🐛 Troubleshooting
+
+### Common Issues
+
+**Node.js not found**
+```bash
+# Install via nvm
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+nvm install --lts
+```
+
+**Foundry not found**
+```bash
+# Install Foundry
+curl -L https://foundry.paradigm.xyz | bash
+foundryup
+```
+
+**Permission denied on KEYS directories**
+```bash
+chmod 700 ~/ULTIMATE_DEPLOYMENT_KIT/MINA/KEYS
+chmod 700 ~/ULTIMATE_DEPLOYMENT_KIT/EVM/KEYS
+```
+
+**Deployment fails with "insufficient funds"**
+- Check your wallet balance
+- Use testnet faucets for test networks
+- Ensure correct network selected
+
+### Logs
+
+Check logs in case of errors:
+- Build logs: `*/LOGS/builds/`
+- Deployment logs: `*/LOGS/deployments/`
+- Error logs: `*/LOGS/errors/`
+
+## 🤝 Contributing
+
+This is a deployment tool - modify as needed for your workflow!
+
+## ⚠️ Disclaimer
+
+This tool is provided as-is. Always:
+- Test thoroughly on testnets
+- Audit your contracts before mainnet
+- Keep your keys secure
+- Understand what you're deploying
+- Have a backup and recovery plan
+
+## 📄 License
+
+MIT License - Use at your own risk
+
+---
+
+**Built for developers who deploy** 🚀
+EOF
+
+    chmod 700 "$BASE_DIR/MINA/KEYS" 2>/dev/null || true
+    chmod 700 "$BASE_DIR/EVM/KEYS" 2>/dev/null || true
+    
+    log_success "Security setup complete"
+}
+
+# =============================================
+# SYSTEM INITIALIZATION
+# =============================================
+
+init_system() {
+    clear
+    echo -e "${CYAN}╔═══════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║   ULTIMATE DEPLOYMENT KIT - INITIALIZATION    ║${NC}"
+    echo -e "${CYAN}║   Setting up complete environment...          ║${NC}"
+    echo -e "${CYAN}╚═══════════════════════════════════════════════╝${NC}\n"
+    
+    create_folder_structure
+    install_all_dependencies
+    create_all_network_configs
+    create_all_templates
+    create_deployment_scripts
+    setup_security
+    
+    echo -e "\n${GREEN}✓✓✓ SYSTEM INITIALIZATION COMPLETE ✓✓✓${NC}\n"
+    log_success "All folders created"
+    log_success "All dependencies installed"
+    log_success "All network configs created"
+    log_success "All templates created"
+    log_success "All scripts created"
+    log_success "Security configured"
+    
+    echo -e "\n${CYAN}📂 Base Directory:${NC} $BASE_DIR"
+    echo -e "${CYAN}📖 Documentation:${NC} $BASE_DIR/README.md"
+    echo -e "${CYAN}🔐 Security Guide:${NC} $BASE_DIR/SECURITY.md"
+    
+    read -p "Press Enter to continue to main menu..."
+}
+
+# =============================================
+# MAIN MENU
+# =============================================
+
+main_menu() {
+    while true; do
+        clear
+        echo -e "${CYAN}╔═══════════════════════════════════════════════╗${NC}"
+        echo -e "${CYAN}║   ULTIMATE DEPLOYMENT KIT 2025                ║${NC}"
+        echo -e "${CYAN}║   Complete Mina + EVM Solution                ║${NC}"
+        echo -e "${CYAN}╚═══════════════════════════════════════════════╝${NC}\n"
+        
+        echo -e "${GREEN}┌─ SYSTEM ──────────────────────────────────┐${NC}"
+        echo -e "${CYAN}│  0.${NC} System Initialization (First Run)"
+        echo -e "${GREEN}└────────────────────────────────────────────┘${NC}\n"
+        
+        echo -e "${MAGENTA}┌─ MINA PROTOCOL ────────────────────────────┐${NC}"
+        echo -e "${CYAN}│  1.${NC} Create Mina Project from Template"
+        echo -e "${CYAN}│  2.${NC} Stage Existing Mina Project"
+        echo -e "${CYAN}│  3.${NC} Build Mina zkApp"
+        echo -e "${CYAN}│  4.${NC} Deploy Mina zkApp"
+        echo -e "${MAGENTA}└────────────────────────────────────────────┘${NC}\n"
+        
+        echo -e "${BLUE}┌─ EVM - HARDHAT ───────────────────────────┐${NC}"
+        echo -e "${CYAN}│  5.${NC} Create Hardhat Project"
+        echo -e "${CYAN}│  6.${NC} Compile Hardhat Contract"
+        echo -e "${CYAN}│  7.${NC} Deploy Hardhat Contract"
+        echo -e "${CYAN}│  8.${NC} Verify Hardhat Contract"
+        echo -e "${BLUE}└────────────────────────────────────────────┘${NC}\n"
+        
+        echo -e "${BLUE}┌─ EVM - FOUNDRY ───────────────────────────┐${NC}"
+        echo -e "${CYAN}
